@@ -521,7 +521,7 @@ MarkupView.prototype = {
    */
   nodeChanged: function MT_nodeChanged(aNode)
   {
-    if (aNode === this._inspector.selection) {
+    if (aNode._rawNode === this._inspector.selection) {
       this._inspector.change("markupview");
     }
   },
@@ -743,15 +743,15 @@ function MarkupContainer(aMarkupView, aNode)
   let rawNode = aNode._rawNode;
 
   if (aNode.nodeType == Ci.nsIDOMNode.TEXT_NODE) {
-    this.editor = new TextEditor(this, rawNode, "text");
+    this.editor = new TextEditor(this, aNode, "text");
   } else if (aNode.nodeType == Ci.nsIDOMNode.COMMENT_NODE) {
-    this.editor = new TextEditor(this, rawNode, "comment");
+    this.editor = new TextEditor(this, aNode, "comment");
   } else if (aNode.nodeType == Ci.nsIDOMNode.ELEMENT_NODE) {
-    this.editor = new ElementEditor(this, rawNode);
+    this.editor = new ElementEditor(this, aNode);
   } else if (aNode.nodeType == Ci.nsIDOMNode.DOCUMENT_TYPE_NODE) {
-    this.editor = new DoctypeEditor(this, rawNode);
+    this.editor = new DoctypeEditor(this, aNode);
   } else {
-    this.editor = new GenericEditor(this.markup, rawNode);
+    this.editor = new GenericEditor(this.markup, aNode);
   }
 
   // The template will fill the following properties
@@ -938,10 +938,10 @@ function TextEditor(aContainer, aNode, aTemplate)
       }
       let oldValue = this.node.nodeValue;
       aContainer.undo.do(function() {
-        this.node.nodeValue = aVal;
+        this.node._rawNode.nodeValue = aVal;
         aContainer.markup.nodeChanged(this.node);
       }.bind(this), function() {
-        this.node.nodeValue = oldValue;
+        this.node._rawNode.nodeValue = oldValue;
         aContainer.markup.nodeChanged(this.node);
       }.bind(this));
     }.bind(this)
@@ -971,6 +971,7 @@ function ElementEditor(aContainer, aNode)
   this.container = aContainer;
   this.markup = this.container.markup;
   this.node = aNode;
+  this.rawNode = aNode._rawNode;
 
   this.attrs = [];
 
@@ -988,7 +989,7 @@ function ElementEditor(aContainer, aNode)
   this.template("elementClose", this);
 
   // Make the tag name editable (unless this is a document element)
-  if (aNode != aNode.ownerDocument.documentElement) {
+  if (aNode.isDocumentElement) {
     this.tag.setAttribute("tabindex", "0");
     _editableField({
       element: this.tag,
@@ -1108,7 +1109,7 @@ ElementEditor.prototype = {
           // Remove the attribute stored in this editor and re-add any attributes
           // parsed out of the input element. Restore original attribute if
           // parsing fails.
-          this._removeAttribute(this.node, aAttr.name);
+          this._removeAttribute(this.rawNode, aAttr.name);
           try {
             this._applyAttributes(aVal, attr);
             this.undo.endBatch();
@@ -1157,7 +1158,7 @@ ElementEditor.prototype = {
     for (let i = 0; i < attrs.length; i++) {
       // Create an attribute editor next to the current attribute if needed.
       this._createAttribute(attrs[i], aAttrNode ? aAttrNode.nextSibling : null);
-      this._setAttribute(this.node, attrs[i].name, attrs[i].value);
+      this._setAttribute(this.rawNode, attrs[i].name, attrs[i].value);
     }
 
     this.undo.endBatch();
@@ -1214,12 +1215,11 @@ ElementEditor.prototype = {
       return;
     }
 
-    this._setAttribute(this.node, aValue, "");
+    this._setAttribute(this.rawNode, aValue, "");
     let attr = this._createAttribute({ name: aValue, value: ""});
     attr.style.removeAttribute("display");
     attr.querySelector("attrvalue").click();
   },
-
 
   /**
    * Called when the tag name editor has is done editing.
@@ -1234,7 +1234,7 @@ ElementEditor.prototype = {
     // with it.
     try {
       // XXX: needs serious work for DOMWalker
-      var newElt = nodeDocument(this.node).createElement(aVal);
+      var newElt = nodeDocument(this.rawNode).createElement(aVal);
       var newRef = this.markup.walker._ref(newElt);
     } catch(x) {
       // Failed to create a new element with that tag name, ignore
@@ -1260,7 +1260,7 @@ ElementEditor.prototype = {
 
     // Queue an action to swap out the element.
     this.undo.do(function() {
-      swapNodes(this.node, newElt);
+      swapNodes(this.rawNode, newElt);
 
       // Make sure the new node is imported and is expanded/selected
       // the same as the current node.
@@ -1274,7 +1274,7 @@ ElementEditor.prototype = {
         markup.navigate(newContainer);
       }
     }.bind(this), function() {
-      swapNodes(newElt, this.node);
+      swapNodes(newElt, this.rawNode);
 
       let newContainer = markup._containers.get(newRef);
       if (newContainer.expanded) {

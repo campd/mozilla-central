@@ -33,7 +33,20 @@ DOMRef.prototype = {
   get numChildren() this._rawNode.children.length,
   get nodeType() this._rawNode.nodeType,
 
+  get namespaceURI() this._rawNode.namespaceURI,
+  get nodeName() this._rawNode.nodeName,
+  get nodeValue() this._rawNode.nodeValue,
+
+  get isDocumentElement() this._rawNode != this._rawNode.ownerDocument.documentElement,
+
   getAttribute: function(attr) this._rawNode.getAttribute(attr),
+
+  get attributes() this._rawNode.attributes,
+
+  // doctype attributes
+  get name() this._rawNode.name,
+  get publicId() this._rawNode.publicId,
+  get systemId() this._rawNode.systemId,
 };
 
 /**
