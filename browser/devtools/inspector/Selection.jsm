@@ -57,9 +57,10 @@ this.EXPORTED_SYMBOLS = ["Selection"];
  *    the ndoe change.
  *
  */
-this.Selection = function Selection(node=null, track={attributes:true,detached:true}) {
+this.Selection = function Selection(walker, node=null, track={attributes:true,detached:true}) {
   EventEmitter.decorate(this);
   this._onMutations = this._onMutations.bind(this);
+  this.setWalker(walker);
   this.track = track;
   this.setNode(node);
 }
@@ -67,12 +68,23 @@ this.Selection = function Selection(node=null, track={attributes:true,detached:t
 Selection.prototype = {
   _node: null,
 
-  _onMutations: function(mutations) {
+  setWalker: function(walker) {
+    // XXX: probably need to clear out the current stuff...
+
+    if (this.walker) {
+      this.walker.off("mutations", this._onMutations);
+    }
+
+    this.walker = walker;
+    this._attachEvents();
+  },
+
+  _onMutations: function(eventName, mutations) {
     let attributeChange = false;
     let detached = false;
     let parentNode = null;
     for (let m of mutations) {
-      if (!attributeChange && m.type == "attributes") {
+      if (m.target == this.nodeRef && !attributeChange && m.type == "attributes") {
         attributeChange = true;
       }
       if (m.type == "childList") {
@@ -90,52 +102,65 @@ Selection.prototype = {
   },
 
   _attachEvents: function SN__attachEvents() {
-    if (!this.window || !this.isNode() || !this.track) {
+    if (!this.window || !this.isNode() || !this.track || !this.walker) {
       return;
     }
 
-    if (this.track.attributes) {
-      this._nodeObserver = new this.window.MutationObserver(this._onMutations);
-      this._nodeObserver.observe(this.node, {attributes: true});
-    }
-
-    if (this.track.detached) {
-      this._docObserver = new this.window.MutationObserver(this._onMutations);
-      this._docObserver.observe(this.document.documentElement, {childList: true, subtree: true});
+    if (this.track.attributes || this.track.detached) {
+      this.walker.on("mutations", this._onMutations);
     }
   },
 
   _detachEvents: function SN__detachEvents() {
-    // `disconnect` fail if node's document has
-    // been deleted.
-    try {
-      if (this._nodeObserver)
-        this._nodeObserver.disconnect();
-    } catch(e) {}
-    try {
-      if (this._docObserver)
-        this._docObserver.disconnect();
-    } catch(e) {}
+    if (this.walker) {
+      this.walker.off("mutations", this._onMutations);
+    }
   },
 
   destroy: function SN_destroy() {
     this._detachEvents();
-    this.setNode(null);
+    this.setNode(null, "destroy");
   },
 
+  // XXX: eventually this should take a nodeRef rather than a node.
   setNode: function SN_setNode(value, reason="unknown") {
     this.reason = reason;
     if (value !== this._node) {
       let previousNode = this._node;
       this._detachEvents();
       this._node = value;
+      this._nodeRef = value ? this.walker._ref(value) : null;
+      if (this._nodeRef) {
+        // XXX: hack to make sure all parents of the selection are being watched.
+        this.walker.parents(this._nodeRef);
+      }
+
       this._attachEvents();
       this.emit("new-node", previousNode, this.reason);
     }
   },
 
+  setRawNode: function SN_setRawNode(value, reason="unknown") {
+    return this.setNode(value, reason);
+  },
+
+  setNodeRef: function SN_setNodeRef(value, reason="unknown") {
+    return this.setNode(value._rawNode, reason);
+  },
+
+  // XXX: this should change to rawNode or something
   get node() {
     return this._node;
+  },
+
+  // Well-behaved modules can start using that now.
+  get rawNode() {
+    return this._node;
+  },
+
+  // ... and this should change to node.
+  get nodeRef() {
+    return this._nodeRef;
   },
 
   get window() {
@@ -151,11 +176,15 @@ Selection.prototype = {
     }
     return null;
   },
+  get rawDocument() {
+    let doc = this.document;
+    return doc ? this.walker._ref(doc) : null;
+  },
 
   isRoot: function SN_isRootNode() {
     return this.isNode() &&
            this.isConnected() &&
-           this.node.ownerDocument.documentElement === this.node;
+           this.nodeRef.isDocumentElement;
   },
 
   isNode: function SN_isNode() {
@@ -183,35 +212,35 @@ Selection.prototype = {
   // Node type
 
   isElementNode: function SN_isElementNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.ELEMENT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ELEMENT_NODE;
   },
 
   isAttributeNode: function SN_isAttributeNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.ATTRIBUTE_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ATTRIBUTE_NODE;
   },
 
   isTextNode: function SN_isTextNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.TEXT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.TEXT_NODE;
   },
 
   isCDATANode: function SN_isCDATANode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.CDATA_SECTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.CDATA_SECTION_NODE;
   },
 
   isEntityRefNode: function SN_isEntityRefNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.ENTITY_REFERENCE_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ENTITY_REFERENCE_NODE;
   },
 
   isEntityNode: function SN_isEntityNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.ENTITY_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ENTITY_NODE;
   },
 
   isProcessingInstructionNode: function SN_isProcessingInstructionNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
   },
 
   isCommentNode: function SN_isCommentNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
   },
 
   isDocumentNode: function SN_isDocumentNode() {

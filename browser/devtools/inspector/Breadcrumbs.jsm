@@ -537,6 +537,8 @@ HTMLBreadcrumbs.prototype = {
    */
   update: function BC_update()
   {
+    this.walker = this.inspector.walker;
+
     this.inspector.hideNodeMenu();
 
     let cmdDispatcher = this.chromeDoc.commandDispatcher;

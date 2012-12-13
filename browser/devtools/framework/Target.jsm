@@ -288,7 +288,6 @@ TabWebProgressListener.prototype = {
 
     if (this.target) {
       this.target.emit("will-navigate", request);
-      this.target.emit("navigate", window);
     }
   },
 

@@ -53,7 +53,7 @@ function UpdateProcess(aWin, aGenerator, aOptions)
   this.onCancel = aOptions.onCancel || function() {};
   this.threshold = aOptions.threshold || 45;
 
-  this.canceled = false;
+  this.cancelled = false;
 }
 
 UpdateProcess.prototype = {
@@ -78,7 +78,7 @@ UpdateProcess.prototype = {
       this.win.clearTimeout(this._timeout);
       this._timeout = 0;
     }
-    this.canceled = true;
+    this.cancelled = true;
     this.onCancel();
   },
 

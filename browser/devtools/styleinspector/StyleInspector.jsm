@@ -179,7 +179,8 @@ ComputedViewTool.prototype = {
   {
     if (!this.inspector.selection.isConnected() ||
         !this.inspector.selection.isElementNode()) {
-      // FIXME: We should hide view's content
+      this.cssLogic.highlight(null);
+      this.view.highlight(null);
       return;
     }
 

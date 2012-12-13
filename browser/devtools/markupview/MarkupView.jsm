@@ -20,7 +20,6 @@ Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
 Cu.import("resource:///modules/devtools/CssRuleView.jsm");
 Cu.import("resource:///modules/devtools/Templater.jsm");
 Cu.import("resource:///modules/devtools/Undo.jsm");
-Cu.import("resource:///modules/devtools/DOMWalker.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
@@ -83,9 +82,7 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   this._boundFocus = this._onFocus.bind(this);
   this._frame.addEventListener("focus", this._boundFocus, false);
 
-  this.walker = new DOMWalker(this._target.document, {
-    watchVisited: true,
-  });
+  this.walker = aInspector.walker;
   this._boundMutationObserver = this._mutationObserver.bind(this);
   this.walker.on("mutations", this._boundMutationObserver);
 
@@ -123,9 +120,7 @@ MarkupView.prototype = {
   _onNewSelection: function MT__onNewSelection()
   {
     if (this._inspector.selection.isNode()) {
-      // XXX Cheat a bit here until inspector.selection uses DOMWalker
-      let node = this.walker._ref(this._inspector.selection.node);
-
+      let node = this._inspector.selection.nodeRef;
       return this.importNodeDeep(node).then(function() {
         return this.showNode(node, true);
       }.bind(this)).then(function() {
@@ -162,7 +157,6 @@ MarkupView.prototype = {
    */
   _onKeyDown: function MT__KeyDown(aEvent)
   {
-    dump("GOT A KEYDOWN\n");
     let handled = true;
 
     // Ignore keystrokes that originated in editors.
@@ -174,7 +168,6 @@ MarkupView.prototype = {
     switch(aEvent.keyCode) {
       case Ci.nsIDOMKeyEvent.DOM_VK_DELETE:
       case Ci.nsIDOMKeyEvent.DOM_VK_BACK_SPACE:
-        dump("GOING TO DELETE\n");
         this.deleteNode(this._selectedContainer.node);
         break;
       case Ci.nsIDOMKeyEvent.DOM_VK_HOME: {
@@ -253,17 +246,7 @@ MarkupView.prototype = {
     let sibling = rawNode.nextSibling;
 
     this.undo.do(function() {
-      dump("DO'ing\n");
       let container = this._containers.get(aNode);
-
-      if (this._selectedContainer === container) {
-        dump("We're the selected container\n");
-        let select = this._selectionWalker().previousNode();
-        if (!select) {
-          select = this._selectionWalker().nextNode();
-        }
-        this.navigate(select.container);
-      }
       parentNode.removeChild(rawNode);
     }.bind(this), function() {
       parentNode.insertBefore(rawNode, sibling);
@@ -301,7 +284,7 @@ MarkupView.prototype = {
     let node = aContainer.node;
     this.scrollToNode(node, false);
 
-    this._inspector.selection.setNode(node._rawNode, "treepanel");
+    this._inspector.selection.setNodeRef(node, "treepanel");
     // This event won't be fired if the node is the same. But the highlighter
     // need to lock the node if it wasn't.
     this._inspector.selection.emit("new-node");
@@ -373,11 +356,8 @@ MarkupView.prototype = {
    */
   _mutationObserver: function MT__mutationObserver(aEvent, aMutations)
   {
-    dump("GOT " + aEvent + ", " + aMutations + "\n");
     let promises = [];
     for (let mutation of aMutations) {
-      dump("Mutation is " + mutation.type + "\n");
-      dump("Mutation of " + mutation.target + "\n");
       let container = this._containers.get(mutation.target);
       if (!container) {
         // Container might not exist if this came from a load event for an iframe
@@ -393,7 +373,6 @@ MarkupView.prototype = {
       }
     }
     promised(Array).apply(null, promises).then(function() {
-      dump("DOING MARKUP MUTATION NOTIFICATION NOW\n");
       this._inspector.emit("markupmutation");
     }.bind(this));
   },
@@ -521,7 +500,7 @@ MarkupView.prototype = {
    */
   nodeChanged: function MT_nodeChanged(aNode)
   {
-    if (aNode._rawNode === this._inspector.selection) {
+    if (aNode === this._inspector.selection.nodeRef) {
       this._inspector.change("markupview");
     }
   },
@@ -616,8 +595,6 @@ MarkupView.prototype = {
   {
     this.walker.off("mutations", this._boundMutationObserver);
     delete this._boundMutationObserver;
-    this.walker.destroy();
-    delete this.walker;
 
     this.undo.destroy();
     delete this.undo;
@@ -625,11 +602,13 @@ MarkupView.prototype = {
     this._frame.removeEventListener("focus", this._boundFocus, false);
     delete this._boundFocus;
 
-    this._frame.contentWindow.removeEventListener("scroll", this._boundUpdatePreview, true);
-    this._frame.contentWindow.removeEventListener("resize", this._boundUpdatePreview, true);
-    this._frame.contentWindow.removeEventListener("overflow", this._boundResizePreview, true);
-    this._frame.contentWindow.removeEventListener("underflow", this._boundResizePreview, true);
-    delete this._boundUpdatePreview;
+    if (this._boundUpdatePreview) {
+      this._frame.contentWindow.removeEventListener("scroll", this._boundUpdatePreview, true);
+      this._frame.contentWindow.removeEventListener("resize", this._boundUpdatePreview, true);
+      this._frame.contentWindow.removeEventListener("overflow", this._boundResizePreview, true);
+      this._frame.contentWindow.removeEventListener("underflow", this._boundResizePreview, true);
+      delete this._boundUpdatePreview;
+    }
 
     this._frame.contentWindow.removeEventListener("keydown", this._boundKeyDown, true);
     delete this._boundKeyDown;
@@ -989,7 +968,7 @@ function ElementEditor(aContainer, aNode)
   this.template("elementClose", this);
 
   // Make the tag name editable (unless this is a document element)
-  if (aNode.isDocumentElement) {
+  if (!aNode.isDocumentElement) {
     this.tag.setAttribute("tabindex", "0");
     _editableField({
       element: this.tag,

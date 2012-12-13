@@ -37,7 +37,7 @@ DOMRef.prototype = {
   get nodeName() this._rawNode.nodeName,
   get nodeValue() this._rawNode.nodeValue,
 
-  get isDocumentElement() this._rawNode != this._rawNode.ownerDocument.documentElement,
+  get isDocumentElement() this._rawNode == this._rawNode.ownerDocument.documentElement,
 
   getAttribute: function(attr) this._rawNode.getAttribute(attr),
 
@@ -70,15 +70,22 @@ this.DOMWalker = function DOMWalker(document, options)
 
 DOMWalker.prototype = {
   destroy: function() {
-    this._observer.disconnect();
-    delete this._observer;
-    this._doc.removeEventListener("load", this._contentLoadedListener, true);
-    delete this._contentLoadedListener;
+    if (this._observer) {
+      this._observer.disconnect();
+      delete this._observer;
+    }
+
+    if (this._contentLoadedListener) {
+      this._doc.removeEventListener("load", this._contentLoadedListener, true);
+      delete this._contentLoadedListener;
+    }
+
     delete this._refMap;
+    delete this._doc;
+    dump("DONE DESTROYING DOM WALKER\n");
   },
 
   root: function() {
-    dump("Document element: " + this._doc.documentElement + "\n");
     return promise.resolve(this._ref(this._doc));
   },
 

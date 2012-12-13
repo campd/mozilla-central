@@ -228,9 +228,6 @@ function test() {
     markup = inspector.markup;
     markup.expandAll();
 
-    removeElementWithDelete();
-    return;
-
     for (let step of edits) {
       info("START " + step.desc);
       if (step.setup) {

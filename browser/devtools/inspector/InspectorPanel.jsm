@@ -23,6 +23,8 @@ XPCOMUtils.defineLazyModuleGetter(this, "Highlighter",
   "resource:///modules/devtools/Highlighter.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ToolSidebar",
   "resource:///modules/devtools/Sidebar.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "DOMWalker",
+  "resource:///modules/devtools/DOMWalker.jsm");
 
 const LAYOUT_CHANGE_TIMER = 250;
 
@@ -64,8 +66,11 @@ InspectorPanel.prototype = {
     this.nodemenu.addEventListener("popupshowing", this._setupNodeMenu, true);
     this.nodemenu.addEventListener("popuphiding", this._resetNodeMenu, true);
 
+    this._initWalker();
+
     // Create an empty selection
     this._selection = new Selection();
+    this._selection.setWalker(this.walker);
     this.onNewSelection = this.onNewSelection.bind(this);
     this.selection.on("new-node", this.onNewSelection);
     this.onDetached = this.onDetached.bind(this);
@@ -101,11 +106,11 @@ InspectorPanel.prototype = {
       // All the components are initialized. Let's select a node.
       if (this.tabTarget) {
         let root = this.browser.contentDocument.documentElement;
-        this._selection.setNode(root);
+        this._selection.setRawNode(root);
       }
       if (this.winTarget) {
         let root = this.target.window.document.documentElement;
-        this._selection.setNode(root);
+        this._selection.setRawNode(root);
       }
 
       if (this.highlighter) {
@@ -197,17 +202,19 @@ InspectorPanel.prototype = {
    * Reset the inspector on navigate away.
    */
   onNavigatedAway: function InspectorPanel_onNavigatedAway(event, newWindow) {
-    dump("NAVIGATED AWAY WHAT THE HELL\n");
-    this.selection.setNode(null);
+    this.selection.setNode(null, "navigation");
     this._destroyMarkup();
+    this._destroyWalker();
+
     this.isDirty = false;
     let self = this;
 
     function onDOMReady() {
       newWindow.removeEventListener("DOMContentLoaded", onDOMReady, true);
+      self._initWalker();
 
       if (!self.selection.node) {
-        self.selection.setNode(newWindow.document.documentElement);
+        self.selection.setRawNode(newWindow.document.documentElement);
       }
       self._initMarkup();
     }
@@ -339,6 +346,7 @@ InspectorPanel.prototype = {
     this._destroyMarkup();
     this._selection.destroy();
     this._selection = null;
+    this._destroyWalker();
     this.panelWin.inspector = null;
     this.target = null;
     this.panelDoc = null;
@@ -392,6 +400,23 @@ InspectorPanel.prototype = {
     while (this.lastNodemenuItem.nextSibling) {
       let toDelete = this.lastNodemenuItem.nextSibling;
       toDelete.parentNode.removeChild(toDelete);
+    }
+  },
+
+  _initWalker: function InspectorPanel__initWalker() {
+    this.walker = new DOMWalker(this.target.document, {
+      watchVisited: true
+    });
+    if (this._selection) {
+      this._selection.setWalker(this.walker);
+    }
+  },
+
+  _destroyWalker: function InspectorPanel__destroyWalker() {
+    this.walker.destroy();
+    this.walker = null;
+    if (this._selection) {
+      this._selection.setWalker(null);
     }
   },
 
@@ -523,16 +548,14 @@ InspectorPanel.prototype = {
       return;
     }
 
-    let toDelete = this.selection.node;
-
-    let parent = this.selection.node.parentNode;
-
     // If the markup panel is active, use the markup panel to delete
     // the node, making this an undoable action.
     if (this.markup) {
-      this.markup.deleteNode(toDelete);
+      this.markup.deleteNode(this.selection.nodeRef);
     } else {
       // remove the node from content
+      let toDelete = this.selection.node;
+      let parent = this.selection.node.parentNode;
       parent.removeChild(toDelete);
     }
   },
