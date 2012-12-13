@@ -1,6 +1,8 @@
 const Ci = Components.interfaces;
 const Cu = Components.utils;
 
+Cu.import("resource:///modules/devtools/EventEmitter.jsm");
+
 let obj = {};
 Cu.import('resource://gre/modules/commonjs/loader.js', obj);
 let {Loader, Require, unload} = obj.Loader;
@@ -11,7 +13,9 @@ let loader = new Loader({
   }
 });
 let require = Require(loader, {id: "domwalker"});
+
 let promise = require("commonjs/promise/core");
+
 
 this.EXPORTED_SYMBOLS = ["DOMWalker"];
 
@@ -28,6 +32,8 @@ DOMRef.prototype = {
   get hasChildren() !!this._rawNode.firstChild,
   get numChildren() this._rawNode.children.length,
   get nodeType() this._rawNode.nodeType,
+
+  getAttribute: function(attr) this._rawNode.getAttribute(attr),
 };
 
 /**
@@ -35,19 +41,27 @@ DOMRef.prototype = {
  */
 this.DOMWalker = function DOMWalker(document, options)
 {
+  new EventEmitter(this);
   this._doc = document;
   this._refMap = new WeakMap();
-  this._watchVisited = !!options.watchVisited;
+
+  if (!!options.watchVisited) {
+    this._observer = new document.defaultView.MutationObserver(this._mutationObserver.bind(this));
+    this._contentLoadedListener = function DW_contentLoaded(aEvent) {
+      // Fake a childList mutation here.
+      this._mutationObserver([{target: aEvent.target, type: "childList"}]);
+    }.bind(this);
+    document.addEventListener("load", this._contentLoadedListener, true);
+  }
 }
 
 DOMWalker.prototype = {
-  _ref: function(node) {
-    if (this._refMap.has(node)) {
-      return this._refMap.get(node);
-    }
-    let ref = new DOMRef(node);
-    this._refMap.set(node, ref);
-    return ref;
+  destroy: function() {
+    this._observer.disconnect();
+    delete this._observer;
+    this._doc.removeEventListener("load", this._contentLoadedListener, true);
+    delete this._contentLoadedListener;
+    delete this._refMap;
   },
 
   root: function() {
@@ -140,6 +154,45 @@ DOMWalker.prototype = {
     } while(node && --aCount);
     ret.reverse();
     return ret;
+  },
+
+  _ref: function(node) {
+    if (this._refMap.has(node)) {
+      return this._refMap.get(node);
+    }
+    let ref = new DOMRef(node);
+
+    if (this._observer) {
+      this._observer.observe(node, {
+        attributes: true,
+        childList: true,
+        characterData: true,
+      });
+    }
+
+    // FIXME: set an expando to prevent the the wrapper from disappearing
+    node.__preserveHack = true;
+
+    this._refMap.set(node, ref);
+    return ref;
+  },
+
+  _mutationObserver: function(mutations)
+  {
+    let refMutations = [];
+    for (let change of mutations) {
+      if (!this._refMap.get(change.target)) {
+        continue;
+      }
+      refMutations.push({
+        type: change.type,
+        target: this._refMap.get(change.target),
+        attributeName: change.attributeName || undefined,
+        attributeNamespace: change.attributeNamespace || undefined,
+        oldValue: change.oldValue || undefined
+      });
+    }
+    this.emit("mutations", refMutations);
   }
 };
 

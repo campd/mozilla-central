@@ -73,8 +73,6 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
 
   this._containers = new WeakMap();
 
-  this._observer = new this.doc.defaultView.MutationObserver(this._mutationObserver.bind(this));
-
   this._boundOnNewSelection = this._onNewSelection.bind(this);
   this._inspector.selection.on("new-node", this._boundOnNewSelection);
   this._onNewSelection();
@@ -88,6 +86,9 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   this.walker = new DOMWalker(this._target.document, {
     watchVisited: true,
   });
+  this._boundMutationObserver = this._mutationObserver.bind(this);
+  this.walker.on("mutations", this._boundMutationObserver);
+
   this.walker.root().then(function(node) {
     let container = this.importNode(node);
     this._updateChildren(container);
@@ -139,10 +140,10 @@ MarkupView.prototype = {
    * Create a TreeWalker to find the next/previous
    * node for selection.
    */
-  _selectionWalker: function MT__seletionWalker(aStart)
+  _selectionWalker: function MT__selectionWalker(aCurrent)
   {
     let walker = this.doc.createTreeWalker(
-      aStart || this._elt,
+      this._elt,
       Ci.nsIDOMNodeFilter.SHOW_ELEMENT,
       function(aElement) {
         if (aElement.container && aElement.container.visible) {
@@ -152,7 +153,7 @@ MarkupView.prototype = {
       },
       false
     );
-    walker.currentNode = this._selectedContainer.elt;
+    walker.currentNode = aCurrent || this._selectedContainer.elt;
     return walker;
   },
 
@@ -161,6 +162,7 @@ MarkupView.prototype = {
    */
   _onKeyDown: function MT__KeyDown(aEvent)
   {
+    dump("GOT A KEYDOWN\n");
     let handled = true;
 
     // Ignore keystrokes that originated in editors.
@@ -172,11 +174,14 @@ MarkupView.prototype = {
     switch(aEvent.keyCode) {
       case Ci.nsIDOMKeyEvent.DOM_VK_DELETE:
       case Ci.nsIDOMKeyEvent.DOM_VK_BACK_SPACE:
+        dump("GOING TO DELETE\n");
         this.deleteNode(this._selectedContainer.node);
         break;
-      case Ci.nsIDOMKeyEvent.DOM_VK_HOME:
-        this.navigate(this._containers.get(this._rootNode.firstChild));
+      case Ci.nsIDOMKeyEvent.DOM_VK_HOME: {
+        let rootContainer = this._containers.get(this._rootNode);
+        this.navigate(rootContainer.children.firstChild.container);
         break;
+      }
       case Ci.nsIDOMKeyEvent.DOM_VK_LEFT:
         this.collapseNode(this._selectedContainer.node);
         break;
@@ -236,23 +241,32 @@ MarkupView.prototype = {
    */
   deleteNode: function MC__deleteNode(aNode)
   {
-    let doc = nodeDocument(aNode);
-    if (aNode === doc ||
-        aNode === doc.documentElement ||
-        aNode.nodeType == Ci.nsIDOMNode.DOCUMENT_TYPE_NODE) {
+    let rawNode = aNode._rawNode;
+    let doc = nodeDocument(rawNode);
+    if (rawNode === doc ||
+        rawNode === doc.documentElement ||
+        rawNode.nodeType == Ci.nsIDOMNode.DOCUMENT_TYPE_NODE) {
       return;
     }
 
-    let parentNode = aNode.parentNode;
-    let sibling = aNode.nextSibling;
+    let parentNode = rawNode.parentNode;
+    let sibling = rawNode.nextSibling;
 
     this.undo.do(function() {
-      if (aNode.selected) {
-        this.navigate(this._containers.get(parentNode));
+      dump("DO'ing\n");
+      let container = this._containers.get(aNode);
+
+      if (this._selectedContainer === container) {
+        dump("We're the selected container\n");
+        let select = this._selectionWalker().previousNode();
+        if (!select) {
+          select = this._selectionWalker().nextNode();
+        }
+        this.navigate(select.container);
       }
-      parentNode.removeChild(aNode);
+      parentNode.removeChild(rawNode);
     }.bind(this), function() {
-      parentNode.insertBefore(aNode, sibling);
+      parentNode.insertBefore(rawNode, sibling);
     });
   },
 
@@ -334,11 +348,7 @@ MarkupView.prototype = {
     }
 
     if (false) {
-      this._observer.observe(aNode._node, {
-        attributes: true,
-        childList: true,
-        characterData: true,
-      });
+
     }
 
     if (aNode.parentKey) {
@@ -347,18 +357,10 @@ MarkupView.prototype = {
       var container = new RootContainer(this, aNode);
       this._elt.appendChild(container.elt);
       this._rootNode = aNode;
-      if (false) {
-        aNode.addEventListener("load", function MP_watch_contentLoaded(aEvent) {
-          // Fake a childList mutation here.
-          this._mutationObserver([{target: aEvent.target, type: "childList"}]);
-        }.bind(this), true);
-      }
     }
 
+    aNode.__expando = true;
     this._containers.set(aNode, container);
-    // FIXME: set an expando to prevent the the wrapper from disappearing
-    // See bug 819131 for details.
-    aNode.key.__preserveHack = true;
 
     container.hasChildren = aNode.hasChildren;
     container.childrenDirty = true;
@@ -369,9 +371,13 @@ MarkupView.prototype = {
   /**
    * Mutation observer used for included nodes.
    */
-  _mutationObserver: function MT__mutationObserver(aMutations)
+  _mutationObserver: function MT__mutationObserver(aEvent, aMutations)
   {
+    dump("GOT " + aEvent + ", " + aMutations + "\n");
+    let promises = [];
     for (let mutation of aMutations) {
+      dump("Mutation is " + mutation.type + "\n");
+      dump("Mutation of " + mutation.target + "\n");
       let container = this._containers.get(mutation.target);
       if (!container) {
         // Container might not exist if this came from a load event for an iframe
@@ -382,10 +388,14 @@ MarkupView.prototype = {
         container.update();
       } else if (mutation.type === "childList") {
         container.childrenDirty = true;
-        this._updateChildren(container);
+        // XXX: what if the visible child isn't still here?
+        promises.push(this._updateChildren(container));
       }
     }
-    this._inspector.emit("markupmutation");
+    promised(Array).apply(null, promises).then(function() {
+      dump("DOING MARKUP MUTATION NOTIFICATION NOW\n");
+      this._inspector.emit("markupmutation");
+    }.bind(this));
   },
 
   /**
@@ -411,7 +421,8 @@ MarkupView.prototype = {
 
   scrollToNode: function MT_scrollToNode(aNode, aCentered)
   {
-    LayoutHelpers.scrollIntoViewIfNeeded(this._containers.get(aNode).editor.elt, aCentered);
+    let container = this._containers.get(aNode);
+    LayoutHelpers.scrollIntoViewIfNeeded(container.editor.elt, aCentered);
   },
 
   /**
@@ -603,6 +614,11 @@ MarkupView.prototype = {
    */
   destroy: function MT_destroy()
   {
+    this.walker.off("mutations", this._boundMutationObserver);
+    delete this._boundMutationObserver;
+    this.walker.destroy();
+    delete this.walker;
+
     this.undo.destroy();
     delete this.undo;
 
@@ -624,8 +640,6 @@ MarkupView.prototype = {
     delete this._elt;
 
     delete this._containers;
-    this._observer.disconnect();
-    delete this._observer;
   },
 
   /**
@@ -1219,7 +1233,9 @@ ElementEditor.prototype = {
     // current element and prepare to replace the current node
     // with it.
     try {
+      // XXX: needs serious work for DOMWalker
       var newElt = nodeDocument(this.node).createElement(aVal);
+      var newRef = this.markup.walker._ref(newElt);
     } catch(x) {
       // Failed to create a new element with that tag name, ignore
       // the change.
@@ -1248,16 +1264,24 @@ ElementEditor.prototype = {
 
       // Make sure the new node is imported and is expanded/selected
       // the same as the current node.
-      let newContainer = markup.importNode(newElt, this.container.expanded);
-      newContainer.expanded = this.container.expanded;
+      let newContainer = markup.importNode(newRef);
+      if (this.container.expanded) {
+        this.markup._expandContainer(newContainer);
+      } else {
+        this.markup.collapseNode(newContainer.node);
+      }
       if (this.container.selected) {
         markup.navigate(newContainer);
       }
     }.bind(this), function() {
       swapNodes(newElt, this.node);
 
-      let newContainer = markup._containers.get(newElt);
-      this.container.expanded = newContainer.expanded;
+      let newContainer = markup._containers.get(newRef);
+      if (newContainer.expanded) {
+        this.markup._expandContainer(this.container);
+      } else {
+        this.markup.collapseNode(this.container.node);
+      }
       if (newContainer.selected) {
         markup.navigate(this.container);
       }

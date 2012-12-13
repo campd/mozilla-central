@@ -23,9 +23,14 @@ function test() {
   // Holds the MarkupTool object we're testing.
   let markup;
 
+  function getContainer(node)
+  {
+    return markup.getContainer(markup.walker._ref(node));
+  }
+
   function assertChildren(expected)
   {
-    let container = markup.getContainer(doc.querySelector("body"));
+    let container = getContainer(doc.querySelector("body"));
     let found = [];
     for (let child of container.children.children) {
       if (child.classList.contains("more-nodes")) {
@@ -39,7 +44,7 @@ function test() {
 
   function forceReload()
   {
-    let container = markup.getContainer(doc.querySelector("body"));
+    let container = getContainer(doc.querySelector("body"));
     container.childrenDirty = true;
   }
 
@@ -131,7 +136,7 @@ function test() {
   function clickMore() {
     info("Check that clicking more loads the whole thing.");
     // Make sure that clicking the "more" button loads all the nodes.
-    let container = markup.getContainer(doc.querySelector("body"));
+    let container = getContainer(doc.querySelector("body"));
     let button = container.elt.querySelector("button");
     button.click();
     assertChildren("abcdefghijklmnopqrstuvwxyz");

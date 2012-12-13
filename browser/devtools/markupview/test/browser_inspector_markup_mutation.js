@@ -45,10 +45,12 @@ function test() {
   // Verify that the markup in the tool is the same as the markup in the document.
   function checkMarkup()
   {
+    dump("=== Beginning markup check\n");
     markup.expandAll();
 
     let contentNode = doc.querySelector("body");
-    let panelNode = markup._containers.get(contentNode).elt;
+    let contentRef = markup.walker._ref(contentNode);
+    let panelNode = markup._containers.get(contentRef).elt;
     let parseNode = parseDoc.querySelector("body");
 
     // Grab the text from the markup panel...
@@ -64,6 +66,7 @@ function test() {
     stripWhitespace(parseNode);
 
     ok(contentNode.isEqualNode(parseNode), "Markup panel should match document.");
+    dump("==== Ending markup check\n");
   }
 
   // All the mutation types we want to test.
@@ -163,13 +166,15 @@ function test() {
       finishUp();
       return;
     }
-    mutations[cursor]();
+    dump("Running " + mutations[cursor] + "\n");
     inspector.once("markupmutation", function() {
+      dump("Got mutation\n");
       executeSoon(function() {
         checkMarkup();
         nextStep(cursor + 1);
       });
     });
+    mutations[cursor]();
   }
 
   function finishUp() {

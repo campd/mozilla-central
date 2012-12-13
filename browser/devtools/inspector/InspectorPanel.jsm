@@ -197,6 +197,7 @@ InspectorPanel.prototype = {
    * Reset the inspector on navigate away.
    */
   onNavigatedAway: function InspectorPanel_onNavigatedAway(event, newWindow) {
+    dump("NAVIGATED AWAY WHAT THE HELL\n");
     this.selection.setNode(null);
     this._destroyMarkup();
     this.isDirty = false;

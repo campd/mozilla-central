@@ -31,6 +31,11 @@ function test() {
   // Holds the MarkupTool object we're testing.
   let markup;
 
+  function getContainer(node)
+  {
+    return markup.getContainer(markup.walker._ref(node));
+  }
+
   /**
    * Edit a given editableField
    */
@@ -63,7 +68,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node1")).editor;
+        let editor = getContainer(doc.querySelector("#node1")).editor;
         let attr = editor.attrs["class"].querySelector(".editable");
         editField(attr, 'class="changednode1"');
       },
@@ -84,7 +89,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node22")).editor;
+        let editor = getContainer(doc.querySelector("#node22")).editor;
         let attr = editor.attrs["class"].querySelector(".editable");
         editField(attr, 'class="""');
       },
@@ -105,7 +110,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node4")).editor;
+        let editor = getContainer(doc.querySelector("#node4")).editor;
         let attr = editor.attrs["class"].querySelector(".editable");
         editField(attr, '');
       },
@@ -124,7 +129,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node14")).editor;
+        let editor = getContainer(doc.querySelector("#node14")).editor;
         let attr = editor.newAttr;
         editField(attr, 'class="newclass" style="color:green"');
       },
@@ -145,7 +150,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node23")).editor;
+        let editor = getContainer(doc.querySelector("#node23")).editor;
         let attr = editor.newAttr;
         editField(attr, 'class="newclass" style="""');
       },
@@ -164,7 +169,7 @@ function test() {
         });
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node24")).editor;
+        let editor = getContainer(doc.querySelector("#node24")).editor;
         let attr = editor.attrs["id"].querySelector(".editable");
         editField(attr, attr.textContent + ' class="""');
       },
@@ -183,7 +188,7 @@ function test() {
       },
       execute: function() {
         let node = doc.querySelector('.node6').firstChild;
-        let editor = markup.getContainer(node).editor;
+        let editor = getContainer(node).editor;
         let field = editor.elt.querySelector("pre");
         editField(field, "New text");
       },
@@ -222,6 +227,10 @@ function test() {
     let startNode = doc.documentElement.cloneNode();
     markup = inspector.markup;
     markup.expandAll();
+
+    removeElementWithDelete();
+    return;
+
     for (let step of edits) {
       info("START " + step.desc);
       if (step.setup) {
@@ -256,7 +265,7 @@ function test() {
           "No classes in the infobar before edit.");
       },
       execute: function() {
-        let editor = markup.getContainer(doc.querySelector("#node18")).editor;
+        let editor = getContainer(doc.querySelector("#node18")).editor;
         let attr = editor.attrs["id"].querySelector(".editable");
         editField(attr, attr.textContent + ' class="newclass" style="color:green"');
       },
@@ -281,7 +290,7 @@ function test() {
       },
       before: function() {
         let node = doc.querySelector("#retag-me");
-        let container = markup.getContainer(node);
+        let container = getContainer(node);
 
         is(node.tagName, "DIV", "retag-me should be a div.");
         ok(container.selected, "retag-me should be selected.");
@@ -291,13 +300,13 @@ function test() {
       },
       execute: function() {
         let node = doc.querySelector("#retag-me");
-        let editor = markup.getContainer(node).editor;
+        let editor = getContainer(node).editor;
         let field = editor.tag;
         editField(field, "p");
       },
       after: function() {
         let node = doc.querySelector("#retag-me");
-        let container = markup.getContainer(node);
+        let container = getContainer(node);
         is(node.tagName, "P", "retag-me should be a p.");
         ok(container.selected, "retag-me should be selected.");
         ok(container.expanded, "retag-me should be expanded.");
@@ -332,6 +341,7 @@ function test() {
 
     test.before();
     inspector.selection.once("new-node", function BIMET_testAsyncExecNewNode() {
+      dump("========ABOUT TO PRESS DELETE\n");
       test.executeCont();
       test.after();
       undoRedo(test, callback);
