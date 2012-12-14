@@ -338,7 +338,6 @@ function test() {
 
     test.before();
     inspector.selection.once("new-node", function BIMET_testAsyncExecNewNode() {
-      dump("========ABOUT TO PRESS DELETE\n");
       test.executeCont();
       test.after();
       undoRedo(test, callback);

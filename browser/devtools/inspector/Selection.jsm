@@ -155,7 +155,7 @@ Selection.prototype = {
 
       this._attachEvents();
       // XXX: switch the notification over to nodeRefs.
-      this.emit("new-node", previousNode ? previousNode.rawNode : null, this.reason);
+      this.emit("new-node", previousNode, this.reason);
     }
   },
 
