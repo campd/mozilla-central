@@ -35,10 +35,10 @@ this.LayoutHelpers = LayoutHelpers = {
 
     // Go up in the tree of frames to determine the correct rectangle.
     // clientRect is read-only, we need to be able to change properties.
-    rect = {top: clientRect.top,
-            left: clientRect.left,
-            width: clientRect.width,
-            height: clientRect.height};
+    let rect = {top: clientRect.top,
+                left: clientRect.left,
+                width: clientRect.width,
+                height: clientRect.height};
 
     // We iterate through all the parent windows.
     while (true) {

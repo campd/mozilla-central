@@ -129,6 +129,7 @@ Highlighter.prototype = {
     this.transitionDisabler = null;
     this.pageEventsMuter = null;
 
+    this.locked = true;
     this.unlock();
 
     this.selection.on("new-node", this.highlight);
