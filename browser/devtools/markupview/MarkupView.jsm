@@ -330,10 +330,6 @@ MarkupView.prototype = {
       return this._containers.get(aNode);
     }
 
-    if (false) {
-
-    }
-
     if (aNode.parentKey) {
       var container = new MarkupContainer(this, aNode);
     } else {

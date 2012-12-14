@@ -124,14 +124,8 @@ HTMLBreadcrumbs.prototype = {
     }
     for (let i = 0; i < PSEUDO_CLASSES.length; i++) {
       let pseudo = PSEUDO_CLASSES[i];
-      dump("node: " + aNode + "\n");
-      try {
       if (aNode.hasPseudoClassLock(pseudo)) {
         text += pseudo;
-      }
-      } catch(ex) {
-        dump(ex.stack + "\n");
-        throw ex;
       }
     }
 
@@ -206,8 +200,9 @@ HTMLBreadcrumbs.prototype = {
       whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT,
     }).then(function(children) {
       let nodes = children.children;
-      dump("Got " + nodes.length + " children.\n");
-      // XXX: do something when we're not including the full list.
+      // XXX: we might not have gotten the complete list (children.atFirst
+      // or children.atLast might be false).  We might want to do something
+      // in that case.
       let title = this.chromeDoc.createElement("menuitem");
       title.setAttribute("label", this.inspector.strings.GetStringFromName("breadcrumbs.siblings"));
       title.setAttribute("disabled", "true");
@@ -283,43 +278,31 @@ HTMLBreadcrumbs.prototype = {
 
     if (event.type == "keypress" && this.selection.isElementNode()) {
       let node = null;
-      dump("Got a key press\n");
       switch (event.keyCode) {
         case this.chromeWin.KeyEvent.DOM_VK_LEFT:
-        dump("left\n");
           if (this.currentIndex != 0) {
             node = promise.resolve(this.nodeHierarchy[this.currentIndex - 1].node);
           }
           break;
         case this.chromeWin.KeyEvent.DOM_VK_RIGHT:
-        dump("right\n");
           if (this.currentIndex < this.nodeHierarchy.length - 1) {
-            dump("assigning a node...\n");
             node = promise.resolve(this.nodeHierarchy[this.currentIndex + 1].node);
-            dump("Coudln't fail!\n");
           }
-          dump("breaking...\n");
           break;
         case this.chromeWin.KeyEvent.DOM_VK_UP:
-        dump("an up...\n");
           node = this.walker.previousSibling(this.selection.nodeRef, {
             whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT
           });
           break;
         case this.chromeWin.KeyEvent.DOM_VK_DOWN:
-        dump("a down: " + this.walker + "\n.");
           node = this.walker.nextSibling(this.selection.nodeRef, {
             whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT
           });
-          dump("done getting a walker\n");
           break;
       }
 
-      dump("Done processing keypress\n")
       if (node) {
-        dump("Got a promise ...\n");
         node.then(function(node) {
-          dump("And a node: " + node + ".\n");
           this.selection.setNodeRef(node, "breadcrumbs");
         }.bind(this)).then(null, promiseError);
       }
@@ -468,8 +451,6 @@ HTMLBreadcrumbs.prototype = {
   expand: function BC_expand(aNodes)
   {
     let toAppend = aNodes.shift();
-    dump("Appending: " + toAppend + "\n");
-    dump("toAppend: " + toAppend.tagName + "\n");
     let fragment = this.chromeDoc.createDocumentFragment();
     let lastButtonInserted = null;
     let originalLength = this.nodeHierarchy.length;
@@ -478,9 +459,7 @@ HTMLBreadcrumbs.prototype = {
       stopNode = this.nodeHierarchy[originalLength - 1].node;
     }
     while (toAppend && toAppend.tagName && toAppend != stopNode) {
-      dump("Building button\n");
       let button = this.buildButton(toAppend);
-      dump("inserting button\n");
       fragment.insertBefore(button, lastButtonInserted);
       lastButtonInserted = button;
       this.nodeHierarchy.splice(originalLength, 0, {node: toAppend, button: button});
@@ -500,7 +479,6 @@ HTMLBreadcrumbs.prototype = {
   {
     // XXX: no first node in remote cases for now.
     if (!aNode._rawNode) {
-      dump("LOCAL BAILING OUT\n");
       return null;
     }
     aNode = aNode._rawNode;
@@ -590,7 +568,6 @@ HTMLBreadcrumbs.prototype = {
    */
   update: function BC_update()
   {
-    dump("BREADCRUMB UPDATE\n");
     this.walker = this.inspector.walker;
 
     this.inspector.hideNodeMenu();
@@ -641,8 +618,6 @@ HTMLBreadcrumbs.prototype = {
         // and the current node.
         parents.unshift(this.selection.nodeRef);
         this.expand(parents);
-
-        dump("And now there are " + this.nodeHierarchy.length + " nodes.\n");
 
         // we select the current node button
         idx = this.indexOf(this.selection.nodeRef);

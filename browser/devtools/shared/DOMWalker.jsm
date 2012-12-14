@@ -28,7 +28,7 @@ function DOMRef(node) {
 
 DOMRef.prototype = {
   toString: function() {
-    return "[DOMRef to local node: " + this._rawNode.toString() + "]";
+    return "[DOMRef for " + this._rawNode.toString() + "]";
   },
 
   // A key that can be used in a map/weakmap of nodes.
@@ -114,7 +114,6 @@ DOMWalker.prototype = {
 
     delete this._refMap;
     delete this._doc;
-    dump("DONE DESTROYING DOM WALKER\n");
   },
 
   root: function() {
@@ -224,32 +223,23 @@ DOMWalker.prototype = {
       return;
     }
 
-    try {
     if (!this._pclMap.has(node)) {
       this._pclMap.set(node, new Set());
       this._pclList.push(node);
     }
     this._pclMap.get(node).add(pseudo);
-    dump("Converting " + node._rawNode + "\n");
     DOMUtils.addPseudoClassLock(node._rawNode, pseudo);
-    } catch(ex) {
-      dump(ex);
-    }
   },
 
   addPseudoClassLock: function(node, pseudo, options={}) {
     this._addPseudoClassLock(node, pseudo);
 
-    dump("added first pseudo class lock\n");
     if (!options.parents) {
-      dump("Didn't ask for parents\n");
       return promise.resolve(undefined);
     }
 
     return this.parents(node).then(function(parents) {
-      dump("Adding to " + parents.length + " parents\n");
       for (let parent of parents) {
-        dump("adding parent.\n");
         this._addPseudoClassLock(parent, pseudo);
       }
     }.bind(this));
@@ -346,16 +336,7 @@ function documentWalker(node, whatToShow=Ci.nsIDOMNodeFilter.SHOW_ALL) {
 }
 
 function nodeDocument(node) {
-  try {
-    if (!node.nodeType) {
-      throw new Error(node);
-    }
-    return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
-  }catch(ex) {
-    dump(ex + "\n");
-    dump(ex.stack + "\n");
-    throw ex;
-  }
+  return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
 }
 
 /**
@@ -462,6 +443,5 @@ function whitespaceTextFilter(aNode)
 }
 
 XPCOMUtils.defineLazyGetter(this, "DOMUtils", function () {
-  dump("DOMUTILS BEING INITTED UP IN HERE\n");
   return Cc["@mozilla.org/inspector/dom-utils;1"].getService(Ci.inIDOMUtils);
 });

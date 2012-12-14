@@ -491,7 +491,6 @@ InspectorPanel.prototype = {
       });
     } else {
       let hierarchical = aPseudo == ":hover" || aPseudo == ":active";
-      dump("should be hierarchical\n");
       // XXX; should pseudoclass locks traverse document lines?
       this.walker.addPseudoClassLock(this.selection.nodeRef, aPseudo, {
         parents: hierarchical
