@@ -58,7 +58,7 @@ function runIframeTests()
 function performTestComparisons1()
 {
   let i = getActiveInspector();
-  is(i.selection.node, div1, "selection matches div1 node");
+  is(i.selection.rawNode, div1, "selection matches div1 node");
   is(getHighlitNode(), div1, "highlighter matches selection");
 
   i.selection.once("new-node", performTestComparisons2);
@@ -71,7 +71,7 @@ function performTestComparisons2()
 {
   let i = getActiveInspector();
 
-  is(i.selection.node, div2, "selection matches div2 node");
+  is(i.selection.rawNode, div2, "selection matches div2 node");
   is(getHighlitNode(), div2, "highlighter matches selection");
 
   finish();

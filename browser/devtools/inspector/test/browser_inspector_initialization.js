@@ -43,7 +43,7 @@ function startInspectorTests(toolbox)
 
   let p = doc.querySelector("p");
 
-  inspector.selection.setNode(p);
+  inspector.selection.setRawNode(p);
 
   testHighlighter(p);
   testMarkupView(p);
@@ -52,7 +52,7 @@ function startInspectorTests(toolbox)
   let span = doc.querySelector("span");
   span.scrollIntoView();
 
-  inspector.selection.setNode(span);
+  inspector.selection.setRawNode(span);
 
   testHighlighter(span);
   testMarkupView(span);

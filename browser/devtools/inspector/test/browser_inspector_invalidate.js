@@ -18,7 +18,7 @@ function test() {
 
   function runTest(inspector)
   {
-    inspector.selection.setNode(div);
+    inspector.selection.setRawNode(div);
 
     executeSoon(function() {
       let outline = inspector.highlighter.outline;

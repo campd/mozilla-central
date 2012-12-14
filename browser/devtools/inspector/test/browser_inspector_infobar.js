@@ -45,7 +45,7 @@ function test()
     inspector = aInspector;
     cursor = 0;
     executeSoon(function() {
-      inspector.selection.setNode(nodes[0].node, "");
+      inspector.selection.setRawNode(nodes[0].node, "");
       nodeSelected();
     });
   }
@@ -59,7 +59,7 @@ function test()
         finishUp();
       } else {
         let node = nodes[cursor].node;
-        inspector.selection.setNode(node, "");
+        inspector.selection.setRawNode(node, "");
         nodeSelected();
       }
     });

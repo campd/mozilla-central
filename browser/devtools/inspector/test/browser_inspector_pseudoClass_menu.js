@@ -36,7 +36,7 @@ function test() {
   function selectNode(aInspector)
   {
     inspector = aInspector;
-    inspector.selection.setNode(div);
+    inspector.selection.setRawNode(div);
     performTests();
   }
 

@@ -47,7 +47,7 @@ function test()
 
   function highlightBodyNode()
   {
-    is(inspector.selection.node, node, "selected body element");
+    is(inspector.selection.rawNode, node, "selected body element");
 
     executeSoon(function() {
       inspector.selection.once("new-node", highlightHeaderNode);
@@ -59,7 +59,7 @@ function test()
 
   function highlightHeaderNode()
   {
-    is(inspector.selection.node, node, "selected h1 element");
+    is(inspector.selection.rawNode, node, "selected h1 element");
 
     executeSoon(function() {
       inspector.selection.once("new-node", highlightParagraphNode);
@@ -71,7 +71,7 @@ function test()
 
   function highlightParagraphNode()
   {
-    is(inspector.selection.node, node, "selected p element");
+    is(inspector.selection.rawNode, node, "selected p element");
 
     executeSoon(function() {
       inspector.selection.once("new-node", highlightHeaderNodeAgain);
@@ -83,7 +83,7 @@ function test()
 
   function highlightHeaderNodeAgain()
   {
-    is(inspector.selection.node, node, "selected h1 element");
+    is(inspector.selection.rawNode, node, "selected h1 element");
 
     executeSoon(function() {
       inspector.selection.once("new-node", highlightParentNode);
@@ -95,7 +95,7 @@ function test()
 
   function highlightParentNode()
   {
-    is(inspector.selection.node, node, "selected body element");
+    is(inspector.selection.rawNode, node, "selected body element");
     finishUp();
   }
 

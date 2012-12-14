@@ -72,15 +72,15 @@ function performTestComparisons(evt)
   i.highlighter.lock();
   ok(isHighlighting(), "highlighter is highlighting");
   is(getHighlitNode(), h1, "highlighter matches selection")
-  is(i.selection.node, h1, "selection matches node");
-  is(i.selection.node, getHighlitNode(), "selection matches highlighter");
+  is(i.selection.rawNode, h1, "selection matches node");
+  is(i.selection.rawNode, getHighlitNode(), "selection matches highlighter");
 
 
   div = doc.querySelector("div#checkOutThisWickedSpread");
 
   executeSoon(function() {
     i.selection.once("new-node", finishTestComparisons);
-    i.selection.setNode(div);
+    i.selection.setRawNode(div);
   });
 }
 

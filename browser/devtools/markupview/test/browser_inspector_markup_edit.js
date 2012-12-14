@@ -219,7 +219,7 @@ function test() {
   function runTests() {
     inspector.selection.once("new-node", startTests);
     executeSoon(function() {
-      inspector.selection.setNode(doc.body);
+      inspector.selection.setRawNode(doc.body);
     });
   }
 
@@ -251,7 +251,7 @@ function test() {
     let test = {
       desc: "Add attributes by adding to an existing attribute's entry",
       setup: function() {
-        inspector.selection.setNode(doc.querySelector("#node18"));
+        inspector.selection.setRawNode(doc.querySelector("#node18"));
       },
       before: function() {
         assertAttributes(doc.querySelector("#node18"), {
@@ -283,7 +283,7 @@ function test() {
     let test =  {
       desc: "Edit the tag name",
       setup: function() {
-        inspector.selection.setNode(doc.querySelector("#retag-me"));
+        inspector.selection.setRawNode(doc.querySelector("#retag-me"));
       },
       before: function() {
         let node = doc.querySelector("#retag-me");
@@ -321,7 +321,7 @@ function test() {
         ok(!!doc.querySelector("#node18"), "Node 18 should exist.");
       },
       execute: function() {
-        inspector.selection.setNode(doc.querySelector("#node18"));
+        inspector.selection.setRawNode(doc.querySelector("#node18"));
       },
       executeCont: function() {
         EventUtils.sendKey("delete");

@@ -29,12 +29,12 @@ function test()
   function runObjectInspectionTest(inspector)
   {
     inspector.highlighter.once("locked", performTestComparison);
-    inspector.selection.setNode(objectNode, "");
+    inspector.selection.setRawNode(objectNode, "");
   }
 
   function performTestComparison()
   {
-    is(getActiveInspector().selection.node, objectNode, "selection matches node");
+    is(getActiveInspector().selection.rawNode, objectNode, "selection matches node");
     let target = TargetFactory.forTab(gBrowser.selectedTab);
     gDevTools.closeToolbox(target);
     finishUp();

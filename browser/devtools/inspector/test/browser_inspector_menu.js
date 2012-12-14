@@ -37,7 +37,7 @@ function test() {
 
   function runTests(aInspector) {
     inspector = aInspector;
-    inspector.selection.setNode(node1);
+    inspector.selection.setRawNode(node1);
     testCopyInnerMenu();
   }
 
@@ -79,7 +79,7 @@ function test() {
   }
 
   function deleteRootNode() {
-    inspector.selection.setNode(doc.documentElement);
+    inspector.selection.setRawNode(doc.documentElement);
     let deleteNode = inspector.panelDoc.getElementById("node-menu-delete");
     let commandEvent = inspector.panelDoc.createEvent("XULCommandEvent");
     commandEvent.initCommandEvent("command", true, true, window, 0, false, false,

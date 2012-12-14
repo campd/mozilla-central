@@ -60,7 +60,7 @@ function test()
   {
     let inspector = getActiveInspector();
 
-    is(inspector.selection.node, iframeNode, "selection matches node");
+    is(inspector.selection.rawNode, iframeNode, "selection matches node");
     iframeNode.style.marginBottom = doc.defaultView.innerHeight + "px";
     doc.defaultView.scrollBy(0, 40);
 
@@ -73,7 +73,7 @@ function test()
   function isTheIframeContentSelected()
   {
     let inspector = getActiveInspector();
-    is(inspector.selection.node, iframeBodyNode, "selection matches node");
+    is(inspector.selection.rawNode, iframeBodyNode, "selection matches node");
     // 184 == 200 + 11(border) + 13(padding) - 40(scroll)
     is(inspector.highlighter._highlightRect.height, 184,
       "highlighter height");

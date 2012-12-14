@@ -26,7 +26,7 @@ function test()
   function runTests(aInspector)
   {
     inspector = aInspector;
-    inspector.selection.setNode(node);
+    inspector.selection.setRawNode(node);
 
     iframe.parentNode.removeChild(iframe);
     iframe = null;

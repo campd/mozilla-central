@@ -42,7 +42,7 @@ function test() {
       // Start up the style inspector panel...
       Services.obs.addObserver(stylePanelTests, "StyleInspector-populated", false);
 
-      inspector.selection.setNode(testDiv);
+      inspector.selection.setRawNode(testDiv);
     });
   }
 

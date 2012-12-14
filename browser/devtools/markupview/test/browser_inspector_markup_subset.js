@@ -113,7 +113,7 @@ function test() {
   function runTests() {
     inspector.selection.once("new-node", startTests);
     executeSoon(function() {
-      inspector.selection.setNode(doc.body);
+      inspector.selection.setRawNode(doc.body);
     });
   }
 
@@ -130,7 +130,7 @@ function test() {
       selection.after();
       runNextSelection();
     });
-    inspector.selection.setNode(doc.querySelector(selection.selector));
+    inspector.selection.setRawNode(doc.querySelector(selection.selector));
   }
 
   function clickMore() {

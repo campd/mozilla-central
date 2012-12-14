@@ -60,7 +60,7 @@ function test()
         finishUp();
       } else {
         let node = nodes[cursor].node;
-        inspector.selection.setNode(node);
+        inspector.selection.setRawNode(node);
       }
     });
   }
@@ -84,7 +84,7 @@ function test()
 
     let checkedButton = container.querySelector("button[checked]");
     let labelId = checkedButton.querySelector(".inspector-breadcrumbs-id");
-    let id = inspector.selection.node.id;
+    let id = inspector.selection.nodeRef.id;
     is(labelId.textContent, "#" + id, "Node " + cursor + ": selection matches");
   }
 

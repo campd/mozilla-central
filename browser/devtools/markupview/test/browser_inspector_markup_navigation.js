@@ -119,7 +119,7 @@ function test() {
     }
 
     executeSoon(function BIMNT_newNode() {
-      let node = inspector.selection.node;
+      let node = inspector.selection.nodeRef;
 
       if (className == "*comment*") {
         is(node.nodeType, Node.COMMENT_NODE, "[" + cursor + "] should be a comment after moving " + key);
