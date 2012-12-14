@@ -234,7 +234,12 @@ MarkupView.prototype = {
    */
   deleteNode: function MC__deleteNode(aNode)
   {
-    let rawNode = aNode._rawNode;
+    if (!aNode.rawNode) {
+      // Can't delete remotely yet.
+      return;
+    }
+
+    let rawNode = aNode.rawNode;
     let doc = nodeDocument(rawNode);
     if (rawNode === doc ||
         rawNode === doc.documentElement ||
@@ -715,8 +720,6 @@ function MarkupContainer(aMarkupView, aNode)
   this.undo = this.markup.undo;
   this.node = aNode;
 
-  let rawNode = aNode._rawNode;
-
   if (aNode.nodeType == Ci.nsIDOMNode.TEXT_NODE) {
     this.editor = new TextEditor(this, aNode, "text");
   } else if (aNode.nodeType == Ci.nsIDOMNode.COMMENT_NODE) {
@@ -902,6 +905,13 @@ function TextEditor(aContainer, aNode, aTemplate)
 
   aContainer.markup.template(aTemplate, this);
 
+  this.update();
+
+  if (!aNode.rawNode) {
+    // Can't edit remotely yet.
+    return;
+  }
+
   _editableField({
     element: this.value,
     stopOnReturn: true,
@@ -913,16 +923,14 @@ function TextEditor(aContainer, aNode, aTemplate)
       }
       let oldValue = this.node.nodeValue;
       aContainer.undo.do(function() {
-        this.node._rawNode.nodeValue = aVal;
+        this.node.rawNode.nodeValue = aVal;
         aContainer.markup.nodeChanged(this.node);
       }.bind(this), function() {
-        this.node._rawNode.nodeValue = oldValue;
+        this.node.rawNode.nodeValue = oldValue;
         aContainer.markup.nodeChanged(this.node);
       }.bind(this));
     }.bind(this)
   });
-
-  this.update();
 }
 
 TextEditor.prototype = {
@@ -946,7 +954,7 @@ function ElementEditor(aContainer, aNode)
   this.container = aContainer;
   this.markup = this.container.markup;
   this.node = aNode;
-  this.rawNode = aNode._rawNode;
+  this.rawNode = aNode.rawNode;
 
   this.attrs = [];
 
@@ -962,6 +970,17 @@ function ElementEditor(aContainer, aNode)
 
   // Create the closing tag
   this.template("elementClose", this);
+
+  let tagName = this.node.nodeName.toLowerCase();
+  this.tag.textContent = tagName;
+  this.closeTag.textContent = tagName;
+
+  this.update();
+
+  if (!aNode.rawNode) {
+    // We can't edit remotely yet.
+    return;
+  }
 
   // Make the tag name editable (unless this is a document element)
   if (!aNode.isDocumentElement) {
@@ -992,11 +1011,6 @@ function ElementEditor(aContainer, aNode)
     }.bind(this)
   });
 
-  let tagName = this.node.nodeName.toLowerCase();
-  this.tag.textContent = tagName;
-  this.closeTag.textContent = tagName;
-
-  this.update();
 }
 
 ElementEditor.prototype = {

@@ -31,9 +31,15 @@ DOMRef.prototype = {
     return "[DOMRef for " + this._rawNode.toString() + "]";
   },
 
-  // A key that can be used in a map/weakmap of nodes.
-  get key() this._rawNode,
-  // The key of the parent node.
+  /**
+   * The local dom node represented by this node.  If you
+   * use this node, you won't be remote-protocol safe.
+   */
+  get rawNode() this._rawNode,
+
+  /**
+   * XXX: don't use this.
+   */
   get parentKey() documentWalker(this._rawNode).parentNode(),
 
   get id() this._rawNode.id,
@@ -114,6 +120,12 @@ DOMWalker.prototype = {
 
     delete this._refMap;
     delete this._doc;
+
+    this.clearPseudoClassLocks(null, { all: true });
+    delete this._pclMap;
+    delete this._pclList;
+
+    dump("Done destroying the dom walker\n");
   },
 
   root: function() {

@@ -145,7 +145,7 @@ Selection.prototype = {
   },
 
   setNodeRef: function SN_setNodeRef(value, reason="unknown") {
-    return this.setNode(value._rawNode, reason);
+    return this.setNode(value.rawNode, reason);
   },
 
   // XXX: this should change to rawNode or something

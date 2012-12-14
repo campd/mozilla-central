@@ -310,11 +310,7 @@ HTMLBreadcrumbs.prototype = {
    */
   destroy: function BC_destroy()
   {
-    let crumb = this.nodeHierarchy[this.nodeHierarchy.length  - 1];
-    this.walker.clearPseudoClassLocks(crumb.node, {
-      all: true
-    });
-
+    this.walker.clearPseudoClassLocks(null, { all: true });
     this.selection.off("new-node", this.update);
     this.selection.off("pseudoclass", this.updateSelectors);
     this.selection.off("attribute-changed", this.updateSelectors);
@@ -472,10 +468,10 @@ HTMLBreadcrumbs.prototype = {
   getInterestingFirstNode: function BC_getInterestingFirstNode(aNode)
   {
     // XXX: no first node in remote cases for now.
-    if (!aNode._rawNode) {
+    if (!aNode.rawNode) {
       return null;
     }
-    aNode = aNode._rawNode;
+    aNode = aNode.rawNode;
 
     let nextChild = this.DOMHelpers.getChildObject(aNode, 0);
     let fallback = null;

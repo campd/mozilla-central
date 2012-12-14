@@ -77,7 +77,7 @@ function testHighlighter(node)
 function testMarkupView(node)
 {
   let i = getActiveInspector();
-  is(i.markup._selectedContainer.node._rawNode, node, "Right node is selected in the markup view");
+  is(i.markup._selectedContainer.node.rawNode, node, "Right node is selected in the markup view");
 }
 
 function testBreadcrumbs(node)
