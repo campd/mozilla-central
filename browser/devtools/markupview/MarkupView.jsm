@@ -89,7 +89,7 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   this.walker.root().then(function(node) {
     let container = this.importNode(node);
     this._updateChildren(container);
-  }.bind(this));
+  }.bind(this)).then(promisePass, promiseError);
 
   this._initPreview();
 }
@@ -121,11 +121,11 @@ MarkupView.prototype = {
   {
     if (this._inspector.selection.isNode()) {
       let node = this._inspector.selection.nodeRef;
-      return this.importNodeDeep(node).then(function() {
+      this.importNodeDeep(node).then(function() {
         return this.showNode(node, true);
       }.bind(this)).then(function() {
         this.markNodeAsSelected(node);
-      }.bind(this));
+      }.bind(this)).then(promisePass, promiseError);
     } else {
       this.unmarkSelectedNode();
     }
@@ -308,7 +308,7 @@ MarkupView.prototype = {
       }
       this.importNode(aNode);
       return promise.resolve(undefined);
-    }.bind(this));
+    }.bind(this)).then(promisePass, promiseError);
   },
 
   /**
@@ -370,7 +370,7 @@ MarkupView.prototype = {
     }
     promised(Array).apply(null, promises).then(function() {
       this._inspector.emit("markupmutation");
-    }.bind(this));
+    }.bind(this)).then(promisePass, promiseError);
   },
 
   /**
@@ -391,7 +391,7 @@ MarkupView.prototype = {
       return promised(Array).apply(undefined, promises);
     }.bind(this)).then(function() {
       this.scrollToNode(aNode, centered);
-    }.bind(this));
+    }.bind(this)).then(promisePass, promiseError);
   },
 
   scrollToNode: function MT_scrollToNode(aNode, aCentered)
@@ -581,7 +581,7 @@ MarkupView.prototype = {
 
       aContainer.children.appendChild(fragment);
       return promise.resolve(undefined);
-    }.bind(this));
+    }.bind(this)).then(promisePass, promiseError);
   },
 
   /**
@@ -1274,6 +1274,17 @@ RootContainer.prototype = {
 
 function nodeDocument(node) {
   return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
+}
+
+function promisePass(r) {
+  return r;
+}
+
+function promiseError(ex) {
+  dump(ex + "\n");
+  dump(ex.stack);
+  Services.console.logStringMessage(ex);
+  return ex;
 }
 
 // Temp import waiting for jetpack update.

@@ -41,12 +41,6 @@ const LOW_PRIORITY_ELEMENTS = {
   "TITLE": true,
 };
 
-function promiseError(ex) {
-  dump(ex + "\n");
-  dump(ex.stack);
-//  Services.console.logStringMessage(ex);
-}
-
 ///////////////////////////////////////////////////////////////////////////
 //// HTML Breadcrumbs
 
@@ -588,24 +582,16 @@ HTMLBreadcrumbs.prototype = {
 
     let idx = this.indexOf(this.selection.nodeRef);
 
+    let doneSelecting = null;
+
     // Is the node already displayed in the breadcrumbs?
     if (idx > -1) {
       // Yes. We select it.
       this.setCursor(idx);
 
-      // XXX: we can fix the code duplication here.
-
-      dump("Ensuring first child here (sync)\n");
-      // Add the first child of the very last node of the breadcrumbs if possible.
-      this.ensureFirstChild();
-
-      // Make sure the selected node and its neighbours are visible.
-      this.scroll();
-
-      this.updateSelectors();
+      doneSelecting = promise.resolve(null);
     } else {
-      this.walker.parents(this.selection.nodeRef).then(function(parents) {
-        dump("Node has " + parents.length + " parents.\n");
+      doneSelecting = this.walker.parents(this.selection.nodeRef).then(function(parents) {
         // No. Is the breadcrumbs display empty?
         if (this.nodeHierarchy.length > 0) {
           // No. We drop all the element that are not direct ancestors
@@ -622,20 +608,26 @@ HTMLBreadcrumbs.prototype = {
         // we select the current node button
         idx = this.indexOf(this.selection.nodeRef);
         this.setCursor(idx);
-        // XXX: We can fix the code duplication here.
-
-        dump("About to ensure first child (async)\n");
-        // Add the first child of the very last node of the breadcrumbs if possible.
-        this.ensureFirstChild();
-        dump("Done ensuring first child.\n");
-
-        // Make sure the selected node and its neighbours are visible.
-        this.scroll();
-
-        this.updateSelectors();
-      }.bind(this)).then(null, promiseError);
+      }.bind(this)).then(promisePass, promiseError);
     }
+
+    doneSelecting.then(function() {
+      this.ensureFirstChild();
+      this.scroll();
+      this.updateSelectors();
+    }.bind(this)).then(promisePass, promiseError);
   },
+}
+
+function promisePass(r) {
+  return r;
+}
+
+function promiseError(ex) {
+  dump(ex + "\n");
+  dump(ex.stack);
+  Services.console.logStringMessage(ex);
+  return ex;
 }
 
 XPCOMUtils.defineLazyGetter(this, "DOMUtils", function () {
