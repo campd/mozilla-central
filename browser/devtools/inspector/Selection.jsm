@@ -177,6 +177,10 @@ Selection.prototype = {
 
   get document() {
     discouraged();
+    return this.rawDocument;
+  },
+
+  get rawDocument() {
     if (this.isNode()) {
       return this.rawNode.ownerDocument;
     }

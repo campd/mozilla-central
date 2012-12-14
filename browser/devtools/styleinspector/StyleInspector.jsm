@@ -36,7 +36,11 @@ this.RuleViewTool = function RVT_RuleViewTool(aInspector, aWindow, aIFrame)
   this.view.element.addEventListener("CssRuleViewChanged", this._changeHandler)
 
   this._cssLinkHandler = function(aEvent) {
-    let contentDoc = this.inspector.selection.document;
+    let contentDoc = this.inspector.selection.rawDocument;
+    if (!contentDoc) {
+      // XXX: We don't do remote CSS editor yet.
+      return;
+    }
     let rule = aEvent.detail.rule;
     let line = rule.ruleLine || 0;
     let styleSheet = rule.sheet;
@@ -94,6 +98,12 @@ this.RuleViewTool = function RVT_RuleViewTool(aInspector, aWindow, aIFrame)
 
 RuleViewTool.prototype = {
   onSelect: function RVT_onSelect(aEvent) {
+    if (!this.inspector.selection.rawNode) {
+      // Rule view not remote-ready yet.
+      this.view.highlight(null);
+      return;
+    }
+
     if (!this.inspector.selection.isConnected() ||
         !this.inspector.selection.isElementNode()) {
       this.view.highlight(null);
@@ -104,12 +114,12 @@ RuleViewTool.prototype = {
       if (this.inspector.selection.reason == "highlighter") {
         this.view.highlight(null);
       } else {
-        this.view.highlight(this.inspector.selection.node);
+        this.view.highlight(this.inspector.selection.rawNode);
       }
     }
 
     if (aEvent == "locked") {
-      this.view.highlight(this.inspector.selection.node);
+      this.view.highlight(this.inspector.selection.rawNode);
     }
   },
 
@@ -177,6 +187,13 @@ this.ComputedViewTool = function CVT_ComputedViewTool(aInspector, aWindow, aIFra
 ComputedViewTool.prototype = {
   onSelect: function CVT_onSelect(aEvent)
   {
+    if (!this.inspector.selection.rawNode) {
+      // Computed View is not remote-ready yet.
+      this.cssLogic.highlight(null);
+      this.view.highlight(null);
+      return;
+    }
+
     if (!this.inspector.selection.isConnected() ||
         !this.inspector.selection.isElementNode()) {
       this.cssLogic.highlight(null);
@@ -188,14 +205,14 @@ ComputedViewTool.prototype = {
       if (this.inspector.selection.reason == "highlighter") {
         // FIXME: We should hide view's content
       } else {
-        this.cssLogic.highlight(this.inspector.selection.node);
-        this.view.highlight(this.inspector.selection.node);
+        this.cssLogic.highlight(this.inspector.selection.rawNode);
+        this.view.highlight(this.inspector.selection.rawNode);
       }
     }
 
     if (aEvent == "locked") {
-      this.cssLogic.highlight(this.inspector.selection.node);
-      this.view.highlight(this.inspector.selection.node);
+      this.cssLogic.highlight(this.inspector.selection.rawNode);
+      this.view.highlight(this.inspector.selection.rawNode);
     }
   },
 
@@ -205,7 +222,7 @@ ComputedViewTool.prototype = {
 
   refresh: function CVT_refresh() {
     if (this.isActive()) {
-      this.cssLogic.highlight(this.inspector.selection.node);
+      this.cssLogic.highlight(this.inspector.selection.rawNode);
       this.view.refreshPanel();
     }
   },
