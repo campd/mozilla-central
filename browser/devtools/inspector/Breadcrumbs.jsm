@@ -16,6 +16,19 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/DOMHelpers.jsm");
 Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
 
+let obj = {};
+Cu.import('resource://gre/modules/commonjs/loader.js', obj);
+let {Loader, Require, unload} = obj.Loader;
+let loader = new Loader({
+  paths: {
+    'commonjs/': 'resource://gre/modules/commonjs/',
+    '': 'resource:///modules/',
+  }
+});
+let require = Require(loader, {id: "breadcrumbs"});
+
+let promise = require("commonjs/promise/core");
+
 const LOW_PRIORITY_ELEMENTS = {
   "HEAD": true,
   "BASE": true,
@@ -27,6 +40,12 @@ const LOW_PRIORITY_ELEMENTS = {
   "STYLE": true,
   "TITLE": true,
 };
+
+function promiseError(ex) {
+  dump(ex + "\n");
+  dump(ex.stack);
+//  Services.console.logStringMessage(ex);
+}
 
 ///////////////////////////////////////////////////////////////////////////
 //// HTML Breadcrumbs
@@ -105,8 +124,14 @@ HTMLBreadcrumbs.prototype = {
     }
     for (let i = 0; i < PSEUDO_CLASSES.length; i++) {
       let pseudo = PSEUDO_CLASSES[i];
-      if (DOMUtils.hasPseudoClassLock(aNode, pseudo)) {
+      dump("node: " + aNode + "\n");
+      try {
+      if (aNode.hasPseudoClassLock(pseudo)) {
         text += pseudo;
+      }
+      } catch(ex) {
+        dump(ex.stack + "\n");
+        throw ex;
       }
     }
 
@@ -149,7 +174,7 @@ HTMLBreadcrumbs.prototype = {
     classesLabel.textContent = classesText;
 
     let pseudos = PSEUDO_CLASSES.filter(function(pseudo) {
-      return DOMUtils.hasPseudoClassLock(aNode, pseudo);
+      return aNode.hasPseudoClassLock(pseudo);
     }, this);
     pseudosLabel.textContent = pseudos.join("");
 
@@ -172,19 +197,26 @@ HTMLBreadcrumbs.prototype = {
     // We make sure that the targeted node is selected
     // because we want to use the nodemenu that only works
     // for inspector.selection
-    this.selection.setNode(aNode, "breadcrumbs");
+    this.selection.setNodeRef(aNode, "breadcrumbs");
 
-    let title = this.chromeDoc.createElement("menuitem");
-    title.setAttribute("label", this.inspector.strings.GetStringFromName("breadcrumbs.siblings"));
-    title.setAttribute("disabled", "true");
+    // XXX: this isn't a 100% kosher way to get the parent node synchronously.
+    this.walker.children(this.walker._ref(aNode.parentKey), {
+      maxChildren: 20,
+      include: aNode,
+      whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT,
+    }).then(function(children) {
+      let nodes = children.children;
+      dump("Got " + nodes.length + " children.\n");
+      // XXX: do something when we're not including the full list.
+      let title = this.chromeDoc.createElement("menuitem");
+      title.setAttribute("label", this.inspector.strings.GetStringFromName("breadcrumbs.siblings"));
+      title.setAttribute("disabled", "true");
 
-    let separator = this.chromeDoc.createElement("menuseparator");
+      let separator = this.chromeDoc.createElement("menuseparator");
 
-    let items = [title, separator];
+      let items = [title, separator];
 
-    let nodes = aNode.parentNode.childNodes;
-    for (let i = 0; i < nodes.length; i++) {
-      if (nodes[i].nodeType == aNode.ELEMENT_NODE) {
+      for (let i = 0; i < nodes.length; i++) {
         let item = this.chromeDoc.createElement("menuitem");
         if (nodes[i] === aNode) {
           item.setAttribute("disabled", "true");
@@ -197,14 +229,14 @@ HTMLBreadcrumbs.prototype = {
         let selection = this.selection;
         item.onmouseup = (function(aNode) {
           return function() {
-            selection.setNode(aNode, "breadcrumbs");
+            selection.setNodeRef(aNode, "breadcrumbs");
           }
         })(nodes[i]);
 
         items.push(item);
       }
-    }
-    this.inspector.showNodeMenu(aButton, "before_start", items);
+      this.inspector.showNodeMenu(aButton, "before_start", items);
+    }.bind(this)).then(null, promiseError);
   },
 
   /**
@@ -251,32 +283,45 @@ HTMLBreadcrumbs.prototype = {
 
     if (event.type == "keypress" && this.selection.isElementNode()) {
       let node = null;
+      dump("Got a key press\n");
       switch (event.keyCode) {
         case this.chromeWin.KeyEvent.DOM_VK_LEFT:
+        dump("left\n");
           if (this.currentIndex != 0) {
-            node = this.nodeHierarchy[this.currentIndex - 1].node;
+            node = promise.resolve(this.nodeHierarchy[this.currentIndex - 1].node);
           }
           break;
         case this.chromeWin.KeyEvent.DOM_VK_RIGHT:
+        dump("right\n");
           if (this.currentIndex < this.nodeHierarchy.length - 1) {
-            node = this.nodeHierarchy[this.currentIndex + 1].node;
+            dump("assigning a node...\n");
+            node = promise.resolve(this.nodeHierarchy[this.currentIndex + 1].node);
+            dump("Coudln't fail!\n");
           }
+          dump("breaking...\n");
           break;
         case this.chromeWin.KeyEvent.DOM_VK_UP:
-          node = this.selection.node.previousSibling;
-          while (node && (node.nodeType != node.ELEMENT_NODE)) {
-            node = node.previousSibling;
-          }
+        dump("an up...\n");
+          node = this.walker.previousSibling(this.selection.nodeRef, {
+            whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT
+          });
           break;
         case this.chromeWin.KeyEvent.DOM_VK_DOWN:
-          node = this.selection.node.nextSibling;
-          while (node && (node.nodeType != node.ELEMENT_NODE)) {
-            node = node.nextSibling;
-          }
+        dump("a down: " + this.walker + "\n.");
+          node = this.walker.nextSibling(this.selection.nodeRef, {
+            whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT
+          });
+          dump("done getting a walker\n");
           break;
       }
+
+      dump("Done processing keypress\n")
       if (node) {
-        this.selection.setNode(node, "breadcrumbs");
+        dump("Got a promise ...\n");
+        node.then(function(node) {
+          dump("And a node: " + node + ".\n");
+          this.selection.setNodeRef(node, "breadcrumbs");
+        }.bind(this)).then(null, promiseError);
       }
       event.preventDefault();
       event.stopPropagation();
@@ -288,10 +333,9 @@ HTMLBreadcrumbs.prototype = {
    */
   destroy: function BC_destroy()
   {
-    this.nodeHierarchy.forEach(function(crumb) {
-      if (LayoutHelpers.isNodeConnected(crumb.node)) {
-        DOMUtils.clearPseudoClassLocks(crumb.node);
-      }
+    let crumb = this.nodeHierarchy[this.nodeHierarchy.length  - 1];
+    this.walker.clearPseudoClassLocks(crumb.node, {
+      all: true
     });
 
     this.selection.off("new-node", this.update);
@@ -400,7 +444,7 @@ HTMLBreadcrumbs.prototype = {
     }
 
     button.onBreadcrumbsClick = function onBreadcrumbsClick() {
-      this.selection.setNode(aNode, "breadcrumbs");
+      this.selection.setNodeRef(aNode, "breadcrumbs");
     }.bind(this);
 
     button.onclick = (function _onBreadcrumbsRightClick(event) {
@@ -419,26 +463,30 @@ HTMLBreadcrumbs.prototype = {
   /**
    * Connecting the end of the breadcrumbs to a node.
    *
-   * @param aNode The node to reach.
+   * @param aNodes The node to reach and its parents.
    */
-  expand: function BC_expand(aNode)
+  expand: function BC_expand(aNodes)
   {
-      let fragment = this.chromeDoc.createDocumentFragment();
-      let toAppend = aNode;
-      let lastButtonInserted = null;
-      let originalLength = this.nodeHierarchy.length;
-      let stopNode = null;
-      if (originalLength > 0) {
-        stopNode = this.nodeHierarchy[originalLength - 1].node;
-      }
-      while (toAppend && toAppend.tagName && toAppend != stopNode) {
-        let button = this.buildButton(toAppend);
-        fragment.insertBefore(button, lastButtonInserted);
-        lastButtonInserted = button;
-        this.nodeHierarchy.splice(originalLength, 0, {node: toAppend, button: button});
-        toAppend = this.DOMHelpers.getParentObject(toAppend);
-      }
-      this.container.appendChild(fragment, this.container.firstChild);
+    let toAppend = aNodes.shift();
+    dump("Appending: " + toAppend + "\n");
+    dump("toAppend: " + toAppend.tagName + "\n");
+    let fragment = this.chromeDoc.createDocumentFragment();
+    let lastButtonInserted = null;
+    let originalLength = this.nodeHierarchy.length;
+    let stopNode = null;
+    if (originalLength > 0) {
+      stopNode = this.nodeHierarchy[originalLength - 1].node;
+    }
+    while (toAppend && toAppend.tagName && toAppend != stopNode) {
+      dump("Building button\n");
+      let button = this.buildButton(toAppend);
+      dump("inserting button\n");
+      fragment.insertBefore(button, lastButtonInserted);
+      lastButtonInserted = button;
+      this.nodeHierarchy.splice(originalLength, 0, {node: toAppend, button: button});
+      toAppend = aNodes.shift();
+    }
+    this.container.appendChild(fragment, this.container.firstChild);
   },
 
   /**
@@ -450,13 +498,20 @@ HTMLBreadcrumbs.prototype = {
    */
   getInterestingFirstNode: function BC_getInterestingFirstNode(aNode)
   {
+    // XXX: no first node in remote cases for now.
+    if (!aNode._rawNode) {
+      dump("LOCAL BAILING OUT\n");
+      return null;
+    }
+    aNode = aNode._rawNode;
+
     let nextChild = this.DOMHelpers.getChildObject(aNode, 0);
     let fallback = null;
 
     while (nextChild) {
       if (nextChild.nodeType == aNode.ELEMENT_NODE) {
         if (!(nextChild.tagName in LOW_PRIORITY_ELEMENTS)) {
-          return nextChild;
+          return this.walker._ref(nextChild);
         }
         if (!fallback) {
           fallback = nextChild;
@@ -464,7 +519,7 @@ HTMLBreadcrumbs.prototype = {
       }
       nextChild = this.DOMHelpers.getNextSibling(nextChild);
     }
-    return fallback;
+    return fallback ? this.walker._ref(fallback) : null;
   },
 
 
@@ -474,17 +529,15 @@ HTMLBreadcrumbs.prototype = {
    * @param aNode
    * @returns Index of the ancestor in the cache
    */
-  getCommonAncestor: function BC_getCommonAncestor(aNode)
+  getCommonAncestor: function BC_getCommonAncestor(aParents)
   {
-    let node = aNode;
-    while (node) {
-      let idx = this.indexOf(node);
-      if (idx > -1) {
-        return idx;
-      } else {
-        node = this.DOMHelpers.getParentObject(node);
+    for (let i = 0; i < aParents.length; i++) {
+      let crumbIdx = this.indexOf(aParents[i]);
+      if (crumbIdx > -1) {
+        return crumbIdx;
       }
     }
+
     return -1;
   },
 
@@ -501,7 +554,7 @@ HTMLBreadcrumbs.prototype = {
       // If the node has a child
       if (child) {
         // Show this child
-        this.expand(child);
+        this.expand([child]);
       }
     }
   },
@@ -537,6 +590,7 @@ HTMLBreadcrumbs.prototype = {
    */
   update: function BC_update()
   {
+    dump("BREADCRUMB UPDATE\n");
     this.walker = this.inspector.walker;
 
     this.inspector.hideNodeMenu();
@@ -555,36 +609,57 @@ HTMLBreadcrumbs.prototype = {
       return;
     }
 
-    let idx = this.indexOf(this.selection.node);
+    let idx = this.indexOf(this.selection.nodeRef);
 
     // Is the node already displayed in the breadcrumbs?
     if (idx > -1) {
       // Yes. We select it.
       this.setCursor(idx);
+
+      // XXX: we can fix the code duplication here.
+
+      dump("Ensuring first child here (sync)\n");
+      // Add the first child of the very last node of the breadcrumbs if possible.
+      this.ensureFirstChild();
+
+      // Make sure the selected node and its neighbours are visible.
+      this.scroll();
+
+      this.updateSelectors();
     } else {
-      // No. Is the breadcrumbs display empty?
-      if (this.nodeHierarchy.length > 0) {
-        // No. We drop all the element that are not direct ancestors
-        // of the selection
-        let parent = this.DOMHelpers.getParentObject(this.selection.node);
-        let idx = this.getCommonAncestor(parent);
-        this.cutAfter(idx);
-      }
-      // we append the missing button between the end of the breadcrumbs display
-      // and the current node.
-      this.expand(this.selection.node);
+      this.walker.parents(this.selection.nodeRef).then(function(parents) {
+        dump("Node has " + parents.length + " parents.\n");
+        // No. Is the breadcrumbs display empty?
+        if (this.nodeHierarchy.length > 0) {
+          // No. We drop all the element that are not direct ancestors
+          // of the selection
+          let idx = this.getCommonAncestor(parents);
+          this.cutAfter(idx);
+        }
 
-      // we select the current node button
-      idx = this.indexOf(this.selection.node);
-      this.setCursor(idx);
+        // we append the missing button between the end of the breadcrumbs display
+        // and the current node.
+        parents.unshift(this.selection.nodeRef);
+        this.expand(parents);
+
+        dump("And now there are " + this.nodeHierarchy.length + " nodes.\n");
+
+        // we select the current node button
+        idx = this.indexOf(this.selection.nodeRef);
+        this.setCursor(idx);
+        // XXX: We can fix the code duplication here.
+
+        dump("About to ensure first child (async)\n");
+        // Add the first child of the very last node of the breadcrumbs if possible.
+        this.ensureFirstChild();
+        dump("Done ensuring first child.\n");
+
+        // Make sure the selected node and its neighbours are visible.
+        this.scroll();
+
+        this.updateSelectors();
+      }.bind(this)).then(null, promiseError);
     }
-    // Add the first child of the very last node of the breadcrumbs if possible.
-    this.ensureFirstChild();
-
-    // Make sure the selected node and its neighbours are visible.
-    this.scroll();
-
-    this.updateSelectors();
   },
 }
 

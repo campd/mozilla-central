@@ -1,7 +1,10 @@
+const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cu = Components.utils;
 
+Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
+
 
 let obj = {};
 Cu.import('resource://gre/modules/commonjs/loader.js', obj);
@@ -12,7 +15,7 @@ let loader = new Loader({
     '': 'resource:///modules/',
   }
 });
-let require = Require(loader, {id: "domwalker"});
+let require = Require(loader, {id: "markupview"});
 
 let promise = require("commonjs/promise/core");
 
@@ -24,16 +27,23 @@ function DOMRef(node) {
 }
 
 DOMRef.prototype = {
+  toString: function() {
+    return "[DOMRef to local node: " + this._rawNode.toString() + "]";
+  },
+
   // A key that can be used in a map/weakmap of nodes.
   get key() this._rawNode,
   // The key of the parent node.
   get parentKey() documentWalker(this._rawNode).parentNode(),
+
+  get id() this._rawNode.id,
 
   get hasChildren() !!this._rawNode.firstChild,
   get numChildren() this._rawNode.children.length,
   get nodeType() this._rawNode.nodeType,
 
   get namespaceURI() this._rawNode.namespaceURI,
+  get tagName() this._rawNode.tagName,
   get nodeName() this._rawNode.nodeName,
   get nodeValue() this._rawNode.nodeValue,
 
@@ -43,10 +53,28 @@ DOMRef.prototype = {
 
   get attributes() this._rawNode.attributes,
 
+  get classList() new ClassListRef(this._rawNode.classList),
+
   // doctype attributes
   get name() this._rawNode.name,
   get publicId() this._rawNode.publicId,
   get systemId() this._rawNode.systemId,
+
+  hasPseudoClassLock: function(pseudo) DOMUtils.hasPseudoClassLock(this._rawNode, pseudo),
+};
+
+// XXX: yuck, this should just be a proxy.
+function ClassListRef(aList)
+{
+  this._classList = aList;
+  for (let i = 0; i < aList.length; i++) {
+    this[i] = aList[i];
+  }
+  this.length = aList.i;
+}
+
+ClassListRef.prototype = {
+  contains: function(cls) this._classList.contains(cls),
 };
 
 /**
@@ -66,6 +94,10 @@ this.DOMWalker = function DOMWalker(document, options)
     }.bind(this);
     document.addEventListener("load", this._contentLoadedListener, true);
   }
+
+  // pseudo-class lock implementation details.
+  this._pclMap = new Map();
+  this._pclList = [];
 }
 
 DOMWalker.prototype = {
@@ -106,9 +138,10 @@ DOMWalker.prototype = {
     }
 
     let rawNode = node._rawNode;
+    let show = options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL;
 
-    let firstChild = documentWalker(rawNode).firstChild();
-    let lastChild = documentWalker(rawNode).lastChild();
+    let firstChild = documentWalker(rawNode, show).firstChild();
+    let lastChild = documentWalker(rawNode, show).lastChild();
 
     if (!firstChild) {
       // No children, we're done.
@@ -123,7 +156,7 @@ DOMWalker.prototype = {
 
     // Start by reading backward from the starting point....
     let nodes = [];
-    let backwardWalker = documentWalker(start);
+    let backwardWalker = documentWalker(start, show);
     if (start != firstChild) {
       backwardWalker.previousSibling();
       let backwardCount = Math.floor(maxChildren / 2);
@@ -132,7 +165,7 @@ DOMWalker.prototype = {
     }
 
     // Then read forward by any slack left in the max children...
-    let forwardWalker = documentWalker(start);
+    let forwardWalker = documentWalker(start, show);
     let forwardCount = maxChildren - nodes.length;
     nodes = nodes.concat(this._readForward(forwardWalker, forwardCount));
 
@@ -151,6 +184,16 @@ DOMWalker.prototype = {
       hasLast: nodes[nodes.length - 1]._rawNode == lastChild,
       children: nodes
     });
+  },
+
+  nextSibling: function(node, options={}) {
+    let walker = documentWalker(node._rawNode, options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL);
+    return promise.resolve(this._ref(walker.nextSibling()));
+  },
+
+  previousSibling: function(node, options={}) {
+    let walker = documentWalker(node._rawNode, options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL);
+    return promise.resolve(this._ref(walker.previousSibling()));
   },
 
   _readForward: function MV__readForward(aWalker, aCount)
@@ -174,6 +217,88 @@ DOMWalker.prototype = {
     } while(node && --aCount);
     ret.reverse();
     return ret;
+  },
+
+  _addPseudoClassLock: function(node, pseudo) {
+    if (node.nodeType != Ci.nsIDOMNode.ELEMENT_NODE) {
+      return;
+    }
+
+    try {
+    if (!this._pclMap.has(node)) {
+      this._pclMap.set(node, new Set());
+      this._pclList.push(node);
+    }
+    this._pclMap.get(node).add(pseudo);
+    dump("Converting " + node._rawNode + "\n");
+    DOMUtils.addPseudoClassLock(node._rawNode, pseudo);
+    } catch(ex) {
+      dump(ex);
+    }
+  },
+
+  addPseudoClassLock: function(node, pseudo, options={}) {
+    this._addPseudoClassLock(node, pseudo);
+
+    dump("added first pseudo class lock\n");
+    if (!options.parents) {
+      dump("Didn't ask for parents\n");
+      return promise.resolve(undefined);
+    }
+
+    return this.parents(node).then(function(parents) {
+      dump("Adding to " + parents.length + " parents\n");
+      for (let parent of parents) {
+        dump("adding parent.\n");
+        this._addPseudoClassLock(parent, pseudo);
+      }
+    }.bind(this));
+  },
+
+  _removePseudoClassLock: function(node, pseudo) {
+    if (node.nodeType != Ci.nsIDOMNode.ELEMENT_NODE) {
+      return;
+    }
+
+    if (this._pclMap.has(node)) {
+      let set = this._pclMap.get(node);
+      set.delete(pseudo);
+      if (set.size == 0) {
+        this._pclMap.delete(node);
+        this._pclList = this._pclList.filter(function(n) n != node);
+      }
+    }
+    DOMUtils.removePseudoClassLock(node._rawNode, pseudo);
+  },
+
+  removePseudoClassLock: function(node, pseudo, options={}) {
+    this._removePseudoClassLock(node, pseudo);
+
+    if (!options.parents) {
+      return promise.resolve(undefined);
+    }
+
+    return this.parents(node).then(function(parents) {
+      for (let parent of parents) {
+        this._removePseudoClassLock(parent, pseudo);
+      }
+    }.bind(this));
+  },
+
+  clearPseudoClassLocks: function(node, options={}) {
+    if (node) {
+      DOMUtils.clearPseudoClassLocks(node._rawNode);
+      this._pclMap.delete(node);
+      this._pclList = this._pclList.filter(function(n) n != node);
+    }
+    if (options.all) {
+      for (let lockedNode of this._pclList) {
+        DOMUtils.clearPseudoClassLocks(lockedNode._rawNode);
+      }
+      this._pclMap.clear();
+      this._pclList = [];
+    }
+    return promise.resolve(undefined);
   },
 
   _ref: function(node) {
@@ -216,12 +341,21 @@ DOMWalker.prototype = {
   }
 };
 
-function documentWalker(node) {
-  return new DocumentWalker(node, Ci.nsIDOMNodeFilter.SHOW_ALL, whitespaceTextFilter, false);
+function documentWalker(node, whatToShow=Ci.nsIDOMNodeFilter.SHOW_ALL) {
+  return new DocumentWalker(node, whatToShow, whitespaceTextFilter, false);
 }
 
 function nodeDocument(node) {
-  return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
+  try {
+    if (!node.nodeType) {
+      throw new Error(node);
+    }
+    return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
+  }catch(ex) {
+    dump(ex + "\n");
+    dump(ex.stack + "\n");
+    throw ex;
+  }
 }
 
 /**
@@ -326,3 +460,8 @@ function whitespaceTextFilter(aNode)
       return Ci.nsIDOMNodeFilter.FILTER_ACCEPT;
     }
 }
+
+XPCOMUtils.defineLazyGetter(this, "DOMUtils", function () {
+  dump("DOMUTILS BEING INITTED UP IN HERE\n");
+  return Cc["@mozilla.org/inspector/dom-utils;1"].getService(Ci.inIDOMUtils);
+});

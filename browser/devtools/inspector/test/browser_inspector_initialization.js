@@ -83,7 +83,7 @@ function testMarkupView(node)
 function testBreadcrumbs(node)
 {
   let b = getActiveInspector().breadcrumbs;
-  let expectedText = b.prettyPrintNodeAsText(node);
+  let expectedText = b.prettyPrintNodeAsText(b.walker._ref(node));
   let button = b.container.querySelector("button[checked=true]");
   ok(button, "A crumbs is checked=true");
   is(button.getAttribute("tooltiptext"), expectedText, "Crumb refers to the right node");

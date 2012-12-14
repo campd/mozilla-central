@@ -382,7 +382,7 @@ InspectorPanel.prototype = {
     // Set the pseudo classes
     for (let name of ["hover", "active", "focus"]) {
       let menu = this.panelDoc.getElementById("node-menu-pseudo-" + name);
-      let checked = DOMUtils.hasPseudoClassLock(this.selection.node, ":" + name);
+      let checked = this.selection.nodeRef.hasPseudoClassLock(":" + name);
       menu.setAttribute("checked", checked);
     }
 
@@ -481,19 +481,21 @@ InspectorPanel.prototype = {
    * Toggle a pseudo class.
    */
   togglePseudoClass: function InspectorPanel_togglePseudoClass(aPseudo) {
-    if (this.selection.isElementNode()) {
-      if (DOMUtils.hasPseudoClassLock(this.selection.node, aPseudo)) {
-        this.breadcrumbs.nodeHierarchy.forEach(function(crumb) {
-          DOMUtils.removePseudoClassLock(crumb.node, aPseudo);
-        });
-      } else {
-        let hierarchical = aPseudo == ":hover" || aPseudo == ":active";
-        let node = this.selection.node;
-        do {
-          DOMUtils.addPseudoClassLock(node, aPseudo);
-          node = node.parentNode;
-        } while (hierarchical && node.parentNode)
-      }
+    if (!this.selection.isElementNode()) {
+      return;
+    }
+
+    if (this.selection.nodeRef.hasPseudoClassLock(aPseudo)) {
+      this.walker.removePseudoClassLock(this.selection.nodeRef, aPseudo, {
+        parents: true
+      });
+    } else {
+      let hierarchical = aPseudo == ":hover" || aPseudo == ":active";
+      dump("should be hierarchical\n");
+      // XXX; should pseudoclass locks traverse document lines?
+      this.walker.addPseudoClassLock(this.selection.nodeRef, aPseudo, {
+        parents: hierarchical
+      });
     }
     this.selection.emit("pseudoclass");
   },
