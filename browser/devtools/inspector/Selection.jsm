@@ -10,15 +10,6 @@ Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 
 this.EXPORTED_SYMBOLS = ["Selection"];
 
-function discouraged() {
-  try {
-    throw new Error("Called a discouraged function.");
-  } catch(ex) {
-    dump(ex + "\n");
-    dump(ex.stack + "\n");
-  }
-};
-
 /**
  * API
  *
@@ -132,12 +123,6 @@ Selection.prototype = {
     this.setNodeRef(null, "destroy");
   },
 
-  // XXX: eventually this should take a nodeRef rather than a node.
-  setNode: function SN_setNode(value, reason="unknown") {
-    discouraged();
-    this.setRawNode(value, reason);
-  },
-
   setRawNode: function SN_setRawNode(value, reason="unknown") {
     this.setNodeRef(value ? this.walker.importRaw(value) : null, reason);
   },
@@ -157,12 +142,6 @@ Selection.prototype = {
       // XXX: switch the notification over to nodeRefs.
       this.emit("new-node", previousNode, this.reason);
     }
-  },
-
-  // XXX: this should change to rawNode or something
-  get node() {
-    discouraged();
-    return this.rawNode;
   },
 
   // Well-behaved modules can start using that now.
