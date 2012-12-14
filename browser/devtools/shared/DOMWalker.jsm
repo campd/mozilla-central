@@ -248,6 +248,14 @@ DOMWalker.prototype = {
     return ret;
   },
 
+  innerHTML: function(node) {
+    return promise.resolve(node._rawNode.innerHTML);
+  },
+
+  outerHTML: function(node) {
+    return promise.resolve(node._rawNode.outerHTML);
+  },
+
   _addPseudoClassLock: function(node, pseudo) {
     if (node.nodeType != Ci.nsIDOMNode.ELEMENT_NODE) {
       return;

@@ -520,10 +520,12 @@ InspectorPanel.prototype = {
     if (!this.selection.isNode()) {
       return;
     }
-    let toCopy = this.selection.node.innerHTML;
-    if (toCopy) {
-      clipboardHelper.copyString(toCopy);
-    }
+    this.walker.innerHTML(this.selection.nodeRef).then(function(toCopy) {
+      if (toCopy) {
+        clipboardHelper.copyString(toCopy);
+      }
+    }.bind(this));
+    // XXX: promisePass/promiseError
   },
 
   /**
@@ -534,10 +536,12 @@ InspectorPanel.prototype = {
     if (!this.selection.isNode()) {
       return;
     }
-    let toCopy = this.selection.node.outerHTML;
-    if (toCopy) {
-      clipboardHelper.copyString(toCopy);
-    }
+    this.walker.outerHTML(this.selection.nodeRef).then(function(toCopy) {
+      if (toCopy) {
+        clipboardHelper.copyString(toCopy);
+      }
+    }.bind(this));
+    // XXX: promisePass/promiseError
   },
 
   /**
