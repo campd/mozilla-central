@@ -43,6 +43,7 @@ DOMRef.prototype = {
   get parentKey() documentWalker(this._rawNode).parentNode(),
 
   get id() this._rawNode.id,
+  get className() this._rawNode.className,
 
   get hasChildren() !!this._rawNode.firstChild,
   get numChildren() this._rawNode.children.length,

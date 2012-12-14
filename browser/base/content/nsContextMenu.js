@@ -424,7 +424,7 @@ nsContextMenu.prototype = {
     let tt = imported.TargetFactory.forTab(gBrowser.selectedTab);
     return gDevTools.showToolbox(tt, "inspector").then(function(toolbox) {
       let inspector = toolbox.getCurrentPanel();
-      inspector.selection.setNode(this.target, "browser-context-menu");
+      inspector.selection.setRawNode(this.target, "browser-context-menu");
     }.bind(this));
   },
 

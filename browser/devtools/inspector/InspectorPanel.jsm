@@ -202,7 +202,7 @@ InspectorPanel.prototype = {
    * Reset the inspector on navigate away.
    */
   onNavigatedAway: function InspectorPanel_onNavigatedAway(event, newWindow) {
-    this.selection.setNode(null, "navigation");
+    this.selection.setNodeRef(null, "navigation");
     this._destroyMarkup();
     this._destroyWalker();
 
@@ -213,7 +213,8 @@ InspectorPanel.prototype = {
       newWindow.removeEventListener("DOMContentLoaded", onDOMReady, true);
       self._initWalker();
 
-      if (!self.selection.node) {
+      if (!self.selection.nodeRef) {
+        // XXX: this assumes local, but so does DOMContentLoaded...
         self.selection.setRawNode(newWindow.document.documentElement);
       }
       self._initMarkup();
