@@ -187,7 +187,7 @@ HTMLBreadcrumbs.prototype = {
     // for inspector.selection
     this.selection.setNodeRef(aNode, "breadcrumbs");
 
-    // XXX: this isn't a 100% kosher way to get the parent node synchronously.
+    // XXX: this isn't a good way to get the parent node synchronously.
     this.walker.children(this.walker._ref(aNode.parentKey), {
       maxChildren: 20,
       include: aNode,
@@ -479,7 +479,7 @@ HTMLBreadcrumbs.prototype = {
     while (nextChild) {
       if (nextChild.nodeType == aNode.ELEMENT_NODE) {
         if (!(nextChild.tagName in LOW_PRIORITY_ELEMENTS)) {
-          return this.walker._ref(nextChild);
+          return this.walker.importRaw(nextChild);
         }
         if (!fallback) {
           fallback = nextChild;
@@ -487,7 +487,7 @@ HTMLBreadcrumbs.prototype = {
       }
       nextChild = this.DOMHelpers.getNextSibling(nextChild);
     }
-    return fallback ? this.walker._ref(fallback) : null;
+    return fallback ? this.walker.importRaw(fallback) : null;
   },
 
 

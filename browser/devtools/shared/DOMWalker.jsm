@@ -321,6 +321,14 @@ DOMWalker.prototype = {
     return promise.resolve(undefined);
   },
 
+  /**
+   * Get a DOMRef for the given local node.
+   * Using this method is not remote-protocol safe.
+   */
+  importRaw: function(node) {
+    return this._ref(node);
+  },
+
   _ref: function(node) {
     if (this._refMap.has(node)) {
       return this._refMap.get(node);

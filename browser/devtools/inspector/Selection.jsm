@@ -139,7 +139,7 @@ Selection.prototype = {
   },
 
   setRawNode: function SN_setRawNode(value, reason="unknown") {
-    this.setNodeRef(value ? this.walker._ref(value) : null, reason);
+    this.setNodeRef(value ? this.walker.importRaw(value) : null, reason);
   },
 
   setNodeRef: function SN_setNodeRef(value, reason="unknown") {

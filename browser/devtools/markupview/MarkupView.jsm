@@ -1224,7 +1224,7 @@ ElementEditor.prototype = {
     try {
       // XXX: needs serious work for DOMWalker
       var newElt = nodeDocument(this.rawNode).createElement(aVal);
-      var newRef = this.markup.walker._ref(newElt);
+      var newRef = this.markup.walker.importRaw(newElt);
     } catch(x) {
       // Failed to create a new element with that tag name, ignore
       // the change.
