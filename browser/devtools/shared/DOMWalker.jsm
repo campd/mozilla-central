@@ -53,7 +53,27 @@ DOMRef.prototype = {
   get nodeName() this._rawNode.nodeName,
   get nodeValue() this._rawNode.nodeValue,
 
-  get isDocumentElement() this._rawNode == this._rawNode.ownerDocument.documentElement,
+  isDocumentElement: function() {
+    return this._rawNode == this._rawNode.ownerDocument.documentElement;
+  },
+
+  isNode: function() {
+    let node = this._rawNode;
+    return (node &&
+            node.ownerDocument &&
+            node.ownerDocument.defaultView &&
+            node instanceof node.ownerDocument.defaultView.Node);
+  },
+
+  isConnected: function() {
+    try {
+      let doc = this._rawNode.ownerDocument;
+      return doc && doc.defaultView && doc.documentElement.contains(this._rawNode);
+    } catch (e) {
+      // "can't access dead object" error
+      return false;
+    }
+  },
 
   getAttribute: function(attr) this._rawNode.getAttribute(attr),
 
@@ -124,8 +144,6 @@ DOMWalker.prototype = {
     this.clearPseudoClassLocks(null, { all: true });
     delete this._pclMap;
     delete this._pclList;
-
-    dump("Done destroying the dom walker\n");
   },
 
   root: function() {

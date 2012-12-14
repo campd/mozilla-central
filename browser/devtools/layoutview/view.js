@@ -132,7 +132,10 @@ LayoutView.prototype = {
    * Highlighter 'locked' event handler
    */
   onHighlighterLocked: function LV_onHighlighterLocked() {
-    this.cssLogic.highlight(this.inspector.selection.node);
+    if (!this.inspector.selection.rawNode) {
+      return;
+    }
+    this.cssLogic.highlight(this.inspector.selection.rawNode);
     this.undim();
     this.update();
   },

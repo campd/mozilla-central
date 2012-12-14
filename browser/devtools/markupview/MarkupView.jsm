@@ -983,7 +983,7 @@ function ElementEditor(aContainer, aNode)
   }
 
   // Make the tag name editable (unless this is a document element)
-  if (!aNode.isDocumentElement) {
+  if (!aNode.isDocumentElement()) {
     this.tag.setAttribute("tabindex", "0");
     _editableField({
       element: this.tag,

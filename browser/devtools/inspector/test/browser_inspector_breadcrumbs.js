@@ -46,7 +46,7 @@ function test()
     cursor = 0;
     inspector.selection.on("new-node", nodeSelected);
     executeSoon(function() {
-      inspector.selection.setNode(nodes[0].node);
+      inspector.selection.setRawNode(nodes[0].node);
     });
   }
 

@@ -212,7 +212,7 @@ Highlighter.prototype = {
       this.invalidateSize();
       if (!this._highlighting &&
           this.selection.reason != "highlighter") {
-        LayoutHelpers.scrollIntoViewIfNeeded(this.selection.node);
+        LayoutHelpers.scrollIntoViewIfNeeded(this.selection.rawNode);
       }
     } else {
       this.hide();
@@ -231,8 +231,8 @@ Highlighter.prototype = {
     if (!canHiglightNode)
       return;
 
-    let clientRect = this.selection.node.getBoundingClientRect();
-    let rect = LayoutHelpers.getDirtyRect(this.selection.node);
+    let clientRect = this.selection.rawNode.getBoundingClientRect();
+    let rect = LayoutHelpers.getDirtyRect(this.selection.rawNode);
     this.highlightRectangle(rect);
 
     this.moveInfobar();
@@ -417,7 +417,7 @@ Highlighter.prototype = {
     texthbox.addEventListener("mousedown", function(aEvent) {
       // On click, show the node:
       if (this.selection.isElementNode()) {
-        LayoutHelpers.scrollIntoViewIfNeeded(this.selection.node);
+        LayoutHelpers.scrollIntoViewIfNeeded(this.selection.rawNode);
       }
     }.bind(this), true);
 
@@ -518,7 +518,7 @@ Highlighter.prototype = {
       return;
     }
 
-    let node = this.selection.node;
+    let node = this.selection.rawNode;
 
     // Tag name
     this.nodeInfo.tagNameLabel.textContent = node.tagName;
@@ -746,8 +746,8 @@ Highlighter.prototype = {
     if (aEvent.button == 0) {
       let win = aEvent.target.ownerDocument.defaultView;
       this.lock();
-      let node = this.selection.node;
-      this.selection.setNode(node, "highlighter-lock");
+      let node = this.selection.rawNode;
+      this.selection.setRawNode(node, "highlighter-lock");
       win.focus();
       aEvent.preventDefault();
       aEvent.stopPropagation();
@@ -769,8 +769,8 @@ Highlighter.prototype = {
     if (doc && doc != this.chromeDoc) {
       let element = LayoutHelpers.getElementFromPoint(aEvent.target.ownerDocument,
         aEvent.clientX, aEvent.clientY);
-      if (element && element != this.selection.node) {
-        this.selection.setNode(element, "highlighter");
+      if (element && element != this.selection.rawNode) {
+        this.selection.setRawNode(element, "highlighter");
       }
     }
   },

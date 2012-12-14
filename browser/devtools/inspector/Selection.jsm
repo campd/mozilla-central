@@ -5,9 +5,19 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 const Cu = Components.utils;
+const Ci = Components.interfaces;
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 
 this.EXPORTED_SYMBOLS = ["Selection"];
+
+function discouraged() {
+  try {
+    throw new Error("Called a discouraged function.");
+  } catch(ex) {
+    dump(ex + "\n");
+    dump(ex.stack + "\n");
+  }
+};
 
 /**
  * API
@@ -62,11 +72,11 @@ this.Selection = function Selection(walker, node=null, track={attributes:true,de
   this._onMutations = this._onMutations.bind(this);
   this.setWalker(walker);
   this.track = track;
-  this.setNode(node);
+  this.setNodeRef(node);
 }
 
 Selection.prototype = {
-  _node: null,
+  _nodeRef: null,
 
   setWalker: function(walker) {
     // XXX: probably need to clear out the current stuff...
@@ -102,7 +112,7 @@ Selection.prototype = {
   },
 
   _attachEvents: function SN__attachEvents() {
-    if (!this.window || !this.isNode() || !this.track || !this.walker) {
+    if (!this.isNode() || !this.track || !this.walker) {
       return;
     }
 
@@ -119,43 +129,45 @@ Selection.prototype = {
 
   destroy: function SN_destroy() {
     this._detachEvents();
-    this.setNode(null, "destroy");
+    this.setNodeRef(null, "destroy");
   },
 
   // XXX: eventually this should take a nodeRef rather than a node.
   setNode: function SN_setNode(value, reason="unknown") {
+    discouraged();
+    this.setRawNode(value, reason);
+  },
+
+  setRawNode: function SN_setRawNode(value, reason="unknown") {
+    this.setNodeRef(value ? this.walker._ref(value) : null, reason);
+  },
+
+  setNodeRef: function SN_setNodeRef(value, reason="unknown") {
     this.reason = reason;
-    if (value !== this._node) {
-      let previousNode = this._node;
+    if (value !== this._nodeRef) {
+      let previousNode = this._nodeRef;
       this._detachEvents();
-      this._node = value;
-      this._nodeRef = value ? this.walker._ref(value) : null;
+      this._nodeRef = value;
       if (this._nodeRef) {
         // XXX: hack to make sure all parents of the selection are being watched.
         this.walker.parents(this._nodeRef);
       }
 
       this._attachEvents();
-      this.emit("new-node", previousNode, this.reason);
+      // XXX: switch the notification over to nodeRefs.
+      this.emit("new-node", previousNode ? previousNode.rawNode : null, this.reason);
     }
-  },
-
-  setRawNode: function SN_setRawNode(value, reason="unknown") {
-    return this.setNode(value, reason);
-  },
-
-  setNodeRef: function SN_setNodeRef(value, reason="unknown") {
-    return this.setNode(value.rawNode, reason);
   },
 
   // XXX: this should change to rawNode or something
   get node() {
-    return this._node;
+    discouraged();
+    return this.rawNode;
   },
 
   // Well-behaved modules can start using that now.
   get rawNode() {
-    return this._node;
+    return this.nodeRef ? this.nodeRef.rawNode : null;
   },
 
   // ... and this should change to node.
@@ -163,99 +175,80 @@ Selection.prototype = {
     return this._nodeRef;
   },
 
-  get window() {
-    if (this.isNode()) {
-      return this.node.ownerDocument.defaultView;
-    }
-    return null;
-  },
-
   get document() {
+    discouraged();
     if (this.isNode()) {
-      return this.node.ownerDocument;
+      return this.rawNode.ownerDocument;
     }
     return null;
-  },
-  get rawDocument() {
-    let doc = this.document;
-    return doc ? this.walker._ref(doc) : null;
   },
 
   isRoot: function SN_isRootNode() {
     return this.isNode() &&
            this.isConnected() &&
-           this.nodeRef.isDocumentElement;
+           this.nodeRef.isDocumentElement();
   },
 
   isNode: function SN_isNode() {
-    return (this.node &&
-            this.node.ownerDocument &&
-            this.node.ownerDocument.defaultView &&
-            this.node instanceof this.node.ownerDocument.defaultView.Node);
+    return this.nodeRef && this.nodeRef.isNode();
   },
 
   isConnected: function SN_isConnected() {
-    try {
-      let doc = this.document;
-      return doc && doc.defaultView && doc.documentElement.contains(this.node);
-    } catch (e) {
-      // "can't access dead object" error
-      return false;
-    }
+    return this.nodeRef && this.nodeRef.isConnected();
   },
 
   isHTMLNode: function SN_isHTMLNode() {
     let xhtml_ns = "http://www.w3.org/1999/xhtml";
-    return this.isNode() && this.node.namespaceURI == xhtml_ns;
+    return this.isNode() && this.nodeRef.namespaceURI == xhtml_ns;
   },
 
   // Node type
 
   isElementNode: function SN_isElementNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ELEMENT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.ELEMENT_NODE;
   },
 
   isAttributeNode: function SN_isAttributeNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ATTRIBUTE_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.ATTRIBUTE_NODE;
   },
 
   isTextNode: function SN_isTextNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.TEXT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.TEXT_NODE;
   },
 
   isCDATANode: function SN_isCDATANode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.CDATA_SECTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.CDATA_SECTION_NODE;
   },
 
   isEntityRefNode: function SN_isEntityRefNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ENTITY_REFERENCE_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.ENTITY_REFERENCE_NODE;
   },
 
   isEntityNode: function SN_isEntityNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.ENTITY_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.ENTITY_NODE;
   },
 
   isProcessingInstructionNode: function SN_isProcessingInstructionNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.PROCESSING_INSTRUCTION_NODE;
   },
 
   isCommentNode: function SN_isCommentNode() {
-    return this.isNode() && this.nodeRef.nodeType == this.window.Node.PROCESSING_INSTRUCTION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.PROCESSING_INSTRUCTION_NODE;
   },
 
   isDocumentNode: function SN_isDocumentNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.DOCUMENT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE;
   },
 
   isDocumentTypeNode: function SN_isDocumentTypeNode() {
-    return this.isNode() && this.node.nodeType ==this.window. Node.DOCUMENT_TYPE_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.DOCUMENT_TYPE_NODE;
   },
 
   isDocumentFragmentNode: function SN_isDocumentFragmentNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.DOCUMENT_FRAGMENT_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.DOCUMENT_FRAGMENT_NODE;
   },
 
   isNotationNode: function SN_isNotationNode() {
-    return this.isNode() && this.node.nodeType == this.window.Node.NOTATION_NODE;
+    return this.isNode() && this.nodeRef.nodeType == Ci.nsIDOMNode.NOTATION_NODE;
   },
 }
