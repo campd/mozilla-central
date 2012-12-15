@@ -166,9 +166,9 @@ DOMWalker.prototype = {
   },
 
   children: function(node, options={}) {
-    let maxChildren = options.maxChildren || -1;
-    if (maxChildren == -1) {
-      maxChildren = Number.MAX_VALUE;
+    let maxNodes = options.maxNodes || -1;
+    if (maxNodes == -1) {
+      maxNodes = Number.MAX_VALUE;
     }
 
     let rawNode = node._rawNode;
@@ -193,19 +193,19 @@ DOMWalker.prototype = {
     let backwardWalker = documentWalker(start, show);
     if (start != firstChild) {
       backwardWalker.previousSibling();
-      let backwardCount = Math.floor(maxChildren / 2);
+      let backwardCount = Math.floor(maxNodes / 2);
       let backwardNodes = this._readBackward(backwardWalker, backwardCount);
       nodes = backwardNodes;
     }
 
     // Then read forward by any slack left in the max children...
     let forwardWalker = documentWalker(start, show);
-    let forwardCount = maxChildren - nodes.length;
+    let forwardCount = maxNodes - nodes.length;
     nodes = nodes.concat(this._readForward(forwardWalker, forwardCount));
 
     // If there's any room left, it means we've run all the way to the end.
     // In that case, there might still be more items at the front.
-    let remaining = maxChildren - nodes.length;
+    let remaining = maxNodes - nodes.length;
     if (remaining > 0 && nodes[0]._rawNode != firstChild) {
       let firstNodes = this._readBackward(backwardWalker, remaining);
 
@@ -216,8 +216,25 @@ DOMWalker.prototype = {
     return promise.resolve({
       hasFirst: nodes[0]._rawNode == firstChild,
       hasLast: nodes[nodes.length - 1]._rawNode == lastChild,
-      children: nodes
+      nodes: nodes
     });
+  },
+
+  siblings: function(node, options={}) {
+    let parentNode = documentWalker(node.rawNode).parentNode();
+    if (!parentNode) {
+      return promise.resolve({
+        hasFirst: true,
+        hasLast: true,
+        nodes: [node]
+      });
+    }
+
+    options.include = node;
+
+    return this.children(this._ref(parentNode), options).then(function(children) {
+      return children;
+    }).then(promisePass, promiseError);
   },
 
   nextSibling: function(node, options={}) {
@@ -515,12 +532,28 @@ RemoteWalker.prototype = {
       type: "children",
       node: node.actorID,
       include: options.include ? options.include.actorID : undefined,
-      maxChildren: options.maxChildren || undefined
+      maxNodes: options.maxNodes || undefined,
+      whatToShow: options.whatToShow || undefined
     }).then(function(response) {
       return {
         hasFirst: response.hasFirst,
         hasLast: response.hasLast,
-        children: [this._ref(form) for (form of response.children)]
+        nodes: [this._ref(form) for (form of response.nodes)]
+      };
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  siblings: function(node, options={}) {
+    return this._request({
+      type: "siblings",
+      node: node.actorID,
+      maxNodes: options.maxNodes || undefined,
+      whatToShow: options.whatToShow || undefined
+    }).then(function(response) {
+      return {
+        hasFirst: response.hasFirst,
+        hasLast: response.hasLast,
+        nodes: [this._ref(form) for (form of response.nodes)]
       };
     }.bind(this)).then(promisePass, promiseError);
   },
@@ -530,7 +563,7 @@ RemoteWalker.prototype = {
       type: "parents",
       node: node.actorID
     }).then(function(response) {
-      return [this._ref(form) for (form of response.parents)];
+      return [this._ref(form) for (form of response.nodes)];
     }.bind(this)).then(promisePass, promiseError);
   },
 };

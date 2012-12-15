@@ -188,12 +188,11 @@ HTMLBreadcrumbs.prototype = {
     this.selection.setNodeRef(aNode, "breadcrumbs");
 
     // XXX: this isn't a good way to get the parent node synchronously.
-    this.walker.children(this.walker._ref(aNode.parentKey), {
+    this.walker.siblings(aNode, {
       maxChildren: 20,
-      include: aNode,
       whatToShow: Ci.nsIDOMNodeFilter.SHOW_ELEMENT,
-    }).then(function(children) {
-      let nodes = children.children;
+    }).then(function(siblings) {
+      let nodes = siblings.nodes;
       // XXX: we might not have gotten the complete list (children.atFirst
       // or children.atLast might be false).  We might want to do something
       // in that case.

@@ -148,40 +148,57 @@ DOMWalkerActor.prototype = {
     }.bind(this)).then(null, this.sendError);
   },
 
-  onChildren: function DWA_onChildren(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    let options = {
-      include: aPacket.include ? this._nodePool.node(aPacket.include) : undefined,
-      maxChildren: aPacket.maxChildren
-    };
-
-    this.walker.children(node, options).then(function(children) {
-      this.conn.send({
-        from: this.actorID,
-        hasFirst: children.hasFirst,
-        hasLast: children.hasLast,
-        children: [this._nodeForm(child) for (child of children.children)]
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
   onParents: function DWA_onChildren(aPacket)
   {
     let node = this._nodePool.node(aPacket.node);
     this.walker.parents(node, aPacket).then(function(parents) {
       this.conn.send({
         from: this.actorID,
-        parents: [this._nodeForm(parent) for (parent of parents)]
+        nodes: [this._nodeForm(parent) for (parent of parents)]
       });
     }.bind(this)).then(null, this.sendError);
-  }
+  },
+
+  onChildren: function DWA_onChildren(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node);
+    this.walker.children(node, {
+      include: aPacket.include ? this._nodePool.node(aPacket.include) : undefined,
+      maxNodes: aPacket.maxNodes,
+      whatToShow: aPacket.whatToShow
+    }).then(function(children) {
+      this.conn.send({
+        from: this.actorID,
+        hasFirst: children.hasFirst,
+        hasLast: children.hasLast,
+        nodes: [this._nodeForm(child) for (child of children.nodes)]
+      });
+    }.bind(this)).then(null, this.sendError);
+  },
+
+  onSiblings: function DWA_onChildren(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node);
+    this.walker.siblings(node, {
+      maxNodes: aPacket.maxNodes,
+      whatToShow: aPacket.whatToShow
+    }).then(function(children) {
+      this.conn.send({
+        from: this.actorID,
+        hasFirst: children.hasFirst,
+        hasLast: children.hasLast,
+        nodes: [this._nodeForm(child) for (child of children.nodes)]
+      });
+    }.bind(this)).then(null, this.sendError);
+  },
+
 };
 
 DOMWalkerActor.prototype.requestTypes = {
   root: DOMWalkerActor.prototype.onRoot,
-  children: DOMWalkerActor.prototype.onChildren,
   parents: DOMWalkerActor.prototype.onParents,
+  children: DOMWalkerActor.prototype.onChildren,
+  siblings: DOMWalkerActor.prototype.onSiblings,
 };
 
 // These are ephemeral, created as needed by the DOMWalkerNodePool.

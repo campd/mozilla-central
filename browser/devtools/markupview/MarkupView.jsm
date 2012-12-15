@@ -12,7 +12,7 @@ const Ci = Components.interfaces;
 const PAGE_SIZE = 10;
 
 const PREVIEW_AREA = 700;
-const DEFAULT_MAX_CHILDREN = 100;
+const DEFAULT_MAX_NODES = 100;
 
 this.EXPORTED_SYMBOLS = ["MarkupView"];
 
@@ -62,9 +62,9 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   this._elt = this.doc.querySelector("#root");
 
   try {
-    this.maxChildren = Services.prefs.getIntPref("devtools.markup.pagesize");
+    this.maxNodes = Services.prefs.getIntPref("devtools.markup.pagesize");
   } catch(ex) {
-    this.maxChildren = DEFAULT_MAX_CHILDREN;
+    this.maxNodes = DEFAULT_MAX_NODES;
   }
 
   this.undo = new UndoStack();
@@ -552,18 +552,13 @@ MarkupView.prototype = {
 
     return this.walker.children(aContainer.node, {
       include: aVisibleChild,
-      maxChildren: aContainer.maxChildren || this.maxChildren
+      maxNodes: aContainer.maxNodes || this.maxNodes
     }).then(function(children) {
       aContainer.childrenDirty = false;
       let fragment = this.doc.createDocumentFragment();
 
-      for (let child of children.children) {
+      for (let child of children.nodes) {
         let container = this.importNode(child, false);
-      }
-
-      // XXX: don't need two loops here.
-      for (let child of children.children) {
-        let container = this._containers.get(child);
         fragment.appendChild(container.elt);
       }
 
@@ -581,7 +576,7 @@ MarkupView.prototype = {
         };
 
         let loadMore = function() {
-          aContainer.maxChildren = -1;
+          aContainer.maxNodes = -1;
           aContainer.childrenDirty = true;
           this._updateChildren(aContainer);
         }.bind(this);
