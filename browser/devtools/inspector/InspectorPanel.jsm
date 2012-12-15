@@ -23,7 +23,7 @@ XPCOMUtils.defineLazyModuleGetter(this, "Highlighter",
   "resource:///modules/devtools/Highlighter.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "ToolSidebar",
   "resource:///modules/devtools/Sidebar.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "DOMWalker",
+XPCOMUtils.defineLazyModuleGetter(this, "createWalker",
   "resource:///modules/devtools/DOMWalker.jsm");
 
 const LAYOUT_CHANGE_TIMER = 250;
@@ -43,6 +43,7 @@ this.InspectorPanel = function InspectorPanel(iframeWindow, toolbox) {
 
   this.tabTarget = (this.target.tab != null);
   this.winTarget = (this.target.window != null);
+  this.remoteTarget = (this.target.client != null);
 
   EventEmitter.decorate(this);
 }
@@ -405,7 +406,7 @@ InspectorPanel.prototype = {
   },
 
   _initWalker: function InspectorPanel__initWalker() {
-    this.walker = new DOMWalker(this.target.document, {
+    this.walker = createWalker(this.target, {
       watchVisited: true
     });
     if (this._selection) {

@@ -20,7 +20,7 @@ let require = Require(loader, {id: "markupview"});
 let promise = require("commonjs/promise/core");
 
 
-this.EXPORTED_SYMBOLS = ["DOMWalker"];
+this.EXPORTED_SYMBOLS = ["DOMWalker", "createWalker"];
 
 function DOMRef(node) {
   this._rawNode = node;
@@ -46,7 +46,7 @@ DOMRef.prototype = {
   get className() this._rawNode.className,
 
   get hasChildren() !!this._rawNode.firstChild,
-  get numChildren() this._rawNode.children.length,
+  get numChildren() this._rawNode.childNodes.length,
   get nodeType() this._rawNode.nodeType,
 
   get namespaceURI() this._rawNode.namespaceURI,
@@ -54,21 +54,25 @@ DOMRef.prototype = {
   get nodeName() this._rawNode.nodeName,
   get nodeValue() this._rawNode.nodeValue,
 
+  isWalkerRoot: function() {
+    return !(documentWalker(this._rawNode).parentNode());
+  },
+
   isDocumentElement: function() {
-    return this._rawNode == this._rawNode.ownerDocument.documentElement;
+    return this._rawNode == nodeDocument(this._rawNode).documentElement;
   },
 
   isNode: function() {
     let node = this._rawNode;
     return (node &&
-            node.ownerDocument &&
-            node.ownerDocument.defaultView &&
-            node instanceof node.ownerDocument.defaultView.Node);
+            nodeDocument(node) &&
+            nodeDocument(node).defaultView &&
+            node instanceof nodeDocument(node).defaultView.Node);
   },
 
   isConnected: function() {
     try {
-      let doc = this._rawNode.ownerDocument;
+      let doc = nodeDocument(this._rawNode);
       return doc && doc.defaultView && doc.documentElement.contains(this._rawNode);
     } catch (e) {
       // "can't access dead object" error
@@ -335,7 +339,11 @@ DOMWalker.prototype = {
    * Using this method is not remote-protocol safe.
    */
   importRaw: function(node) {
-    return this._ref(node);
+    let nodeRef = this._ref(node);
+    // Ensure all parents have been imported too, since that will be true
+    // in the remote case (?)
+    this.parents(nodeRef).then(null, null);
+    return nodeRef;
   },
 
   _ref: function(node) {
@@ -377,6 +385,175 @@ DOMWalker.prototype = {
     this.emit("mutations", refMutations);
   }
 };
+
+function RemoteRef(form)
+{
+  this.actorID = form.actor;
+
+  this._updateForm(form);
+}
+
+RemoteRef.prototype = {
+  toString: function() "[RemoteRef to " + this.actorID + "]",
+
+  get id() this.form_id,
+  get className() this.form_className,
+
+  get hasChildren() this.form_numChildren > 0,
+  get numChildren() this.form_numChildren,
+  get nodeType() this.form_nodeType,
+
+  get namespaceURI() this.form_namespaceURI,
+  get tagName() this.form_tagName,
+  get nodeName() this.form_nodeName,
+  get nodeValue() this.form_nodeValue,
+
+  isWalkerRoot: function() !!this.form_isWalkerRoot,
+
+  isDocumentElement: function() this.form_isDocumentElement,
+
+  isNode: function() this.form_isNode,
+
+  isConnected: function() this.form_isConnected,
+
+  getAttribute: function(name) {
+    if (!this._attrMap) {
+      this._attrMap = {};
+      for (let attr of this.attrs) {
+        attrMap[attr.name] = attr.value;
+      }
+    }
+    return this._attrMap[name];
+  },
+
+  get attributes() this.form_attrs,
+
+  get classList() [],
+
+  // doctype attributes
+  get name() this.form_name,
+  get publicId() this.form_publicId,
+  get systemId() this.form_systemId,
+
+  hasPseudoClassLock: function(pseudo) false,
+
+  _updateForm: function(form) {
+    for (let name of Object.getOwnPropertyNames(form)) {
+      this["form_" + name] = form[name];
+      if (name == 'attrs') {
+        delete this._attrMap;
+      }
+    }
+  }
+};
+
+
+function RemoteWalker(target, options)
+{
+  new EventEmitter(this);
+
+  this.client = target.client;
+  this.tabForm = target.form;
+  this.options = options;
+  this._refMap = new Map();
+  this.init();
+}
+
+RemoteWalker.prototype = {
+  _ref: function(form) {
+    if (this._refMap.has(form.actor)) {
+      return this._refMap.get(form.actor);
+    }
+
+    let ref = new RemoteRef(form);
+    this._refMap.set(form.actor, ref)
+    return ref;
+  },
+
+  _promisedRequest: function(packet) {
+    let deferred = promise.defer();
+    this.client.request(packet, function(aResponse) {
+      if (aResponse.error) {
+        deferred.reject(aResponse.error);
+      } else {
+        deferred.resolve(aResponse);
+      }
+    });
+    return deferred.promise;
+  },
+
+  _request: function(packet) {
+    return this.init().then(function() {
+      packet.to = this._walkerID;
+      return this._promisedRequest(packet);
+    }.bind(this));
+  },
+
+  init: function() {
+    if (this.deferredInit) {
+      return this.deferredInit;
+    }
+
+    this.deferredInit = this._promisedRequest({
+      to: this.tabForm.inspectorActor,
+      type: "getWalker"
+    }).then(function(response) {
+      this._walkerID = response.actor;
+      return response;
+    }.bind(this)).then(promisePass, promiseError)
+    return this.deferredInit;
+  },
+
+  root: function() {
+    return this._request({ type: "root" }).then(function(response) {
+      return this._ref(response.root);
+    }.bind(this)).then(promisePass, promiseError)
+  },
+
+  children: function(node, options={}) {
+    return this._request({
+      type: "children",
+      node: node.actorID,
+      include: options.include ? options.include.actorID : undefined,
+      maxChildren: options.maxChildren || undefined
+    }).then(function(response) {
+      return {
+        hasFirst: response.hasFirst,
+        hasLast: response.hasLast,
+        children: [this._ref(form) for (form of response.children)]
+      };
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  parents: function(node) {
+    return this._request({
+      type: "parents",
+      node: node.actorID
+    }).then(function(response) {
+      return [this._ref(form) for (form of response.parents)];
+    }.bind(this)).then(promisePass, promiseError);
+  },
+};
+
+function promisePass(r) {
+  return r;
+}
+function promiseError(ex) {
+  dump(ex + "\n");
+  dump(ex.stack);
+//  Services.console.logStringMessage(ex);
+  return ex;
+}
+
+this.createWalker = function(target, options) {
+  if (target.document) {
+    return new DOMWalker(target.document, options);
+  }
+  if (target.client) {
+    return new RemoteWalker(target, options);
+  }
+};
+
 
 function documentWalker(node, whatToShow=Ci.nsIDOMNodeFilter.SHOW_ALL) {
   return new DocumentWalker(node, whatToShow, whitespaceTextFilter, false);

@@ -68,7 +68,10 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   }
 
   this.undo = new UndoStack();
-  this.undo.installController(aControllerWindow);
+  // XXX: we're getting a null controller window from a remote target.
+  if (aControllerWindow) {
+    this.undo.installController(aControllerWindow);
+  }
 
   this._containers = new WeakMap();
 
@@ -121,6 +124,9 @@ MarkupView.prototype = {
   {
     if (this._inspector.selection.isNode()) {
       let node = this._inspector.selection.nodeRef;
+      if (this._selectedContainer && node === this._selectedContainer.node) {
+        return;
+      }
       this.importNodeDeep(node).then(function() {
         return this.showNode(node, true);
       }.bind(this)).then(function() {
@@ -286,7 +292,13 @@ MarkupView.prototype = {
       return;
     }
 
+    if (this._selectedContainer === aContainer) {
+      // Nothing to do here.
+      return;
+    }
+
     let node = aContainer.node;
+
     this.scrollToNode(node, false);
 
     this._inspector.selection.setNodeRef(node, "treepanel");
@@ -335,7 +347,7 @@ MarkupView.prototype = {
       return this._containers.get(aNode);
     }
 
-    if (aNode.parentKey) {
+    if (!aNode.isWalkerRoot()) {
       var container = new MarkupContainer(this, aNode);
     } else {
       var container = new RootContainer(this, aNode);
@@ -386,6 +398,8 @@ MarkupView.prototype = {
    */
   showNode: function MT_showNode(aNode, centered)
   {
+    // XXX: We shouldn't have to query parents here if the node is already
+    // attached...
     return this.walker.parents(aNode).then(function(aParents) {
       let promises = [];
       for (let i = 0; i < aParents.length; i++) {
@@ -536,10 +550,10 @@ MarkupView.prototype = {
       return promise.resolve(undefined);
     }
 
-    let p = this.walker.children(aContainer.node,
-      { include: aVisibleChild,
-        maxChildren: aContainer.maxChildren || this.maxChildren });
-    p.then(function(children) {
+    return this.walker.children(aContainer.node, {
+      include: aVisibleChild,
+      maxChildren: aContainer.maxChildren || this.maxChildren
+    }).then(function(children) {
       aContainer.childrenDirty = false;
       let fragment = this.doc.createDocumentFragment();
 
@@ -585,7 +599,6 @@ MarkupView.prototype = {
       }
 
       aContainer.children.appendChild(fragment);
-      return promise.resolve(undefined);
     }.bind(this)).then(promisePass, promiseError);
   },
 

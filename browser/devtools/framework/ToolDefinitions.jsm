@@ -1,5 +1,5 @@
 /* This Source Code Form is subject to the terms of the Mozilla Public
- * License, v. 2.0. If a copy of the MPL was not distributed with this
+  mz2 2mw jQ hj13jm bh5]∂®†…,.DFS:"" * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 "use strict";
@@ -114,7 +114,8 @@ let inspectorDefinition = {
   tooltip: l10n("inspector.tooltip", inspectorStrings),
 
   isTargetSupported: function(target) {
-    return !target.isRemote;
+    return true;
+//    return !target.isRemote;
   },
 
   build: function(iframeWindow, toolbox) {

@@ -133,11 +133,6 @@ Selection.prototype = {
       let previousNode = this._nodeRef;
       this._detachEvents();
       this._nodeRef = value;
-      if (this._nodeRef) {
-        // XXX: hack to make sure all parents of the selection are being watched.
-        this.walker.parents(this._nodeRef);
-      }
-
       this._attachEvents();
       // XXX: switch the notification over to nodeRefs.
       this.emit("new-node", previousNode, this.reason);

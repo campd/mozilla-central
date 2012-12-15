@@ -20,6 +20,14 @@ XPCOMUtils.defineLazyModuleGetter(this, "TargetFactory",
 
 const FORBIDDEN_IDS = new Set("toolbox", "");
 
+// XXX: temporary testing
+Cu.import("resource://gre/modules/devtools/dbg-server.jsm")
+if (!DebuggerServer.initialized) {
+  DebuggerServer.init();
+  DebuggerServer.addBrowserActors();
+}
+DebuggerServer.openListener(6000);
+
 /**
  * DevTools is a class that represents a set of developer tools, it holds a
  * set of tools and keeps track of open toolboxes in the browser.

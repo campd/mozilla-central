@@ -190,6 +190,9 @@ var DebuggerServer = {
     this.addGlobalActor(this.WebConsoleActor, "consoleActor");
     if ("nsIProfiler" in Ci)
       this.addActors("chrome://global/content/devtools/dbg-profiler-actors.js");
+
+    this.addActors("chrome://global/content/devtools/dbg-inspector-actors.js");
+    this.addTabActor(this.InspectorActor, "inspectorActor");
   },
 
   /**

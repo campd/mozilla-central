@@ -128,7 +128,7 @@ RuleViewTool.prototype = {
   },
 
   refresh: function RVT_refresh() {
-    if (this.isActive()) {
+    if (this.isActive() && this.inspector.selection.rawNode) {
       this.view.nodeChanged();
     }
   },
