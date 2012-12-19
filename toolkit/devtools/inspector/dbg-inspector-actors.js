@@ -108,6 +108,9 @@ function DOMWalkerActor(aParentActor, aWalker)
   this._nodePool = new DOMNodePool(this);
   this.conn.addActorPool(this._nodePool);
 
+  this._boundOnMutations = this._onMutations.bind(this);
+  this.walker.on("mutations", this._boundOnMutations);
+
   this.sendError = function(error) {
     this.conn.send({
       from: this.actorID,
@@ -126,6 +129,9 @@ DOMWalkerActor.prototype = {
 
   disconnect: function DWA_disconnect()
   {
+    this.walker.off("mutations", this._boundOnMutations);
+    delete this._boundOnMutations;
+
     this.conn.removeActorPool(this._actorPool);
     delete this._actorPool;
     this.parent.releaseActor(this);
@@ -136,6 +142,39 @@ DOMWalkerActor.prototype = {
   _nodeForm: function DWA_nodeForm(node)
   {
     return this._nodePool.fromNode(node).form();
+  },
+
+  _onMutations: function DWA_onMutations(event, mutations)
+  {
+    let toSend = [];
+    for (let mutation of mutations) {
+      if (!mutation.target.__actorID) {
+        // This isn't a node we're monitoring.
+        continue;
+      }
+      let target = mutation.target.__actorID;
+      if (mutation.type == "childList") {
+        toSend.push({
+          target: target,
+          type: "childList",
+        });
+      } else if (mutation.type == "attributes") {
+        toSend.push({
+          target: target,
+          type: "attributes",
+          attributeName: mutation.attributeName,
+          attributeNamespace: mutation.attributeNamespace,
+          oldValue: mutation.oldValue,
+          newValue: mutation.target.rawNode.getAttribute(mutation.attributeName)
+        });
+      }
+    }
+
+    this.conn.send({
+      from: this.actorID,
+      type: "mutations",
+      mutations: toSend
+    });
   },
 
   onRoot: function DWA_onRoot(aPacket)
@@ -232,7 +271,8 @@ DOMNodeActor.prototype = {
       let attrs = [];
       for (let i = 0; i < this.nodeRef.attributes.length; i++) {
         let attr = this.nodeRef.attributes[i];
-        attrs.push({name: attr.name, value: attr.value});
+        // XXX: namespace?
+        attrs.push({name: attr.name, value: attr.value });
       }
       form.attrs = attrs;
     }

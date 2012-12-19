@@ -91,6 +91,7 @@ DOMRef.prototype = {
   get publicId() this._rawNode.publicId,
   get systemId() this._rawNode.systemId,
 
+  // This means we need to send a change notification for pseudo-class locks.
   hasPseudoClassLock: function(pseudo) DOMUtils.hasPseudoClassLock(this._rawNode, pseudo),
 };
 
@@ -433,14 +434,19 @@ RemoteRef.prototype = {
 
   isConnected: function() this.form_isConnected,
 
-  getAttribute: function(name) {
+  _getAttribute: function(name) {
     if (!this._attrMap) {
       this._attrMap = {};
-      for (let attr of this.attrs) {
-        attrMap[attr.name] = attr.value;
+      for (let attr of this.form_attrs) {
+        this._attrMap[attr.name] = attr;
       }
     }
     return this._attrMap[name];
+  },
+
+  getAttribute: function(name) {
+    let attr = this._getAttribute(name);
+    return attr ? attr.value : null;
   },
 
   get attributes() this.form_attrs,
@@ -461,6 +467,29 @@ RemoteRef.prototype = {
         delete this._attrMap;
       }
     }
+  },
+
+  _updateMutation: function(mutation) {
+    if (mutation.type == "attributes") {
+      if (mutation.newValue === null) {
+        // XXX: get attribute namespace right.
+        this.form_attrs = this._form_attrs.filter(function (a) a.name != mutation.attributeName);
+        delete this._attrMap[mutation.attributeName];
+      } else {
+        let attr = this._getAttribute(mutation.attributeName);
+        if (attr) {
+          attr.value = mutation.newValue;
+        } else {
+          let attr = {
+            name: mutation.attributeName,
+            namespaceURI: mutation.attributeNamespace || undefined,
+            value: mutation.newValue
+          };
+          this._attrMap[mutation.attributeName] = attr;
+          this.form_attrs.push(attr);
+        }
+      }
+    }
   }
 };
 
@@ -473,10 +502,20 @@ function RemoteWalker(target, options)
   this.tabForm = target.form;
   this.options = options;
   this._refMap = new Map();
+
+  this._boundOnMutations = this._onMutations.bind(this);
+  this.client.addListener("mutations", this._boundOnMutations);
+
   this.init();
 }
 
 RemoteWalker.prototype = {
+  destroy: function() {
+    // XXX: disconnect the actor.
+    this.client.removeListener("mutations", this._boundOnMutations);
+    delete this._boundOnMutations;
+  },
+
   _ref: function(form) {
     if (this._refMap.has(form.actor)) {
       return this._refMap.get(form.actor);
@@ -504,6 +543,28 @@ RemoteWalker.prototype = {
       packet.to = this._walkerID;
       return this._promisedRequest(packet);
     }.bind(this));
+  },
+
+  _onMutations: function(aType, aPacket) {
+    if (aPacket.from != this._walkerID) {
+      return;
+    }
+
+    let toEmit = [];
+
+    for (let mutation of aPacket.mutations) {
+      let localRef = this._refMap.get(mutation.target);
+      localRef._updateMutation(mutation);
+      // XXX; I don't like how often we have to repeat these things :/
+      toEmit.push({
+        target: localRef,
+        type: mutation.type,
+        attributeName: mutation.attributeName || undefined,
+        attributeNamespace: mutation.attributeNamespace || undefined,
+        oldValue: mutation.oldValue || undefined,
+      });
+    }
+    this.emit("mutations", toEmit);
   },
 
   init: function() {
