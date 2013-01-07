@@ -586,7 +586,6 @@ HTMLBreadcrumbs.prototype = {
 
       doneSelecting = promise.resolve(null);
     } else {
-      dump("parents from doneSelecting\n");
       doneSelecting = this.walker.parents(this.selection.nodeRef).then(function(parents) {
         // No. Is the breadcrumbs display empty?
         if (this.nodeHierarchy.length > 0) {

@@ -114,7 +114,7 @@ ClassListRef.prototype = {
  */
 this.DOMWalker = function DOMWalker(document, options)
 {
-  new EventEmitter(this);
+  EventEmitter.decorate(this);
   this._doc = document;
   this._refMap = new WeakMap();
 
@@ -180,7 +180,7 @@ DOMWalker.prototype = {
 
     if (!firstChild) {
       // No children, we're done.
-      return promise.resolve({ hasFirst: true, hasLast: true, children: [] });
+      return promise.resolve({ hasFirst: true, hasLast: true, nodes: [] });
     }
 
     // By default try to put the selected child in the middle of the list.
@@ -640,8 +640,8 @@ function promiseError(ex) {
 }
 
 this.createWalker = function(target, options) {
-  if (target.document) {
-    return new DOMWalker(target.document, options);
+  if (target.window) {
+    return new DOMWalker(target.window.document, options);
   }
   if (target.client) {
     return new RemoteWalker(target, options);

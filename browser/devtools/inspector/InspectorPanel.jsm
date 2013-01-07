@@ -306,7 +306,7 @@ InspectorPanel.prototype = {
   onDetached: function InspectorPanel_onDetached(event, parentNode) {
     this.cancelLayoutChange();
     this.breadcrumbs.cutAfter(this.breadcrumbs.indexOf(parentNode));
-    this.selection.setNode(parentNode, "detached");
+    this.selection.setNodeRef(parentNode, "detached");
   },
 
   /**

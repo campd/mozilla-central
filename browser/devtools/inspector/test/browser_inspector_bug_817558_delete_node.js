@@ -26,7 +26,7 @@ function test()
   function runTests(aInspector)
   {
     inspector = aInspector;
-    inspector.selection.setNode(node);
+    inspector.selection.setRawNode(node);
 
     let parentNode = node.parentNode;
     parentNode.removeChild(node);
@@ -35,7 +35,7 @@ function test()
     Cu.import("resource:///modules/devtools/LayoutHelpers.jsm", tmp);
     ok(!tmp.LayoutHelpers.isNodeConnected(node), "Node considered as disconnected.");
     executeSoon(function() {
-      is(inspector.selection.node, parentNode, "parent of selection got selected");
+      is(inspector.selection.rawNode, parentNode, "parent of selection got selected");
 
       finishUp();
     });

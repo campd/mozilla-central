@@ -572,24 +572,20 @@ MarkupView.prototype = {
           showAll: this.strings.formatStringFromName(
                     "markupView.more.showAll",
                     [aContainer.node.numChildren.toString()], 1),
-          eltAll: null // node will be created by the template
+          allButtonClick: function() {
+            aContainer.maxNodes = -1;
+            aContainer.childrenDirty = true;
+            this._updateChildren(aContainer);
+          }.bind(this)
         };
-
-        let loadMore = function() {
-          aContainer.maxNodes = -1;
-          aContainer.childrenDirty = true;
-          this._updateChildren(aContainer);
-        }.bind(this);
 
         if (!children.hasFirst) {
           let span = this.template("more-nodes", data);
           fragment.insertBefore(span, fragment.firstChild);
-          data.eltAll.addEventListener("click", loadMore, true);
         }
         if (!children.hasLast) {
           let span = this.template("more-nodes", data);
           fragment.appendChild(span);
-          data.eltAll.addEventListener("click", loadMore, true);
         }
       }
 
