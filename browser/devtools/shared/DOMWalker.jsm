@@ -93,6 +93,12 @@ DOMRef.prototype = {
 
   // This means we need to send a change notification for pseudo-class locks.
   hasPseudoClassLock: function(pseudo) DOMUtils.hasPseudoClassLock(this._rawNode, pseudo),
+
+  // XXX: we should just add a DOMUtils.activePseudoClassLocks() or something.
+  _pseudoClasses: null,
+  get pseudoClassLocks() {
+    return this._pseudoClasses ? Object.getOwnPropertyNames(this._pseudoClasses) : null;
+  },
 };
 
 // XXX: yuck, this should just be a proxy.
@@ -128,7 +134,6 @@ this.DOMWalker = function DOMWalker(document, options)
   }
 
   // pseudo-class lock implementation details.
-  this._pclMap = new Map();
   this._pclList = [];
 }
 
@@ -148,7 +153,6 @@ DOMWalker.prototype = {
     delete this._doc;
 
     this.clearPseudoClassLocks(null, { all: true });
-    delete this._pclMap;
     delete this._pclList;
   },
 
@@ -280,15 +284,16 @@ DOMWalker.prototype = {
   },
 
   _addPseudoClassLock: function(node, pseudo) {
+    let deferred = promise.defer();
     if (node.nodeType != Ci.nsIDOMNode.ELEMENT_NODE) {
       return;
     }
 
-    if (!this._pclMap.has(node)) {
-      this._pclMap.set(node, new Set());
+    if (!node._pseudoClasses) {
+      node._pseudoClasses = {};
       this._pclList.push(node);
     }
-    this._pclMap.get(node).add(pseudo);
+    node._pseudoClasses[pseudo] = true;
     DOMUtils.addPseudoClassLock(node._rawNode, pseudo);
   },
 
@@ -300,9 +305,12 @@ DOMWalker.prototype = {
     }
 
     return this.parents(node).then(function(parents) {
+      let modified = [node];
       for (let parent of parents) {
         this._addPseudoClassLock(parent, pseudo);
+        modified.push(parent);
       }
+      return modified;
     }.bind(this));
   },
 
@@ -311,11 +319,9 @@ DOMWalker.prototype = {
       return;
     }
 
-    if (this._pclMap.has(node)) {
-      let set = this._pclMap.get(node);
-      set.delete(pseudo);
-      if (set.size == 0) {
-        this._pclMap.delete(node);
+    if (node._pseudoClasses) {
+      delete node._pseudoClasses[pseudo];
+      if (Object.getOwnPropertyNames(node._pseudoClasses).length == 0) {
         this._pclList = this._pclList.filter(function(n) n != node);
       }
     }
@@ -330,26 +336,33 @@ DOMWalker.prototype = {
     }
 
     return this.parents(node).then(function(parents) {
+      let modified = [node];
       for (let parent of parents) {
         this._removePseudoClassLock(parent, pseudo);
+        modified.push(parent);
       }
+      return modified;
     }.bind(this));
   },
 
   clearPseudoClassLocks: function(node, options={}) {
+    let modified = [];
     if (node) {
       DOMUtils.clearPseudoClassLocks(node._rawNode);
-      this._pclMap.delete(node);
+      node._pseudoClasses = null;
       this._pclList = this._pclList.filter(function(n) n != node);
+      modified.push(node);
     }
     if (options.all) {
+      modified = modified.concat(this._pclList);
       for (let lockedNode of this._pclList) {
         DOMUtils.clearPseudoClassLocks(lockedNode._rawNode);
+        lockedNode._pseudoClasses = null;
+        modified.push(lockedNode);
       }
-      this._pclMap.clear();
       this._pclList = [];
     }
-    return promise.resolve(undefined);
+    return promise.resolve(modified);
   },
 
   /**
@@ -458,15 +471,33 @@ RemoteRef.prototype = {
   get publicId() this.form_publicId,
   get systemId() this.form_systemId,
 
-  hasPseudoClassLock: function(pseudo) false,
+  hasPseudoClassLock: function(pseudo) {
+    if (!this.form_pseudoClassLocks) {
+      return false;
+    }
+    if (!this._lockMap) {
+      this._lockMap = new Map();
+      for (let lock of this.form_pseudoClassLocks) {
+        this._lockMap.set(lock);
+      }
+    }
+    return this._lockMap.has(pseudo);
+  },
 
   _updateForm: function(form) {
     for (let name of Object.getOwnPropertyNames(form)) {
       this["form_" + name] = form[name];
       if (name == 'attrs') {
         delete this._attrMap;
+      } else if (name == "pseudoClassLocks") {
+        delete this._lockMap;
       }
     }
+  },
+
+  _updateLocks: function(lock) {
+    delete this._lockMap;
+    this.form_pseudoClassLocks = lock.pseudoClassLocks;
   },
 
   _updateMutation: function(mutation) {
@@ -496,7 +527,7 @@ RemoteRef.prototype = {
 
 function RemoteWalker(target, options)
 {
-  new EventEmitter(this);
+  EventEmitter.decorate(this);
 
   this.client = target.client;
   this.tabForm = target.form;
@@ -524,6 +555,13 @@ RemoteWalker.prototype = {
     let ref = new RemoteRef(form);
     this._refMap.set(form.actor, ref)
     return ref;
+  },
+
+  _refForActor: function(actor) {
+    if (this._refMap.has(actor)) {
+      return this._refMap.get(actor);
+    }
+    return null;
   },
 
   _promisedRequest: function(packet) {
@@ -626,6 +664,50 @@ RemoteWalker.prototype = {
     }).then(function(response) {
       return [this._ref(form) for (form of response.nodes)];
     }.bind(this)).then(promisePass, promiseError);
+  },
+
+  _updatePseudoClassLocks: function(response) {
+    let ret = [];
+    for (let modified of response.nodes) {
+      let ref = this._refForActor(modified.actor);
+      if (ref) {
+        ref._updateLocks(modified);
+        ret.push(ref);
+      }
+    }
+    return ret;
+  },
+
+  addPseudoClassLock: function(node, pseudo, options={}) {
+    return this._request({
+      type: "addPseudoClassLock",
+      node: node.actorID,
+      pseudo: pseudo,
+      parents: options.parents || undefined,
+    }).then(function(response) {
+      return this._updatePseudoClassLocks(response);
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  removePseudoClassLock: function(node, pseudo, options={}) {
+    return this._request({
+      type: "removePseudoClassLock",
+      node: node.actorID,
+      pseudo: pseudo,
+      parents: options.parents || undefined,
+    }).then(function(response) {
+      return this._updatePseudoClassLocks(response);
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  clearPseudoClassLocks: function(node, options={}) {
+    return this._request({
+      type: "clearPseudoClassLocks",
+      node: node ? node.actorID : undefined,
+      all: options.all || undefined
+    }).then(function(response) {
+      return this._updatePseudoClassLocks(response);
+    });
   },
 };
 

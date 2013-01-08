@@ -78,7 +78,9 @@ InspectorActor.prototype =
 
   releaseActor: function IA_releaseActor(aActor)
   {
-    this._actorPool.removeActor(aActor.actorID);
+    if (this._actorPool) {
+      this._actorPool.removeActor(aActor.actorID);
+    }
   },
 
   onGetWalker: function IA_getWalker(aPacket)
@@ -131,6 +133,8 @@ DOMWalkerActor.prototype = {
   {
     this.walker.off("mutations", this._boundOnMutations);
     delete this._boundOnMutations;
+
+    this.walker.destroy();
 
     this.conn.removeActorPool(this._actorPool);
     delete this._actorPool;
@@ -231,6 +235,50 @@ DOMWalkerActor.prototype = {
     }.bind(this)).then(null, this.sendError);
   },
 
+  _respondPseudoClasses: function(modified) {
+    let nodes = [];
+    for (let node of modified) {
+      let actor = this._nodePool.nodeActor(node);
+      nodes.push({
+        actor: actor,
+        pseudoClassLocks: node.pseudoClassLocks
+      });
+    }
+    this.conn.send({
+      from: this.actorID,
+      nodes: nodes
+    });
+  },
+
+  onAddPseudoClassLock: function DWA_onPseudoClassLock(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node);
+    this.walker.addPseudoClassLock(node, aPacket.pseudo, {
+      parents: aPacket.parents || undefined,
+    }).then(function(modified) {
+      this._respondPseudoClasses(modified);
+    }.bind(this));
+  },
+
+  onRemovePseudoClassLock: function DWA_onPseudoClassLock(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node);
+    this.walker.removePseudoClassLock(node, aPacket.pseudo, {
+      parents: aPacket.parents || undefined,
+    }).then(function(modified) {
+      this._respondPseudoClasses(modified);
+    }.bind(this));
+  },
+  onClearPseudoClassLocks: function DWA_onPseudoClassLock(aPacket)
+  {
+    let node = aPacket.node ? this._nodePool.node(aPacket.node) : null;
+    this.walker.clearPseudoClassLocks(node, aPacket.pseudo, {
+      all: aPacket.all || undefined,
+    }).then(function(modified) {
+      this._respondPseudoClasses(modified);
+    }.bind(this));
+  },
+
 };
 
 DOMWalkerActor.prototype.requestTypes = {
@@ -238,6 +286,9 @@ DOMWalkerActor.prototype.requestTypes = {
   parents: DOMWalkerActor.prototype.onParents,
   children: DOMWalkerActor.prototype.onChildren,
   siblings: DOMWalkerActor.prototype.onSiblings,
+  addPseudoClassLock: DOMWalkerActor.prototype.onAddPseudoClassLock,
+  removePseudoClassLock: DOMWalkerActor.prototype.onRemovePseudoClassLock,
+  clearPseudoClassLocks: DOMWalkerActor.prototype.onClearPseudoClassLocks,
 };
 
 // These are ephemeral, created as needed by the DOMWalkerNodePool.
@@ -259,9 +310,10 @@ DOMNodeActor.prototype = {
     for (let attr of [
       "id", "className", "numChildren",
       "nodeType", "namespaceURI", "tagName", "nodeName", "nodeValue",
-      "name", "publicId", "systemId"]) {
+      "name", "publicId", "systemId", "pseudoClassLocks"]) {
       form[attr] = this.nodeRef[attr];
     }
+
     for (let attr of [
       "isDocumentElement", "isNode", "isConnected"]) {
       form[attr] = this.nodeRef[attr]();
@@ -301,6 +353,10 @@ DOMNodePool.prototype = {
     }
 
     return new DOMNodeActor(aNodeRef)
+  },
+
+  nodeActor: function(aNodeRef) {
+    return aNodeRef.__actorID || this.fromNode(aNodeRef).actorID;
   },
 
   node: function DNP_node(aActorID) {

@@ -487,18 +487,21 @@ InspectorPanel.prototype = {
       return;
     }
 
+    let promise = null;
     if (this.selection.nodeRef.hasPseudoClassLock(aPseudo)) {
-      this.walker.removePseudoClassLock(this.selection.nodeRef, aPseudo, {
+      promise = this.walker.removePseudoClassLock(this.selection.nodeRef, aPseudo, {
         parents: true
       });
     } else {
       let hierarchical = aPseudo == ":hover" || aPseudo == ":active";
       // XXX; should pseudoclass locks traverse document lines?
-      this.walker.addPseudoClassLock(this.selection.nodeRef, aPseudo, {
+      promise = this.walker.addPseudoClassLock(this.selection.nodeRef, aPseudo, {
         parents: hierarchical
       });
     }
-    this.selection.emit("pseudoclass");
+    promise.then(function() {
+      this.selection.emit("pseudoclass");
+    }.bind(this));
   },
 
   /**
