@@ -128,7 +128,6 @@ MarkupView.prototype = {
         return;
       }
       this.importNodeDeep(node).then(function() {
-        dump("Done importing node\n");
         return this.showNode(node, true);
       }.bind(this)).then(function() {
         this.markNodeAsSelected(node);
@@ -320,7 +319,6 @@ MarkupView.prototype = {
     }
 
     return this.walker.parents(aNode).then(function(aParents) {
-      dump("Done getting parents\n");
       aParents.reverse();
       for (let parent of aParents) {
         this.importNode(parent);
@@ -913,11 +911,6 @@ function TextEditor(aContainer, aNode, aTemplate)
 
   this.update();
 
-  if (!aNode.rawNode) {
-    // Can't edit remotely yet.
-    return;
-  }
-
   _editableField({
     element: this.value,
     stopOnReturn: true,
@@ -929,11 +922,13 @@ function TextEditor(aContainer, aNode, aTemplate)
       }
       let oldValue = this.node.nodeValue;
       aContainer.undo.do(function() {
-        this.node.rawNode.nodeValue = aVal;
-        aContainer.markup.nodeChanged(this.node);
+        this.node.setNodeValue(aVal).then(function() {
+          aContainer.markup.nodeChanged(this.node);
+        }.bind(this));
       }.bind(this), function() {
-        this.node.rawNode.nodeValue = oldValue;
-        aContainer.markup.nodeChanged(this.node);
+        this.node.setNodeValue(oldValue).then(function() {
+          aContainer.markup.nodeChanged(this.node);
+        }.bind(this));
       }.bind(this));
     }.bind(this)
   });

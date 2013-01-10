@@ -52,7 +52,12 @@ DOMRef.prototype = {
   get namespaceURI() this._rawNode.namespaceURI,
   get tagName() this._rawNode.tagName,
   get nodeName() this._rawNode.nodeName,
+
   get nodeValue() this._rawNode.nodeValue,
+  setNodeValue: function(aValue) {
+    this._rawNode.nodeValue = aValue;
+    return promise.resolve(undefined);
+  },
 
   isWalkerRoot: function() {
     return !(documentWalker(this._rawNode).parentNode());
@@ -437,8 +442,9 @@ DOMWalker.prototype = {
   }
 };
 
-function RemoteRef(form)
+function RemoteRef(walker, form)
 {
+  this.walker = walker;
   this.actorID = form.actor;
 
   this._updateForm(form);
@@ -458,6 +464,14 @@ RemoteRef.prototype = {
   get tagName() this.form_tagName,
   get nodeName() this.form_nodeName,
   get nodeValue() this.form_nodeValue,
+
+  setNodeValue: function(aValue) {
+    return this.walker._promisedRequest({
+      to: this.actorID,
+      type: "setNodeValue",
+      value: aValue
+    });
+  },
 
   isWalkerRoot: function() !!this.form_isWalkerRoot,
 
@@ -540,6 +554,8 @@ RemoteRef.prototype = {
           this.form_attrs.push(attr);
         }
       }
+    } else if (mutation.type == "characterData") {
+      this.form_nodeValue = mutation.newValue;
     }
   }
 };
@@ -572,7 +588,7 @@ RemoteWalker.prototype = {
       return this._refMap.get(form.actor);
     }
 
-    let ref = new RemoteRef(form);
+    let ref = new RemoteRef(this, form);
     this._refMap.set(form.actor, ref)
     return ref;
   },

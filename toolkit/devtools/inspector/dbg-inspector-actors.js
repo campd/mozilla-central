@@ -171,6 +171,12 @@ DOMWalkerActor.prototype = {
           oldValue: mutation.oldValue,
           newValue: mutation.target.rawNode.getAttribute(mutation.attributeName)
         });
+      } else if (mutation.type == "characterData") {
+        toSend.push({
+          target: target,
+          type: "characterData",
+          newValue: mutation.target.nodeValue,
+        });
       }
     }
 
@@ -317,8 +323,9 @@ DOMWalkerActor.prototype.requestTypes = {
 };
 
 // These are ephemeral, created as needed by the DOMWalkerNodePool.
-function DOMNodeActor(aNodeRef, aActorID)
+function DOMNodeActor(aConn, aNodeRef)
 {
+  this.conn = aConn;
   this.nodeRef = aNodeRef;
   this.actorID = aNodeRef.__actorID;
 }
@@ -359,8 +366,19 @@ DOMNodeActor.prototype = {
     }
 
     return form;
-  }
+  },
+
+  onSetNodeValue: function DNA_onSetNodeValue(aPacket) {
+    this.nodeRef.setNodeValue(aPacket.value);
+    this.conn.send({
+      from: this.actorID,
+    });
+  },
 }
+
+DOMNodeActor.prototype.requestTypes = {
+  setNodeValue: DOMNodeActor.prototype.onSetNodeValue,
+};
 
 
 function DOMNodePool(aActor) {
@@ -377,7 +395,7 @@ DOMNodePool.prototype = {
       this.idMap.set(aNodeRef.__actorID, aNodeRef);
     }
 
-    return new DOMNodeActor(aNodeRef)
+    return new DOMNodeActor(this.walkerActor.conn, aNodeRef)
   },
 
   nodeActor: function(aNodeRef) {
@@ -393,7 +411,7 @@ DOMNodePool.prototype = {
   },
 
   get: function DNP_get(aActorID) {
-    return new DOMNodeActor(this.idMap.get(aActorID));
+    return new DOMNodeActor(this.walkerActor.conn, this.idMap.get(aActorID));
   },
 
   isEmpty: function DNP_isEmpty() {
