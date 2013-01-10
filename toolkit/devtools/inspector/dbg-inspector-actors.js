@@ -191,6 +191,28 @@ DOMWalkerActor.prototype = {
     }.bind(this)).then(null, this.sendError);
   },
 
+  onDocument: function DWA_onDocument(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node || undefined);
+    this.walker.document(node).then(function(doc) {
+      this.conn.send({
+        from: this.actorID,
+        node: this._nodeForm(doc)
+      });
+    }.bind(this)).then(null, this.sendError);
+  },
+
+  onDocumentElement: function DWA_onDocument(aPacket)
+  {
+    let node = this._nodePool.node(aPacket.node || undefined);
+    this.walker.documentElement(node).then(function(elt) {
+      this.conn.send({
+        from: this.actorID,
+        node: this._nodeForm(elt)
+      });
+    }.bind(this)).then(null, this.sendError);
+  },
+
   onParents: function DWA_onChildren(aPacket)
   {
     let node = this._nodePool.node(aPacket.node);
@@ -269,6 +291,7 @@ DOMWalkerActor.prototype = {
       this._respondPseudoClasses(modified);
     }.bind(this));
   },
+
   onClearPseudoClassLocks: function DWA_onPseudoClassLock(aPacket)
   {
     let node = aPacket.node ? this._nodePool.node(aPacket.node) : null;
@@ -283,6 +306,8 @@ DOMWalkerActor.prototype = {
 
 DOMWalkerActor.prototype.requestTypes = {
   root: DOMWalkerActor.prototype.onRoot,
+  document: DOMWalkerActor.prototype.onDocument,
+  documentElement: DOMWalkerActor.prototype.onDocumentElement,
   parents: DOMWalkerActor.prototype.onParents,
   children: DOMWalkerActor.prototype.onChildren,
   siblings: DOMWalkerActor.prototype.onSiblings,

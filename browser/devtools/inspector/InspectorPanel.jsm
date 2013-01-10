@@ -102,24 +102,16 @@ InspectorPanel.prototype = {
     this.isReady = false;
 
     this.once("markuploaded", function() {
-      this.isReady = true;
+      this.walker.documentElement().then(function(node) {
+        this.isReady = true;
+        this._selection.setNodeRef(node);
+        if (this.highlighter) {
+          this.highlighter.unlock();
+        }
 
-      // All the components are initialized. Let's select a node.
-      if (this.tabTarget) {
-        let root = this.browser.contentDocument.documentElement;
-        this._selection.setRawNode(root);
-      }
-      if (this.winTarget) {
-        let root = this.target.window.document.documentElement;
-        this._selection.setRawNode(root);
-      }
-
-      if (this.highlighter) {
-        this.highlighter.unlock();
-      }
-
-      this.emit("ready");
-      deferred.resolve(this);
+        this.emit("ready");
+        deferred.resolve(this);
+      }.bind(this));
     }.bind(this));
 
     this.setupSidebar();

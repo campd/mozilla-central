@@ -156,8 +156,28 @@ DOMWalker.prototype = {
     delete this._pclList;
   },
 
-  root: function() {
-    return promise.resolve(this._ref(this._doc));
+  /**
+   * Return the document node that contains the given node,
+   * or the root node if no node is specified.
+   * @param NodeRef aNode
+   *        The node whose document is needed, or null to
+   *        return the root.
+   */
+  document: function(aNode) {
+    let doc = aNode ? aNode._rawNode.ownerDocument : this._doc;
+    return promise.resolve(this._ref(doc));
+  },
+
+  /**
+   * Return the documentElement for the document containing the
+   * given node.
+   * @param NodeRef aNode
+   *        The node whose documentElement is requested, or null
+   *        to use the root document.
+   */
+  documentElement: function(aNode) {
+    let elt = aNode ? aNode._rawNode.ownerDocument.documentElement : this._doc.documentElement;
+    return promise.resolve(this._ref(elt));
   },
 
   parents: function(node, options) {
@@ -616,14 +636,26 @@ RemoteWalker.prototype = {
     }).then(function(response) {
       this._walkerID = response.actor;
       return response;
-    }.bind(this)).then(promisePass, promiseError)
+    }.bind(this)).then(promisePass, promiseError);
     return this.deferredInit;
   },
 
-  root: function() {
-    return this._request({ type: "root" }).then(function(response) {
-      return this._ref(response.root);
-    }.bind(this)).then(promisePass, promiseError)
+  document: function(aNode) {
+    return this._request({
+      type: "document",
+      node: aNode ? aNode.actorID : undefined,
+    }).then(function(response) {
+      return this._ref(response.node);
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  documentElement: function(aNode) {
+    return this._request({
+      type: "documentElement",
+      node: aNode ? aNode.actorID : undefined,
+    }).then(function(response) {
+      return this._ref(response.node);
+    }.bind(this)).then(promisePass, promiseError);
   },
 
   children: function(node, options={}) {

@@ -89,7 +89,7 @@ this.MarkupView = function MarkupView(aInspector, aFrame, aControllerWindow)
   this._boundMutationObserver = this._mutationObserver.bind(this);
   this.walker.on("mutations", this._boundMutationObserver);
 
-  this.walker.root().then(function(node) {
+  this.walker.document().then(function(node) {
     let container = this.importNode(node);
     this._updateChildren(container);
   }.bind(this)).then(promisePass, promiseError);
@@ -128,6 +128,7 @@ MarkupView.prototype = {
         return;
       }
       this.importNodeDeep(node).then(function() {
+        dump("Done importing node\n");
         return this.showNode(node, true);
       }.bind(this)).then(function() {
         this.markNodeAsSelected(node);
@@ -319,6 +320,7 @@ MarkupView.prototype = {
     }
 
     return this.walker.parents(aNode).then(function(aParents) {
+      dump("Done getting parents\n");
       aParents.reverse();
       for (let parent of aParents) {
         this.importNode(parent);
