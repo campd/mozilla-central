@@ -585,9 +585,17 @@ HTMLBreadcrumbs.prototype = {
       this.setCursor(idx);
 
       doneSelecting = promise.resolve(null);
+    } else if (this._requestingSelection &&
+               this._requestingSelection === this.selection.nodeRef) {
+      // We're already in the process of fetching this selection,
+      // don't bother doing it again.
+      doneSelecting = null;
     } else {
+      // Not already displayed in the breadcrumbs.
+      this._requestingSelection = this.selection.nodeRef;
       doneSelecting = this.walker.parents(this.selection.nodeRef).then(function(parents) {
-        // No. Is the breadcrumbs display empty?
+        delete this._requestingSelection;
+        // Is the breadcrumbs display empty?
         if (this.nodeHierarchy.length > 0) {
           // No. We drop all the element that are not direct ancestors
           // of the selection
@@ -604,6 +612,10 @@ HTMLBreadcrumbs.prototype = {
         idx = this.indexOf(this.selection.nodeRef);
         this.setCursor(idx);
       }.bind(this)).then(promisePass, promiseError);
+    }
+
+    if (!doneSelecting) {
+      return;
     }
 
     doneSelecting.then(function() {

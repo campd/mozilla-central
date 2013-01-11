@@ -127,6 +127,13 @@ MarkupView.prototype = {
       if (this._selectedContainer && node === this._selectedContainer.node) {
         return;
       }
+
+      // Try to mark the node selected immediately.  If it doesn't work
+      // we'll try again.
+      if (this._containers.get(node)) {
+        this.markNodeAsSelected(node);
+      }
+
       this.importNodeDeep(node).then(function() {
         return this.showNode(node, true);
       }.bind(this)).then(function() {
@@ -391,6 +398,56 @@ MarkupView.prototype = {
   },
 
   /**
+   * @returns an array of nodes, or null if we don't trust the
+   *          hierarchy.
+   */
+  _localParents: function MT__localParents(aNode)
+  {
+    if (aNode === this._rootNode) {
+      // Trustworthy, but empty.
+      return [];
+    }
+
+    let container = this._containers.get(aNode);
+    if (!container) {
+      // We don't have the node at all.
+      return null;
+    }
+
+    let rootContainer = this._containers.get(this._rootNode);
+    let parents = [];
+    container = container.parentContainer;
+    while (container) {
+      if (container.childrenDirty) {
+        // We can't trust the local list.
+        return null;
+      }
+      parents.push(container.node);
+      if (container === rootContainer) {
+        return parents;
+      }
+
+      container = container.parentContainer;
+    }
+
+    // We didn't reach the root, we don't have a good list.
+    return null;
+  },
+
+  /**
+   * Returns parents of the node, using the local structure
+   * if we think it's trustworthy.
+   */
+  _parents: function MT__parents(aNode)
+  {
+    let parents = this._localParents(aNode);
+    if (parents !== null) {
+      return promise.resolve(parents);
+    }
+    return this.walker.parents(aNode);
+  },
+
+  /**
    * Make sure the given node's parents are expanded and the
    * node is scrolled on to screen.
    *
@@ -398,9 +455,7 @@ MarkupView.prototype = {
    */
   showNode: function MT_showNode(aNode, centered)
   {
-    // XXX: We shouldn't have to query parents here if the node is already
-    // attached...
-    return this.walker.parents(aNode).then(function(aParents) {
+    return this._parents(aNode).then(function(aParents) {
       let promises = [];
       for (let i = 0; i < aParents.length; i++) {
         let parent = aParents[i];
@@ -743,6 +798,7 @@ function MarkupContainer(aMarkupView, aNode)
   this.children = null;
   this.markup.template("container", this);
   this.elt.container = this;
+  this.children.container = this;
 
   this.expander.addEventListener("click", function() {
     this.markup.navigate(this);
@@ -856,6 +912,15 @@ MarkupContainer.prototype = {
       focusable.focus();
     }
   },
+
+  /**
+   * Return the container above this container in the document.
+   * This might not always match the element's parent's container
+   * (for example, if the parent container's chidlren list is out of date)
+   */
+  get parentContainer() {
+    return this.elt.parentNode ? this.elt.parentNode.container : null;
+  }
 }
 
 /**
@@ -865,8 +930,10 @@ function RootContainer(aMarkupView, aNode)
 {
   this.doc = aMarkupView.doc;
   this.elt = this.doc.createElement("ul");
+  this.elt.container = this;
   this.children = this.elt;
   this.node = aNode;
+  this.parentContainer = null;
 }
 
 /**
