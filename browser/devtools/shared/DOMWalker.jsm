@@ -690,17 +690,11 @@ RemoteWalker.prototype = {
   },
 
   nodeToProtocol: function(node) node ? node.actorID : node,
-  nodeFromProtocol: function(form) form ? this._ref(form) : form,
-
-  pseudoModificationFromProtocol: function(modified) {
-    let ref = this._refForActor(modified.actor);
-    if (ref) {
-      ref._updateLocks(modified);
+  nodeFromProtocol: function(form) {
+    if (!form) {
+      return form;
     }
-    return ref;
-  },
 
-  _ref: function(form) {
     if (this._refMap.has(form.actor)) {
       return this._refMap.get(form.actor);
     }
@@ -710,11 +704,12 @@ RemoteWalker.prototype = {
     return ref;
   },
 
-  _refForActor: function(actor) {
-    if (this._refMap.has(actor)) {
-      return this._refMap.get(actor);
+  pseudoModificationFromProtocol: function(modified) {
+    let ref = this._refMap.get(modified.actor);
+    if (ref) {
+      ref._updateLocks(modified);
     }
-    return null;
+    return ref;
   },
 
   _onMutations: function(aType, aPacket) {
@@ -751,11 +746,12 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
 {
   Remotable.initServer(DOMWalkerActor.prototype, DOMWalker.prototype);
 
+  this.impl = aWalker;
+
   this.conn = aParentActor.conn;
   this.parent = aParentActor;
   this._nodePool = new DOMNodePool(this);
   this.conn.addActorPool(this._nodePool);
-  this.impl = aWalker;
 
   this._boundOnMutations = this._onMutations.bind(this);
   this.impl.on("mutations", this._boundOnMutations);
@@ -763,8 +759,7 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
 
 DOMWalkerActor.prototype = {
   actorPrefix: "domwalker",
-  grip: function DWA_grip()
-  {
+  grip: function DWA_grip() {
     return { actor: this.actorID };
   },
 
@@ -772,9 +767,8 @@ DOMWalkerActor.prototype = {
     return "[DOMWalkerActor " + this.actorID + "]";
   },
 
-  disconnect: function DWA_disconnect()
-  {
-    this.imple.off("mutations", this._boundOnMutations);
+  disconnect: function DWA_disconnect() {
+    this.impl.off("mutations", this._boundOnMutations);
     delete this._boundOnMutations;
 
     this.impl.destroy();
