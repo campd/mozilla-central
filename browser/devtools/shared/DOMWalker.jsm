@@ -4,7 +4,9 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
+Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm")
 
+var { types, params, remotable } = Remotable;
 
 let obj = {};
 Cu.import('resource://gre/modules/commonjs/loader.js', obj);
@@ -19,8 +21,47 @@ let require = Require(loader, {id: "markupview"});
 
 let promise = require("commonjs/promise/core");
 
-
 this.EXPORTED_SYMBOLS = ["DOMWalker", "createWalker"];
+
+/**
+ * Remotable types specific to the DOM walker.
+ */
+
+var domTypes = {};
+domTypes.Node = new types.Context("nodeToProtocol", "nodeFromProtocol");
+domTypes.Nodes = new types.Array(domTypes.Node);
+
+domTypes.PseudoModification = new types.Context(
+  "pseudoModificationToProtocol",
+  "pseudoModificationFromProtocol"
+);
+domTypes.PseudoModifications = new types.Array(domTypes.PseudoModification);
+
+
+var domParams = {};
+domParams.Node = function(path) {
+  return new Remotable.Param(path, domTypes.Node);
+};
+domParams.Nodes = function(path) {
+  return new Remotable.Param(path, domTypes.Nodes);
+};
+domParams.PseudoModifications = function(path) {
+  return new Remotable.Param(path, domTypes.PseudoModifications);
+};
+
+// Some custom params/returns for this file.
+domParams.LongNodeListOptions = params.Complex([
+  params.Simple("maxNodes"),
+  params.Simple("whatToShow"),
+  domParams.Node("include")
+]);
+
+domParams.LongNodeList = params.Complex([
+  params.Simple("hasFirst"),
+  params.Simple("hasLast"),
+  domParams.Nodes("nodes")
+]);
+
 
 function DOMRef(node) {
   this._rawNode = node;
@@ -168,10 +209,13 @@ DOMWalker.prototype = {
    *        The node whose document is needed, or null to
    *        return the root.
    */
-  document: function(aNode) {
+  document: remotable(function(aNode) {
     let doc = aNode ? aNode._rawNode.ownerDocument : this._doc;
     return promise.resolve(this._ref(doc));
-  },
+  }, {
+    params: [domParams.Node("node")],
+    ret: domParams.Node("node"),
+  }),
 
   /**
    * Return the documentElement for the document containing the
@@ -180,12 +224,15 @@ DOMWalker.prototype = {
    *        The node whose documentElement is requested, or null
    *        to use the root document.
    */
-  documentElement: function(aNode) {
+  documentElement: remotable(function(aNode) {
     let elt = aNode ? aNode._rawNode.ownerDocument.documentElement : this._doc.documentElement;
     return promise.resolve(this._ref(elt));
-  },
+  }, {
+    params: [domParams.Node("node")],
+    ret: domParams.Node("node"),
+  }),
 
-  parents: function(node, options) {
+  parents: remotable(function(node) {
     let walker = documentWalker(node._rawNode);
     let parents = [];
     let cur;
@@ -193,9 +240,12 @@ DOMWalker.prototype = {
       parents.push(this._ref(cur));
     }
     return promise.resolve(parents);
-  },
+  }, {
+    params: [domParams.Node("node")],
+    ret: domParams.Nodes("nodes"),
+  }),
 
-  children: function(node, options={}) {
+  children: remotable(function(node, options={}) {
     let maxNodes = options.maxNodes || -1;
     if (maxNodes == -1) {
       maxNodes = Number.MAX_VALUE;
@@ -248,9 +298,15 @@ DOMWalker.prototype = {
       hasLast: nodes[nodes.length - 1]._rawNode == lastChild,
       nodes: nodes
     });
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      domParams.LongNodeListOptions,
+    ],
+    ret: domParams.LongNodeList
+  }),
 
-  siblings: function(node, options={}) {
+  siblings: remotable(function(node, options={}) {
     let parentNode = documentWalker(node.rawNode).parentNode();
     if (!parentNode) {
       return promise.resolve({
@@ -265,7 +321,13 @@ DOMWalker.prototype = {
     return this.children(this._ref(parentNode), options).then(function(children) {
       return children;
     }).then(promisePass, promiseError);
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      domParams.LongNodeListOptions,
+    ],
+    ret: domParams.LongNodeList
+  }),
 
   nextSibling: function(node, options={}) {
     let walker = documentWalker(node._rawNode, options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL);
@@ -322,7 +384,7 @@ DOMWalker.prototype = {
     DOMUtils.addPseudoClassLock(node._rawNode, pseudo);
   },
 
-  addPseudoClassLock: function(node, pseudo, options={}) {
+  addPseudoClassLock: remotable(function(node, pseudo, options={}) {
     this._addPseudoClassLock(node, pseudo);
 
     if (!options.parents) {
@@ -337,7 +399,16 @@ DOMWalker.prototype = {
       }
       return modified;
     }.bind(this));
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      params.Simple("pseudo"),
+      params.Complex([
+        params.Simple("parents")
+      ])
+    ],
+    ret: domParams.PseudoModifications("modified")
+  }),
 
   _removePseudoClassLock: function(node, pseudo) {
     if (node.nodeType != Ci.nsIDOMNode.ELEMENT_NODE) {
@@ -353,7 +424,7 @@ DOMWalker.prototype = {
     DOMUtils.removePseudoClassLock(node._rawNode, pseudo);
   },
 
-  removePseudoClassLock: function(node, pseudo, options={}) {
+  removePseudoClassLock: remotable(function(node, pseudo, options={}) {
     this._removePseudoClassLock(node, pseudo);
 
     if (!options.parents) {
@@ -368,9 +439,18 @@ DOMWalker.prototype = {
       }
       return modified;
     }.bind(this));
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      params.Simple("pseudo"),
+      params.Complex([
+        params.Simple("parents")
+      ])
+    ],
+    ret: domParams.PseudoModifications("modified")
+  }),
 
-  clearPseudoClassLocks: function(node, options={}) {
+  clearPseudoClassLocks: remotable(function(node, options={}) {
     let modified = [];
     if (node) {
       DOMUtils.clearPseudoClassLocks(node._rawNode);
@@ -388,7 +468,15 @@ DOMWalker.prototype = {
       this._pclList = [];
     }
     return promise.resolve(modified);
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      params.Complex([
+        params.Simple("all")
+      ])
+    ],
+    ret: domParams.PseudoModifications("modified")
+  }),
 
   /**
    * Get a DOMRef for the given local node.
@@ -442,6 +530,8 @@ DOMWalker.prototype = {
   }
 };
 
+Remotable.initImplementation(DOMWalker.prototype);
+
 function RemoteRef(walker, form)
 {
   this.walker = walker;
@@ -466,7 +556,7 @@ RemoteRef.prototype = {
   get nodeValue() this.form_nodeValue,
 
   setNodeValue: function(aValue) {
-    return this.walker._promisedRequest({
+    return this.walker.rawRequest({
       to: this.actorID,
       type: "setNodeValue",
       value: aValue
@@ -560,20 +650,27 @@ RemoteRef.prototype = {
   }
 };
 
-
 function RemoteWalker(target, options)
 {
   EventEmitter.decorate(this);
+  Remotable.initClient(RemoteWalker.prototype, DOMWalker.prototype);
 
   this.client = target.client;
-  this.tabForm = target.form;
-  this.options = options;
-  this._refMap = new Map();
 
+  this._refMap = new Map();
   this._boundOnMutations = this._onMutations.bind(this);
   this.client.addListener("mutations", this._boundOnMutations);
 
-  this.init();
+  // Start fetching an actor to back the options.
+  this.actorPromise = this.rawRequest({
+    to: target.form.inspectorActor,
+    type: "getWalker"
+  }).then(function(response) {
+    this._actor = response.actor;
+    return this._actor;
+  }.bind(this)).then(promisePass, promiseError);
+
+  this.options = options;
 }
 
 RemoteWalker.prototype = {
@@ -581,6 +678,17 @@ RemoteWalker.prototype = {
     // XXX: disconnect the actor.
     this.client.removeListener("mutations", this._boundOnMutations);
     delete this._boundOnMutations;
+  },
+
+  nodeToProtocol: function(node) node ? node.actorID : node,
+  nodeFromProtocol: function(form) form ? this._ref(form) : form,
+
+  pseudoModificationFromProtocol: function(modified) {
+    let ref = this._refForActor(modified.actor);
+    if (ref) {
+      ref._updateLocks(modified);
+    }
+    return ref;
   },
 
   _ref: function(form) {
@@ -600,27 +708,8 @@ RemoteWalker.prototype = {
     return null;
   },
 
-  _promisedRequest: function(packet) {
-    let deferred = promise.defer();
-    this.client.request(packet, function(aResponse) {
-      if (aResponse.error) {
-        deferred.reject(aResponse.error);
-      } else {
-        deferred.resolve(aResponse);
-      }
-    });
-    return deferred.promise;
-  },
-
-  _request: function(packet) {
-    return this.init().then(function() {
-      packet.to = this._walkerID;
-      return this._promisedRequest(packet);
-    }.bind(this));
-  },
-
   _onMutations: function(aType, aPacket) {
-    if (aPacket.from != this._walkerID) {
+    if (aPacket.from != this._actor) {
       return;
     }
 
@@ -641,121 +730,8 @@ RemoteWalker.prototype = {
     this.emit("mutations", toEmit);
   },
 
-  init: function() {
-    if (this.deferredInit) {
-      return this.deferredInit;
-    }
-
-    this.deferredInit = this._promisedRequest({
-      to: this.tabForm.inspectorActor,
-      type: "getWalker"
-    }).then(function(response) {
-      this._walkerID = response.actor;
-      return response;
-    }.bind(this)).then(promisePass, promiseError);
-    return this.deferredInit;
-  },
-
-  document: function(aNode) {
-    return this._request({
-      type: "document",
-      node: aNode ? aNode.actorID : undefined,
-    }).then(function(response) {
-      return this._ref(response.node);
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  documentElement: function(aNode) {
-    return this._request({
-      type: "documentElement",
-      node: aNode ? aNode.actorID : undefined,
-    }).then(function(response) {
-      return this._ref(response.node);
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  children: function(node, options={}) {
-    return this._request({
-      type: "children",
-      node: node.actorID,
-      include: options.include ? options.include.actorID : undefined,
-      maxNodes: options.maxNodes || undefined,
-      whatToShow: options.whatToShow || undefined
-    }).then(function(response) {
-      return {
-        hasFirst: response.hasFirst,
-        hasLast: response.hasLast,
-        nodes: [this._ref(form) for (form of response.nodes)]
-      };
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  siblings: function(node, options={}) {
-    return this._request({
-      type: "siblings",
-      node: node.actorID,
-      maxNodes: options.maxNodes || undefined,
-      whatToShow: options.whatToShow || undefined
-    }).then(function(response) {
-      return {
-        hasFirst: response.hasFirst,
-        hasLast: response.hasLast,
-        nodes: [this._ref(form) for (form of response.nodes)]
-      };
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  parents: function(node) {
-    return this._request({
-      type: "parents",
-      node: node.actorID
-    }).then(function(response) {
-      return [this._ref(form) for (form of response.nodes)];
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  _updatePseudoClassLocks: function(response) {
-    let ret = [];
-    for (let modified of response.nodes) {
-      let ref = this._refForActor(modified.actor);
-      if (ref) {
-        ref._updateLocks(modified);
-        ret.push(ref);
-      }
-    }
-    return ret;
-  },
-
-  addPseudoClassLock: function(node, pseudo, options={}) {
-    return this._request({
-      type: "addPseudoClassLock",
-      node: node.actorID,
-      pseudo: pseudo,
-      parents: options.parents || undefined,
-    }).then(function(response) {
-      return this._updatePseudoClassLocks(response);
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  removePseudoClassLock: function(node, pseudo, options={}) {
-    return this._request({
-      type: "removePseudoClassLock",
-      node: node.actorID,
-      pseudo: pseudo,
-      parents: options.parents || undefined,
-    }).then(function(response) {
-      return this._updatePseudoClassLocks(response);
-    }.bind(this)).then(promisePass, promiseError);
-  },
-
-  clearPseudoClassLocks: function(node, options={}) {
-    return this._request({
-      type: "clearPseudoClassLocks",
-      node: node ? node.actorID : undefined,
-      all: options.all || undefined
-    }).then(function(response) {
-      return this._updatePseudoClassLocks(response);
-    });
+  actor: function() {
+    return this.actorPromise;
   },
 };
 

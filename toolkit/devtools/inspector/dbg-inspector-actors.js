@@ -13,7 +13,9 @@ let Cu = Components.utils;
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "DOMWalker",
-                                  "resource:///modules/devtools/DOMWalker.jsm");
+  "resource:///modules/devtools/DOMWalker.jsm");
+XPCOMUtils.defineLazyModuleGetter(this, "Remotable",
+  "resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 
 
 function InspectorActor(aConnection, aParentActor)
@@ -102,24 +104,18 @@ InspectorActor.prototype.requestTypes =
 
 function DOMWalkerActor(aParentActor, aWalker)
 {
+  Remotable.initServer(DOMWalkerActor.prototype, DOMWalker.prototype);
+
   this.conn = aParentActor.conn;
   this.parent = aParentActor;
-  this.walker = aWalker;
+  this.impl = aWalker;
   this._actorPool = new ActorPool(this.conn);
   this.conn.addActorPool(this._actorPool);
   this._nodePool = new DOMNodePool(this);
   this.conn.addActorPool(this._nodePool);
 
   this._boundOnMutations = this._onMutations.bind(this);
-  this.walker.on("mutations", this._boundOnMutations);
-
-  this.sendError = function(error) {
-    this.conn.send({
-      from: this.actorID,
-      error: "inspectorError",
-      message: "DOM walker error:" + error.toString()
-    })
-  }.bind(this);
+  this.impl.on("mutations", this._boundOnMutations);
 }
 
 DOMWalkerActor.prototype = {
@@ -129,12 +125,16 @@ DOMWalkerActor.prototype = {
     return { actor: this.actorID };
   },
 
+  toString: function() {
+    return "[DOMWalkerActor " + this.actorID + "]";
+  },
+
   disconnect: function DWA_disconnect()
   {
-    this.walker.off("mutations", this._boundOnMutations);
+    this.imple.off("mutations", this._boundOnMutations);
     delete this._boundOnMutations;
 
-    this.walker.destroy();
+    this.impl.destroy();
 
     this.conn.removeActorPool(this._actorPool);
     delete this._actorPool;
@@ -143,9 +143,19 @@ DOMWalkerActor.prototype = {
     delete this.parent;
   },
 
-  _nodeForm: function DWA_nodeForm(node)
-  {
+  nodeToProtocol: function DWA_nodeToProtocol(node) {
     return this._nodePool.fromNode(node).form();
+  },
+  nodeFromProtocol: function DWA_nodeFromProtocol(node) {
+    return this._nodePool.node(node);
+  },
+
+  pseudoModificationToProtocol: function(node) {
+    let actor = this._nodePool.nodeActor(node);
+    return {
+      actor: actor,
+      pseudoClassLocks: node.pseudoClassLocks
+    }
   },
 
   _onMutations: function DWA_onMutations(event, mutations)
@@ -187,139 +197,13 @@ DOMWalkerActor.prototype = {
     });
   },
 
-  onRoot: function DWA_onRoot(aPacket)
-  {
-    this.walker.root().then(function(root) {
-      this.conn.send({
-        from: this.actorID,
-        root: this._nodeForm(root)
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  onDocument: function DWA_onDocument(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node || undefined);
-    this.walker.document(node).then(function(doc) {
-      this.conn.send({
-        from: this.actorID,
-        node: this._nodeForm(doc)
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  onDocumentElement: function DWA_onDocument(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node || undefined);
-    this.walker.documentElement(node).then(function(elt) {
-      this.conn.send({
-        from: this.actorID,
-        node: this._nodeForm(elt)
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  onParents: function DWA_onChildren(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    this.walker.parents(node, aPacket).then(function(parents) {
-      this.conn.send({
-        from: this.actorID,
-        nodes: [this._nodeForm(parent) for (parent of parents)]
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  onChildren: function DWA_onChildren(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    this.walker.children(node, {
-      include: aPacket.include ? this._nodePool.node(aPacket.include) : undefined,
-      maxNodes: aPacket.maxNodes,
-      whatToShow: aPacket.whatToShow
-    }).then(function(children) {
-      this.conn.send({
-        from: this.actorID,
-        hasFirst: children.hasFirst,
-        hasLast: children.hasLast,
-        nodes: [this._nodeForm(child) for (child of children.nodes)]
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  onSiblings: function DWA_onChildren(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    this.walker.siblings(node, {
-      maxNodes: aPacket.maxNodes,
-      whatToShow: aPacket.whatToShow
-    }).then(function(children) {
-      this.conn.send({
-        from: this.actorID,
-        hasFirst: children.hasFirst,
-        hasLast: children.hasLast,
-        nodes: [this._nodeForm(child) for (child of children.nodes)]
-      });
-    }.bind(this)).then(null, this.sendError);
-  },
-
-  _respondPseudoClasses: function(modified) {
-    let nodes = [];
-    for (let node of modified) {
-      let actor = this._nodePool.nodeActor(node);
-      nodes.push({
-        actor: actor,
-        pseudoClassLocks: node.pseudoClassLocks
-      });
-    }
+  sendError: function(error) {
     this.conn.send({
       from: this.actorID,
-      nodes: nodes
-    });
+      error: "inspectorError",
+      message: "DOM walker error:" + error.toString()
+    })
   },
-
-  onAddPseudoClassLock: function DWA_onPseudoClassLock(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    this.walker.addPseudoClassLock(node, aPacket.pseudo, {
-      parents: aPacket.parents || undefined,
-    }).then(function(modified) {
-      this._respondPseudoClasses(modified);
-    }.bind(this));
-  },
-
-  onRemovePseudoClassLock: function DWA_onPseudoClassLock(aPacket)
-  {
-    let node = this._nodePool.node(aPacket.node);
-    this.walker.removePseudoClassLock(node, aPacket.pseudo, {
-      parents: aPacket.parents || undefined,
-    }).then(function(modified) {
-      this._respondPseudoClasses(modified);
-    }.bind(this));
-  },
-
-  onClearPseudoClassLocks: function DWA_onPseudoClassLock(aPacket)
-  {
-    let node = aPacket.node ? this._nodePool.node(aPacket.node) : null;
-    this.walker.clearPseudoClassLocks(node, aPacket.pseudo, {
-      all: aPacket.all || undefined,
-    }).then(function(modified) {
-      this._respondPseudoClasses(modified);
-    }.bind(this));
-  },
-
-};
-
-DOMWalkerActor.prototype.requestTypes = {
-  root: DOMWalkerActor.prototype.onRoot,
-  document: DOMWalkerActor.prototype.onDocument,
-  documentElement: DOMWalkerActor.prototype.onDocumentElement,
-  parents: DOMWalkerActor.prototype.onParents,
-  children: DOMWalkerActor.prototype.onChildren,
-  siblings: DOMWalkerActor.prototype.onSiblings,
-  addPseudoClassLock: DOMWalkerActor.prototype.onAddPseudoClassLock,
-  removePseudoClassLock: DOMWalkerActor.prototype.onRemovePseudoClassLock,
-  clearPseudoClassLocks: DOMWalkerActor.prototype.onClearPseudoClassLocks,
 };
 
 // These are ephemeral, created as needed by the DOMWalkerNodePool.
