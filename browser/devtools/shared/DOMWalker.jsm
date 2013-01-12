@@ -104,10 +104,14 @@ DOMRef.prototype = {
   get nodeName() this._rawNode.nodeName,
 
   get nodeValue() this._rawNode.nodeValue,
-  setNodeValue: function(aValue) {
+
+  setNodeValue: remotable(function(aValue) {
     this._rawNode.nodeValue = aValue;
     return promise.resolve(undefined);
-  },
+  }, {
+    params: [params.Simple("value")],
+    ret: params.Void,
+  }),
 
   isWalkerRoot: function() {
     return !(documentWalker(this._rawNode).parentNode());
@@ -155,6 +159,8 @@ DOMRef.prototype = {
     return this._pseudoClasses ? Object.getOwnPropertyNames(this._pseudoClasses) : null;
   },
 };
+
+Remotable.initImplementation(DOMRef.prototype)
 
 // XXX: yuck, this should just be a proxy.
 function ClassListRef(aList)
@@ -543,6 +549,7 @@ Remotable.initImplementation(DOMWalker.prototype);
 
 function RemoteRef(walker, form)
 {
+  Remotable.initClient(RemoteRef.prototype, DOMRef.prototype);
   this.walker = walker;
   this.actorID = form.actor;
 
@@ -551,6 +558,9 @@ function RemoteRef(walker, form)
 
 RemoteRef.prototype = {
   toString: function() "[RemoteRef to " + this.actorID + "]",
+
+  get client() this.walker.client,
+  actor: function() promise.resolve(this.actorID),
 
   get id() this.form_id,
   get className() this.form_className,
@@ -563,14 +573,6 @@ RemoteRef.prototype = {
   get tagName() this.form_tagName,
   get nodeName() this.form_nodeName,
   get nodeValue() this.form_nodeValue,
-
-  setNodeValue: function(aValue) {
-    return this.walker.rawRequest({
-      to: this.actorID,
-      type: "setNodeValue",
-      value: aValue
-    });
-  },
 
   isWalkerRoot: function() !!this.form_isWalkerRoot,
 
@@ -846,8 +848,9 @@ DOMWalkerActor.prototype = {
 // These are ephemeral, created as needed by the DOMWalkerNodePool.
 function DOMNodeActor(aConn, aNodeRef)
 {
+  Remotable.initServer(DOMNodeActor.prototype, DOMRef.prototype)
   this.conn = aConn;
-  this.nodeRef = aNodeRef;
+  this.impl = aNodeRef;
   this.actorID = aNodeRef.__actorID;
 }
 
@@ -864,36 +867,37 @@ DOMNodeActor.prototype = {
       "id", "className", "numChildren",
       "nodeType", "namespaceURI", "tagName", "nodeName", "nodeValue",
       "name", "publicId", "systemId", "pseudoClassLocks"]) {
-      form[attr] = this.nodeRef[attr];
+      form[attr] = this.impl[attr];
     }
 
     for (let attr of [
       "isDocumentElement", "isNode", "isConnected"]) {
-      form[attr] = this.nodeRef[attr]();
+      form[attr] = this.impl[attr]();
     }
 
-    if (this.nodeRef.attributes) {
+    if (this.impl.attributes) {
       let attrs = [];
-      for (let i = 0; i < this.nodeRef.attributes.length; i++) {
-        let attr = this.nodeRef.attributes[i];
+      for (let i = 0; i < this.impl.attributes.length; i++) {
+        let attr = this.impl.attributes[i];
         // XXX: namespace?
         attrs.push({name: attr.name, value: attr.value });
       }
       form.attrs = attrs;
     }
 
-    if (this.nodeRef.isWalkerRoot()) {
+    if (this.impl.isWalkerRoot()) {
       form.isWalkerRoot = true;
     }
 
     return form;
   },
 
-  onSetNodeValue: function DNA_onSetNodeValue(aPacket) {
-    this.nodeRef.setNodeValue(aPacket.value);
+  sendError: function(error) {
     this.conn.send({
       from: this.actorID,
-    });
+      error: "inspectorError",
+      message: "DOM node error:" + error.toString()
+    })
   },
 }
 
@@ -955,6 +959,9 @@ function documentWalker(node, whatToShow=Ci.nsIDOMNodeFilter.SHOW_ALL) {
 }
 
 function nodeDocument(node) {
+  if (!node){
+    try { throw new Error(); } catch(e) { dump(e.stack + "\n") }
+  }
   return node.ownerDocument || (node.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE ? node : null);
 }
 

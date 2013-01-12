@@ -78,6 +78,15 @@ Remotable.Param.prototype = {
 
 Remotable.params = {};
 
+Remotable.params.Void = function() {
+  return {
+    toProtocol: function() {},
+    fromProtocol: function() {
+      return undefined;
+    }
+  };
+};
+
 /**
  * Simply copies an object into the packet, good for fundamental types.
  */
@@ -136,12 +145,11 @@ Remotable.initImplementation = function(proto)
 {
   let remoteSpecs = [];
   for (let name of Object.getOwnPropertyNames(proto)) {
-    let item = proto[name];
-    if (!item._remoteSpec) {
+    let desc = Object.getOwnPropertyDescriptor(proto, name);
+    if (!desc.value || !desc.value._remoteSpec) {
       continue;
     }
-
-    let spec = item._remoteSpec;
+    let spec = desc.value._remoteSpec;
     spec.name = name;
     if (!spec.requestType) {
       spec.requestType = name;
