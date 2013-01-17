@@ -37,12 +37,12 @@ this.createWalker = function(target, options) {
  */
 
 var domTypes = {};
-domTypes.Node = new types.Context("nodeToProtocol", "nodeFromProtocol");
+domTypes.Node = new types.Context("writeNode", "readNode");
 domTypes.Nodes = new types.Array(domTypes.Node);
 
 domTypes.PseudoModification = new types.Context(
-  "pseudoModificationToProtocol",
-  "pseudoModificationFromProtocol"
+  "writePseudoModification",
+  "readPseudoModification"
 );
 domTypes.PseudoModifications = new types.Array(domTypes.PseudoModification);
 
@@ -70,7 +70,6 @@ domParams.LongNodeList = params.Complex([
   params.Simple("hasLast"),
   domParams.Nodes("nodes")
 ]);
-
 
 function DOMRef(node) {
   this._rawNode = node;
@@ -110,7 +109,7 @@ DOMRef.prototype = {
     return promise.resolve(undefined);
   }, {
     params: [params.Simple("value")],
-    ret: params.Void,
+    ret: params.Void(),
   }),
 
   isWalkerRoot: function() {
@@ -691,8 +690,8 @@ RemoteWalker.prototype = {
     delete this._boundOnMutations;
   },
 
-  nodeToProtocol: function(node) node ? node.actorID : node,
-  nodeFromProtocol: function(form) {
+  writeNode: function(node) node ? node.actorID : node,
+  readNode: function(form) {
     if (!form) {
       return form;
     }
@@ -706,7 +705,7 @@ RemoteWalker.prototype = {
     return ref;
   },
 
-  pseudoModificationFromProtocol: function(modified) {
+  readPseudoModification: function(modified) {
     let ref = this._refMap.get(modified.actor);
     if (ref) {
       ref._updateLocks(modified);
@@ -782,14 +781,14 @@ DOMWalkerActor.prototype = {
     delete this.parent;
   },
 
-  nodeToProtocol: function DWA_nodeToProtocol(node) {
+  writeNode: function DWA_writeNode(node) {
     return this._nodePool.fromNode(node).form();
   },
-  nodeFromProtocol: function DWA_nodeFromProtocol(node) {
+  readNode: function DWA_readNode(node) {
     return this._nodePool.node(node);
   },
 
-  pseudoModificationToProtocol: function(node) {
+  sendPseudoModification: function(node) {
     let actor = this._nodePool.nodeActor(node);
     return {
       actor: actor,

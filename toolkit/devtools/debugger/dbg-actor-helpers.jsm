@@ -10,8 +10,8 @@ this.Remotable = {};
 Remotable.types = {}
 
 Remotable.types.Simple = {
-  toProtocol: function(value) value,
-  fromProtocol: function(value) value
+  write: function(value) value,
+  read: function(value) value
 };
 
 /**
@@ -19,21 +19,21 @@ Remotable.types.Simple = {
  * depends on the object asking for the conversion.  Use this to allow
  * server or client objects to provide translation methods.
  *
- * @param string toMethod
- *        Will be called on the context object when sending objects
+ * @param string writeMethod
+ *        Will be called on the context object when writing objects
  *        over the protocol.
- * @param string fromMethod
+ * @param string readMethod
  *        Will be called on the context object when receiving objects
  *        from the protocol.
  */
-Remotable.types.Context = function(toMethod, fromMethod) {
-  this.toMethod = toMethod;
-  this.fromMethod = fromMethod;
+Remotable.types.Context = function(writeMethod, readMethod) {
+  this.writeMethod = writeMethod;
+  this.readMethod = readMethod;
 };
 
 Remotable.types.Context.prototype = {
-  toProtocol: function(value, context) context[this.toMethod].call(context, value),
-  fromProtocol: function(value, context) context[this.fromMethod].call(context, value)
+  write: function(value, context) context[this.writeMethod].call(context, value),
+  read: function(value, context) context[this.readMethod].call(context, value)
 };
 
 /**
@@ -45,11 +45,11 @@ Remotable.types.Array = function(subtype) {
   this.subtype = subtype;
 };
 Remotable.types.Array.prototype = {
-  toProtocol: function(value, context) {
-    return [this.subtype.toProtocol(item, context) for (item of value)];
+  write: function(value, context) {
+    return [this.subtype.write(item, context) for (item of value)];
   },
-  fromProtocol: function(value, context) {
-    return [this.subtype.fromProtocol(item, context) for (item of value)];
+  read: function(value, context) {
+    return [this.subtype.read(item, context) for (item of value)];
   }
 };
 
@@ -68,11 +68,11 @@ Remotable.Param = function(path, type) {
   this.type = type;
 }
 Remotable.Param.prototype = {
-  toProtocol: function(packet, value, context) {
-    packet[this.path] = this.type.toProtocol(value, context);
+  write: function(packet, value, context) {
+    packet[this.path] = this.type.write(value, context);
   },
-  fromProtocol: function(packet, context) {
-    return this.type.fromProtocol(packet[this.path], context);
+  read: function(packet, context) {
+    return this.type.read(packet[this.path], context);
   }
 };
 
@@ -80,8 +80,8 @@ Remotable.params = {};
 
 Remotable.params.Void = function() {
   return {
-    toProtocol: function() {},
-    fromProtocol: function() {
+    write: function() {},
+    read: function() {
       return undefined;
     }
   };
@@ -107,17 +107,17 @@ Remotable.params.Complex = function(subParams) {
 }
 
 Remotable.params.Complex.prototype = {
-  toProtocol: function(packet, value, context) {
+  write: function(packet, value, context) {
     for (let param of this.subParams) {
       if (param.path in value) {
-        param.toProtocol(packet, value[param.path], context);
+        param.write(packet, value[param.path], context);
       }
     }
   },
-  fromProtocol: function(packet, context) {
+  read: function(packet, context) {
     let ret = {};
     for (let param of this.subParams) {
-      ret[param.path] = param.fromProtocol(packet, context);
+      ret[param.path] = param.read(packet, context);
     }
     return ret;
   },
@@ -208,10 +208,10 @@ Remotable.initClient = function(clientProto, implProto)
       };
       for (let i = 0; i < arguments.length; i++) {
         let param = spec.params[i];
-        param.toProtocol(request, arguments[i], this);
+        param.write(request, arguments[i], this);
       }
       return this.request(request).then(function(response) {
-        return spec.ret.fromProtocol(response, this);
+        return spec.ret.read(response, this);
       }.bind(this));
     }
   });
@@ -227,20 +227,30 @@ Remotable.initServer = function(serverProto, implProto)
     serverProto.requestTypes = {};
   }
 
+  if (!serverProto.writeError) {
+    serverProto.writeError = function(err) {
+      this.conn.send({
+        from: this.actorID,
+        error: "unknownError",
+        message: err.toString()
+      });
+    };
+  }
+
   let remoteSpecs = implProto.__remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     let handler = function(aPacket) {
       let args = [];
       for (let param of spec.params) {
-        args.push(param.fromProtocol(aPacket, this));
+        args.push(param.read(aPacket, this));
       }
       this.impl[spec.name].apply(this.impl, args).then(function(ret) {
         let response = {
           from: this.actorID
         };
-        spec.ret.toProtocol(response, ret, this);
+        spec.ret.write(response, ret, this);
         this.conn.send(response);
-      }.bind(this)).then(null, this.sendError.bind(this));
+      }.bind(this)).then(null, this.writeError.bind(this));
     };
 
     serverProto.requestTypes[spec.requestType || spec.name] = handler;
