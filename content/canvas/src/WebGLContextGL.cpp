@@ -23,6 +23,7 @@
 
 #include "WebGLTexelConversions.h"
 #include "WebGLValidateStrings.h"
+#include <algorithm>
 
 // needed to check if current OS is lower than 10.7
 #if defined(MOZ_WIDGET_COCOA)
@@ -3166,9 +3167,6 @@ WebGLContext::ReadPixels(WebGLint x, WebGLint y, WebGLsizei width,
     WebGLsizei framebufferWidth = framebufferRect ? framebufferRect->Width() : 0;
     WebGLsizei framebufferHeight = framebufferRect ? framebufferRect->Height() : 0;
 
-    uint32_t dataByteLen = JS_GetTypedArrayByteLength(pixels->Obj());
-    int dataType = JS_GetTypedArrayType(pixels->Obj());
-
     uint32_t channels = 0;
 
     // Check the format param
@@ -3205,6 +3203,8 @@ WebGLContext::ReadPixels(WebGLint x, WebGLint y, WebGLsizei width,
             return ErrorInvalidEnum("readPixels: Bad type");
     }
 
+    int dataType = JS_GetArrayBufferViewType(pixels->Obj());
+
     // Check the pixels param type
     if (dataType != requiredDataType)
         return ErrorInvalidOperation("readPixels: Mismatched type/pixels types");
@@ -3221,6 +3221,7 @@ WebGLContext::ReadPixels(WebGLint x, WebGLint y, WebGLsizei width,
     if (!checked_neededByteLength.isValid())
         return ErrorInvalidOperation("readPixels: integer overflow computing the needed buffer size");
 
+    uint32_t dataByteLen = JS_GetTypedArrayByteLength(pixels->Obj());
     if (checked_neededByteLength.value() > dataByteLen)
         return ErrorInvalidOperation("readPixels: buffer too small");
 
@@ -3283,12 +3284,12 @@ WebGLContext::ReadPixels(WebGLint x, WebGLint y, WebGLsizei width,
         }
 
         // compute the parameters of the subrect we're actually going to call glReadPixels on
-        GLint   subrect_x      = NS_MAX(x, 0);
-        GLint   subrect_end_x  = NS_MIN(x+width, framebufferWidth);
+        GLint   subrect_x      = std::max(x, 0);
+        GLint   subrect_end_x  = std::min(x+width, framebufferWidth);
         GLsizei subrect_width  = subrect_end_x - subrect_x;
 
-        GLint   subrect_y      = NS_MAX(y, 0);
-        GLint   subrect_end_y  = NS_MIN(y+height, framebufferHeight);
+        GLint   subrect_y      = std::max(y, 0);
+        GLint   subrect_end_y  = std::min(y+height, framebufferHeight);
         GLsizei subrect_height = subrect_end_y - subrect_y;
 
         if (subrect_width < 0 || subrect_height < 0 ||
@@ -4890,7 +4891,7 @@ WebGLContext::TexImage2D(WebGLenum target, WebGLint level,
     return TexImage2D_base(target, level, internalformat, width, height, 0, border, format, type,
                            pixels ? pixels->Data() : 0,
                            pixels ? pixels->Length() : 0,
-                           pixels ? (int)JS_GetTypedArrayType(pixels->Obj()) : -1,
+                           pixels ? (int)JS_GetArrayBufferViewType(pixels->Obj()) : -1,
                            WebGLTexelConversions::Auto, false);
 }
 
@@ -5044,7 +5045,7 @@ WebGLContext::TexSubImage2D(WebGLenum target, WebGLint level,
     return TexSubImage2D_base(target, level, xoffset, yoffset,
                               width, height, 0, format, type,
                               pixels->Data(), pixels->Length(),
-                              JS_GetTypedArrayType(pixels->Obj()),
+                              JS_GetArrayBufferViewType(pixels->Obj()),
                               WebGLTexelConversions::Auto, false);
 }
 

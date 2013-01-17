@@ -17,7 +17,7 @@
 
 #include "chrome/common/process_watcher.h"
 
-#include "AppProcessPermissions.h"
+#include "AppProcessChecker.h"
 #include "AudioChannelService.h"
 #include "CrashReporterParent.h"
 #include "IHistory.h"
@@ -63,6 +63,7 @@
 #include "nsIDOMWindow.h"
 #include "nsIFilePicker.h"
 #include "nsIMemoryReporter.h"
+#include "nsIMutable.h"
 #include "nsIObserverService.h"
 #include "nsIPresShell.h"
 #include "nsIRemoteBlob.h"
@@ -70,7 +71,6 @@
 #include "nsIScriptSecurityManager.h"
 #include "nsISupportsPrimitives.h"
 #include "nsIWindowWatcher.h"
-#include "nsMemoryReporterManager.h"
 #include "nsServiceManagerUtils.h"
 #include "nsSystemInfo.h"
 #include "nsThreadUtils.h"
@@ -102,6 +102,7 @@
 #ifdef MOZ_WIDGET_GONK
 #include "nsIVolume.h"
 #include "nsIVolumeService.h"
+using namespace mozilla::system;
 #endif
 
 #ifdef MOZ_B2G_BT
@@ -128,13 +129,35 @@ namespace dom {
 
 #define NS_IPC_IOSERVICE_SET_OFFLINE_TOPIC "ipc:network:set-offline"
 
+// This represents a single measurement taken by a memory reporter in a child
+// process and passed to this one.  Its process is non-empty, and its amount is
+// fixed.
+class ChildMemoryReporter MOZ_FINAL : public MemoryReporterBase
+{
+public:
+    ChildMemoryReporter(const char* aProcess, const char* aPath, int32_t aKind,
+                        int32_t aUnits, int64_t aAmount,
+                        const char* aDescription)
+      : MemoryReporterBase(aPath, aKind, aUnits, aDescription)
+      , mProcess(aProcess)
+      , mAmount(aAmount)
+    {
+    }
+
+private:
+    int64_t Amount() { return mAmount; }
+
+    nsCString mProcess;
+    int64_t   mAmount;
+};
+
 class MemoryReportRequestParent : public PMemoryReportRequestParent
 {
 public:
     MemoryReportRequestParent();
     virtual ~MemoryReportRequestParent();
 
-    virtual bool    Recv__delete__(const InfallibleTArray<MemoryReport>& report);
+    virtual bool Recv__delete__(const InfallibleTArray<MemoryReport>& report);
 private:
     ContentParent* Owner()
     {
@@ -235,9 +258,9 @@ ContentParent::MaybeTakePreallocatedAppProcess()
 /*static*/ void
 ContentParent::FirstIdle(void)
 {
-  // The parent has gone idle for the first time. This would be a good
-  // time to preallocate an app process.
-  ScheduleDelayedPreallocateAppProcess();
+    // The parent has gone idle for the first time. This would be a good
+    // time to preallocate an app process.
+    ScheduleDelayedPreallocateAppProcess();
 }
 
 /*static*/ void
@@ -359,7 +382,7 @@ PrivilegesForApp(mozIApplication* aApp)
     const SpecialPermission specialPermissions[] = {
         // FIXME/bug 785592: implement a CameraBridge so we don't have
         // to hack around with OS permissions
-        { "camera", base::PRIVILEGES_INHERIT },
+        { "camera", base::PRIVILEGES_CAMERA },
         // FIXME/bug 793034: change our video architecture so that we
         // can stream video from remote processes
         { "deprecated-hwvideo", base::PRIVILEGES_VIDEO }
@@ -507,6 +530,9 @@ ContentParent::Init()
         unused << SendActivateA11y();
     }
 #endif
+
+    DebugOnly<FileUpdateDispatcher*> observer = FileUpdateDispatcher::GetSingleton();
+    NS_ASSERTION(observer, "FileUpdateDispatcher is null");
 }
 
 void
@@ -643,6 +669,11 @@ struct DelayedDeleteContentParentTask : public nsRunnable
 void
 ContentParent::ActorDestroy(ActorDestroyReason why)
 {
+    if (mForceKillTask) {
+        mForceKillTask->Cancel();
+        mForceKillTask = nullptr;
+    }
+
     nsRefPtr<nsFrameMessageManager> ppm = mMessageManager;
     if (ppm) {
       ppm->ReceiveMessage(static_cast<nsIContentFrameMessageManager*>(ppm.get()),
@@ -712,8 +743,17 @@ ContentParent::ActorDestroy(ActorDestroyReason why)
                 CrashReporterParent* crashReporter =
                     static_cast<CrashReporterParent*>(ManagedPCrashReporterParent()[0]);
 
-                crashReporter->AnnotateCrashReport(NS_LITERAL_CSTRING("URL"),
-                                                   NS_ConvertUTF16toUTF8(mAppManifestURL));
+                // If we're an app process, always stomp the latest URI
+                // loaded in the child process with our manifest URL.  We
+                // would rather associate the crashes with apps than
+                // random child windows loaded in them.
+                //
+                // XXX would be nice if we could get both ...
+                if (!mAppManifestURL.IsEmpty()) {
+                    crashReporter->AnnotateCrashReport(NS_LITERAL_CSTRING("URL"),
+                                                       NS_ConvertUTF16toUTF8(mAppManifestURL));
+                }
+
                 crashReporter->GenerateCrashReport(this, NULL);
 
                 nsAutoString dumpID(crashReporter->ChildDumpID());
@@ -740,15 +780,46 @@ ContentParent::ActorDestroy(ActorDestroyReason why)
 }
 
 void
-ContentParent::NotifyTabDestroyed(PBrowserParent* aTab)
+ContentParent::NotifyTabDestroying(PBrowserParent* aTab)
 {
+    // There can be more than one PBrowser for a given app process
+    // because of popup windows.  PBrowsers can also destroy
+    // concurrently.  When all the PBrowsers are destroying, kick off
+    // another task to ensure the child process *really* shuts down,
+    // even if the PBrowsers themselves never finish destroying.
+    int32_t numLiveTabs = ManagedPBrowserParent().Length();
+    ++mNumDestroyingTabs;
+    if (mNumDestroyingTabs != numLiveTabs) {
+        return;
+    }
+
+    // We're dying now, so prevent this content process from being
+    // recycled during its shutdown procedure.
+    MarkAsDead();
+
+    MOZ_ASSERT(!mForceKillTask);
+    int32_t timeoutSecs =
+        Preferences::GetInt("dom.ipc.tabs.shutdownTimeoutSecs", 5);
+    if (timeoutSecs > 0) {
+        MessageLoop::current()->PostDelayedTask(
+            FROM_HERE,
+            mForceKillTask = NewRunnableMethod(this, &ContentParent::KillHard),
+            timeoutSecs * 1000);
+    }
+}
+
+void
+ContentParent::NotifyTabDestroyed(PBrowserParent* aTab,
+                                  bool aNotifiedDestroying)
+{
+    if (aNotifiedDestroying) {
+        --mNumDestroyingTabs;
+    }
+
     // There can be more than one PBrowser for a given app process
     // because of popup windows.  When the last one closes, shut
     // us down.
     if (ManagedPBrowserParent().Length() == 1) {
-        // Prevent this content process from being recycled, since
-        // it's dying.
-        MarkAsDead();
         MessageLoop::current()->PostTask(
             FROM_HERE,
             NewRunnableMethod(this, &ContentParent::ShutDownProcess));
@@ -785,6 +856,8 @@ ContentParent::ContentParent(const nsAString& aAppManifestURL,
     , mRunToCompletionDepth(0)
     , mShouldCallUnblockChild(false)
     , mAppManifestURL(aAppManifestURL)
+    , mForceKillTask(nullptr)
+    , mNumDestroyingTabs(0)
     , mIsAlive(true)
     , mIsDestroyed(false)
     , mSendPermissionUpdates(false)
@@ -843,6 +916,10 @@ ContentParent::ContentParent(const nsAString& aAppManifestURL,
 
 ContentParent::~ContentParent()
 {
+    if (mForceKillTask) {
+        mForceKillTask->Cancel();
+    }
+
     if (OtherProcess())
         base::CloseProcessHandle(OtherProcess());
 
@@ -1090,14 +1167,16 @@ ContentParent::RecvFirstIdle()
 
 bool
 ContentParent::RecvAudioChannelGetMuted(const AudioChannelType& aType,
-                                        const bool& aMozHidden,
+                                        const bool& aElementHidden,
+                                        const bool& aElementWasHidden,
                                         bool* aValue)
 {
     nsRefPtr<AudioChannelService> service =
         AudioChannelService::GetAudioChannelService();
     *aValue = false;
     if (service) {
-        *aValue = service->GetMuted(aType, aMozHidden);
+        *aValue = service->GetMutedInternal(aType, mChildID,
+                                            aElementHidden, aElementWasHidden);
     }
     return true;
 }
@@ -1114,14 +1193,42 @@ ContentParent::RecvAudioChannelRegisterType(const AudioChannelType& aType)
 }
 
 bool
-ContentParent::RecvAudioChannelUnregisterType(const AudioChannelType& aType)
+ContentParent::RecvAudioChannelUnregisterType(const AudioChannelType& aType,
+                                              const bool& aElementHidden)
 {
     nsRefPtr<AudioChannelService> service =
         AudioChannelService::GetAudioChannelService();
     if (service) {
-        service->UnregisterType(aType, mChildID);
+        service->UnregisterType(aType, aElementHidden, mChildID);
     }
     return true;
+}
+
+bool
+ContentParent::RecvAudioChannelChangedNotification()
+{
+    nsRefPtr<AudioChannelService> service =
+        AudioChannelService::GetAudioChannelService();
+    if (service) {
+       service->SendAudioChannelChangedNotification();
+    }
+    return true;
+}
+
+bool
+ContentParent::RecvBroadcastVolume(const nsString& aVolumeName)
+{
+#ifdef MOZ_WIDGET_GONK
+    nsresult rv;
+    nsCOMPtr<nsIVolumeService> vs = do_GetService(NS_VOLUMESERVICE_CONTRACTID, &rv);
+    if (vs) {
+        vs->BroadcastVolume(aVolumeName);
+    }
+    return true;
+#else
+    NS_WARNING("ContentParent::RecvBroadcastVolume shouldn't be called when MOZ_WIDGET_GONK is not defined");
+    return false;
+#endif
 }
 
 NS_IMPL_THREADSAFE_ISUPPORTS3(ContentParent,
@@ -1203,12 +1310,15 @@ ContentParent::Observe(nsISupports* aSubject,
         nsString volName;
         nsString mountPoint;
         int32_t  state;
+        int32_t  mountGeneration;
 
         vol->GetName(volName);
         vol->GetMountPoint(mountPoint);
         vol->GetState(&state);
+        vol->GetMountGeneration(&mountGeneration);
 
-        unused << SendFileSystemUpdate(volName, mountPoint, state);
+        unused << SendFileSystemUpdate(volName, mountPoint, state,
+                                       mountGeneration);
     }
 #endif
 #ifdef ACCESSIBILITY
@@ -1330,7 +1440,9 @@ ContentParent::DeallocPDeviceStorageRequest(PDeviceStorageRequestParent* doomed)
 PBlobParent*
 ContentParent::AllocPBlob(const BlobConstructorParams& aParams)
 {
-  return BlobParent::Create(aParams);
+  BlobParent* actor = BlobParent::Create(aParams);
+  actor->SetManager(this);
+  return actor;
 }
 
 bool
@@ -1340,56 +1452,42 @@ ContentParent::DeallocPBlob(PBlobParent* aActor)
   return true;
 }
 
-BlobParent*
-ContentParent::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
+bool
+ContentParent::GetParamsForBlob(nsDOMFileBase* aBlob,
+                                BlobConstructorParams* aOutParams)
 {
-  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
-  NS_ASSERTION(aBlob, "Null pointer!");
+  BlobConstructorParams resultParams;
 
-  nsCOMPtr<nsIRemoteBlob> remoteBlob = do_QueryInterface(aBlob);
-  if (remoteBlob) {
-    BlobParent* actor =
-      static_cast<BlobParent*>(
-        static_cast<PBlobParent*>(remoteBlob->GetPBlob()));
-    NS_ASSERTION(actor, "Null actor?!");
-
-    if (static_cast<ContentParent*>(actor->Manager()) == this) {
-      return actor;
-    }
-  }
-
-  // XXX This is only safe so long as all blob implementations in our tree
-  //     inherit nsDOMFileBase. If that ever changes then this will need to grow
-  //     a real interface or something.
-  const nsDOMFileBase* blob = static_cast<nsDOMFileBase*>(aBlob);
-
-  BlobConstructorParams params;
-
-  if (blob->IsSizeUnknown() || blob->IsDateUnknown()) {
+  if (!(aBlob->IsMemoryBacked() || aBlob->GetSubBlobs()) &&
+      (aBlob->IsSizeUnknown() || aBlob->IsDateUnknown())) {
     // We don't want to call GetSize or GetLastModifiedDate
     // yet since that may stat a file on the main thread
     // here. Instead we'll learn the size lazily from the
     // other process.
-    params = MysteryBlobConstructorParams();
+    resultParams = MysteryBlobConstructorParams();
   }
   else {
+    BlobOrFileConstructorParams params;
+
     nsString contentType;
     nsresult rv = aBlob->GetType(contentType);
-    NS_ENSURE_SUCCESS(rv, nullptr);
+    NS_ENSURE_SUCCESS(rv, false);
 
     uint64_t length;
     rv = aBlob->GetSize(&length);
-    NS_ENSURE_SUCCESS(rv, nullptr);
+    NS_ENSURE_SUCCESS(rv, false);
 
-    nsCOMPtr<nsIDOMFile> file = do_QueryInterface(aBlob);
+    nsCOMPtr<nsIDOMFile> file;
+    static_cast<nsIDOMBlob*>(aBlob)->QueryInterface(NS_GET_IID(nsIDOMFile),
+                                          (void**)getter_AddRefs(file));
     if (file) {
       FileBlobConstructorParams fileParams;
 
-      rv = file->GetMozLastModifiedDate(&fileParams.modDate());
-      NS_ENSURE_SUCCESS(rv, nullptr);
-
       rv = file->GetName(fileParams.name());
-      NS_ENSURE_SUCCESS(rv, nullptr);
+      NS_ENSURE_SUCCESS(rv, false);
+
+      rv = file->GetMozLastModifiedDate(&fileParams.modDate());
+      NS_ENSURE_SUCCESS(rv, false);
 
       fileParams.contentType() = contentType;
       fileParams.length() = length;
@@ -1401,6 +1499,70 @@ ContentParent::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
       blobParams.length() = length;
       params = blobParams;
     }
+
+    MOZ_ASSERT(!(aBlob->IsMemoryBacked() &&
+                 aBlob->GetSubBlobs()), "Can't be both!");
+
+    if (aBlob->IsMemoryBacked()) {
+      const nsDOMMemoryFile* memoryBlob =
+        static_cast<const nsDOMMemoryFile*>(aBlob);
+
+      FallibleTArray<uint8_t> data;
+      if (!data.SetLength(memoryBlob->GetLength())) {
+        return false;
+      }
+      memcpy(data.Elements(), memoryBlob->GetData(), memoryBlob->GetLength());
+
+      MemoryBlobOrFileConstructorParams memoryParams(params, data);
+      resultParams = memoryParams;
+    }
+    else if (aBlob->GetSubBlobs()) {
+      MultipartBlobOrFileConstructorParams multipartParams(params);
+      resultParams = multipartParams;
+    }
+    else {
+      resultParams = BlobConstructorNoMultipartParams(params);
+    }
+  }
+
+  *aOutParams = resultParams;
+
+  return true;
+}
+
+BlobParent*
+ContentParent::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
+{
+  NS_ASSERTION(NS_IsMainThread(), "Wrong thread!");
+  NS_ASSERTION(aBlob, "Null pointer!");
+
+  // XXX This is only safe so long as all blob implementations in our tree
+  //     inherit nsDOMFileBase. If that ever changes then this will need to grow
+  //     a real interface or something.
+  nsDOMFileBase* blob = static_cast<nsDOMFileBase*>(aBlob);
+
+  // All blobs shared between processes must be immutable.
+  nsCOMPtr<nsIMutable> mutableBlob = do_QueryInterface(aBlob);
+  if (!mutableBlob || NS_FAILED(mutableBlob->SetMutable(false))) {
+    NS_WARNING("Failed to make blob immutable!");
+    return nullptr;
+  }
+
+  nsCOMPtr<nsIRemoteBlob> remoteBlob = do_QueryInterface(aBlob);
+  if (remoteBlob) {
+    BlobParent* actor =
+      static_cast<BlobParent*>(
+        static_cast<PBlobParent*>(remoteBlob->GetPBlob()));
+    NS_ASSERTION(actor, "Null actor?!");
+
+    if (actor->ManagerIs(this)) {
+      return actor;
+    }
+  }
+
+  BlobConstructorParams params;
+  if (!GetParamsForBlob(blob, &params)) {
+    return nullptr;
   }
 
   BlobParent* actor = BlobParent::Create(aBlob);
@@ -1410,12 +1572,33 @@ ContentParent::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
     return nullptr;
   }
 
+  actor->SetManager(this);
+
+  if (const nsTArray<nsCOMPtr<nsIDOMBlob> >* subBlobs = blob->GetSubBlobs()) {
+    for (uint32_t i = 0; i < subBlobs->Length(); ++i) {
+      BlobConstructorParams subParams;
+      nsDOMFileBase* subBlob =
+        static_cast<nsDOMFileBase*>(subBlobs->ElementAt(i).get());
+      if (!GetParamsForBlob(subBlob, &subParams)) {
+        return nullptr;
+      }
+
+      BlobParent* subActor = BlobParent::Create(aBlob);
+      if (!actor->SendPBlobConstructor(subActor, subParams)) {
+        return nullptr;
+      }
+
+      subActor->SetManager(actor);
+    }
+  }
+
   return actor;
 }
 
 void
 ContentParent::KillHard()
 {
+    mForceKillTask = nullptr;
     // This ensures the process is eventually killed, but doesn't
     // immediately KILLITWITHFIRE because we want to get a minidump if
     // possible.  After a timeout though, the process is forceably
@@ -1534,9 +1717,10 @@ ContentParent::SetChildMemoryReporters(const InfallibleTArray<MemoryReport>& rep
         int32_t   units    = report[i].units();
         int64_t   amount   = report[i].amount();
         nsCString desc     = report[i].desc();
-        
-        nsRefPtr<nsMemoryReporter> r =
-            new nsMemoryReporter(process, path, kind, units, amount, desc);
+
+        nsRefPtr<ChildMemoryReporter> r =
+            new ChildMemoryReporter(process.get(), path.get(), kind, units,
+                                    amount, desc.get());
 
         mMemoryReporters.AppendObject(r);
         mgr->RegisterReporter(r);
@@ -1947,16 +2131,88 @@ ContentParent::RecvAsyncMessage(const nsString& aMsg,
 }
 
 bool
-ContentParent::RecvAddGeolocationListener()
+ContentParent::RecvFilePathUpdateNotify(const nsString& aType, const nsString& aFilePath, const nsCString& aReason)
 {
-  if (mGeolocationWatchID == -1) {
-    nsCOMPtr<nsIDOMGeoGeolocation> geo = do_GetService("@mozilla.org/geolocation;1");
-    if (!geo) {
+    nsCOMPtr<nsIFile> file;
+    nsresult rv = NS_NewLocalFile(aFilePath, false, getter_AddRefs(file));
+    if (NS_FAILED(rv)) {
+        // ignore
+        return true;
+    }
+    nsRefPtr<DeviceStorageFile> dsf = new DeviceStorageFile(aType, file);
+
+    nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
+    if (!obs) {
+        return false;
+    }
+    obs->NotifyObservers(dsf, "file-watcher-update", NS_ConvertASCIItoUTF16(aReason).get());
+    return true;
+}
+
+bool
+ContentParent::RecvAddGeolocationListener(const IPC::Principal& aPrincipal)
+{
+#ifdef MOZ_PERMISSIONS
+  if (Preferences::GetBool("geo.testing.ignore_ipc_principal", false) == false) {
+    nsIPrincipal* principal = aPrincipal;
+    if (principal == nullptr) {
+      KillHard();
       return true;
     }
-    jsval dummy = JSVAL_VOID;
-    geo->WatchPosition(this, nullptr, dummy, nullptr, &mGeolocationWatchID);
+
+    uint32_t principalAppId;
+    nsresult rv = principal->GetAppId(&principalAppId);
+    if (NS_FAILED(rv)) {
+      return true;
+    }
+
+    bool found = false;
+    const InfallibleTArray<PBrowserParent*>& browsers = ManagedPBrowserParent();
+    for (uint32_t i = 0; i < browsers.Length(); ++i) {
+      TabParent* tab = static_cast<TabParent*>(browsers[i]);
+      nsCOMPtr<mozIApplication> app = tab->GetOwnOrContainingApp();
+      uint32_t appId;
+      app->GetLocalId(&appId);
+      if (appId == principalAppId) {
+        found = true;
+        break;
+      }
+    }
+
+    if (!found) {
+      return true;
+    }
+
+    // We need to ensure that this permission has been set.
+    // If it hasn't, just noop
+    nsCOMPtr<nsIPermissionManager> pm = do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+    if (!pm) {
+      return false;
+    }
+
+    uint32_t permission = nsIPermissionManager::UNKNOWN_ACTION;
+    rv = pm->TestPermissionFromPrincipal(principal, "geolocation", &permission);
+    if (NS_FAILED(rv) || permission != nsIPermissionManager::ALLOW_ACTION) {
+      KillHard();
+      return true;
+    }
   }
+#endif
+
+  // To ensure no geolocation updates are skipped, we always force the
+  // creation of a new listener.
+  RecvRemoveGeolocationListener();
+
+  nsCOMPtr<nsIDOMGeoGeolocation> geo = do_GetService("@mozilla.org/geolocation;1");
+  if (!geo) {
+    return true;
+  }
+
+  nsRefPtr<nsGeolocation> geosvc = static_cast<nsGeolocation*>(geo.get());
+  nsAutoPtr<mozilla::dom::GeoPositionOptions> options(new mozilla::dom::GeoPositionOptions());
+  jsval null = JS::NullValue();
+  options->Init(nullptr, &null);
+  geosvc->WatchPosition(this, nullptr, options.forget(), &mGeolocationWatchID);
   return true;
 }
 
@@ -2094,6 +2350,17 @@ ContentParent::CheckPermission(const nsAString& aPermission)
   return AssertAppProcessPermission(this, NS_ConvertUTF16toUTF8(aPermission).get());
 }
 
+bool
+ContentParent::CheckManifestURL(const nsAString& aManifestURL)
+{
+  return AssertAppProcessManifestURL(this, NS_ConvertUTF16toUTF8(aManifestURL).get());
+}
+
+bool
+ContentParent::CheckAppHasPermission(const nsAString& aPermission)
+{
+  return AssertAppHasPermission(this, NS_ConvertUTF16toUTF8(aPermission).get());
+}
 
 } // namespace dom
 } // namespace mozilla

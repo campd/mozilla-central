@@ -34,6 +34,7 @@
 
 #include "sampler.h"
 #include "nsJSPrincipals.h"
+#include <algorithm>
 
 #ifdef MOZ_CRASHREPORTER
 #include "nsExceptionHandler.h"
@@ -431,11 +432,12 @@ CanSkipWrappedJS(nsXPCWrappedJS *wrappedJS)
     // If traversing wrappedJS wouldn't release it, nor
     // cause any other objects to be added to the graph, no
     // need to add it to the graph at all.
+    bool isRootWrappedJS = wrappedJS->GetRootWrapper() == wrappedJS;
     if (nsCCUncollectableMarker::sGeneration &&
         (!obj || !xpc_IsGrayGCThing(obj)) &&
         !wrappedJS->IsSubjectToFinalization() &&
-        wrappedJS->GetRootWrapper() == wrappedJS) {
-        if (!wrappedJS->IsAggregatedToNative()) {
+        (isRootWrappedJS || CanSkipWrappedJS(wrappedJS->GetRootWrapper()))) {
+        if (!wrappedJS->IsAggregatedToNative() || !isRootWrappedJS) {
             return true;
         } else {
             nsISupports* agg = wrappedJS->GetAggregatedNativeObject();
@@ -465,7 +467,12 @@ XPCJSRuntime::AddXPConnectRoots(nsCycleCollectionTraversalCallback &cb)
 
     JSContext *iter = nullptr, *acx;
     while ((acx = JS_ContextIterator(GetJSRuntime(), &iter))) {
-        cb.NoteNativeRoot(acx, nsXPConnect::JSContextParticipant());
+        // Add the context to the CC graph only if traversing it would
+        // end up doing something.
+        JSObject* global = JS_GetGlobalObject(acx);
+        if (global && xpc_IsGrayGCThing(global)) {
+            cb.NoteNativeRoot(acx, nsXPConnect::JSContextParticipant());
+        }
     }
 
     XPCAutoLock lock(mMapLock);
@@ -565,7 +572,7 @@ ReleaseSliceNow(uint32_t slice, void *data)
     MOZ_ASSERT(slice > 0, "nonsensical/useless call with slice == 0");
     nsTArray<nsISupports *> *items = static_cast<nsTArray<nsISupports *>*>(data);
 
-    slice = NS_MIN(slice, items->Length());
+    slice = std::min(slice, items->Length());
     for (uint32_t i = 0; i < slice; ++i) {
         // Remove (and NS_RELEASE) the last entry in "items":
         uint32_t lastItemIdx = items->Length() - 1;
@@ -1995,15 +2002,16 @@ SizeOfTreeIncludingThis(nsINode *tree)
 class OrphanReporter : public JS::ObjectPrivateVisitor
 {
 public:
-    OrphanReporter()
+    OrphanReporter(GetISupportsFun aGetISupports)
+      : JS::ObjectPrivateVisitor(aGetISupports)
     {
         mAlreadyMeasuredOrphanTrees.Init();
     }
 
-    virtual size_t sizeOfIncludingThis(void *aSupports)
+    virtual size_t sizeOfIncludingThis(nsISupports *aSupports)
     {
         size_t n = 0;
-        nsCOMPtr<nsINode> node = do_QueryInterface(static_cast<nsISupports*>(aSupports));
+        nsCOMPtr<nsINode> node = do_QueryInterface(aSupports);
         // https://bugzilla.mozilla.org/show_bug.cgi?id=773533#c11 explains
         // that we have to skip XBL elements because they violate certain
         // assumptions.  Yuk.
@@ -2065,15 +2073,15 @@ class XPCJSRuntimeStats : public JS::RuntimeStats
                     cJSPathPrefix.AppendLiteral("/js/");
                 } else {
                     cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/unknown-window-global/");
-                    cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
+                    cDOMPathPrefix.AssignLiteral("explicit/dom/unknown-window-global?!/");
                 }
             } else {
                 cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/non-window-global/");
-                cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
+                cDOMPathPrefix.AssignLiteral("explicit/dom/non-window-global?!/");
             }
         } else {
             cJSPathPrefix.AssignLiteral("explicit/js-non-window/compartments/no-global/");
-            cDOMPathPrefix.AssignLiteral("explicit/dom/?!/");
+            cDOMPathPrefix.AssignLiteral("explicit/dom/no-global?!/");
         }
 
         cJSPathPrefix += NS_LITERAL_CSTRING("compartment(") + cName + NS_LITERAL_CSTRING(")/");
@@ -2108,7 +2116,7 @@ JSMemoryMultiReporter::CollectReports(WindowPaths *windowPaths,
     // stats seems like a bad idea.
 
     XPCJSRuntimeStats rtStats(windowPaths);
-    OrphanReporter orphanReporter;
+    OrphanReporter orphanReporter(XPCConvert::GetISupportsFromJSObject);
     if (!JS::CollectRuntimeStats(xpcrt->GetJSRuntime(), &rtStats, &orphanReporter))
         return NS_ERROR_FAILURE;
 
@@ -2285,18 +2293,39 @@ CompartmentNameCallback(JSRuntime *rt, JSCompartment *comp,
 
 bool XPCJSRuntime::gExperimentalBindingsEnabled;
 
-bool PreserveWrapper(JSContext *cx, JSObject *obj)
+static bool
+PreserveWrapper(JSContext *cx, JSObject *obj)
 {
-    MOZ_ASSERT(IS_WRAPPER_CLASS(js::GetObjectClass(obj)));
-    nsISupports *native = nsXPConnect::GetXPConnect()->GetNativeOfWrapper(cx, obj);
-    if (!native)
+    MOZ_ASSERT(cx);
+    MOZ_ASSERT(obj);
+    MOZ_ASSERT(js::GetObjectClass(obj)->ext.isWrappedNative ||
+               mozilla::dom::IsDOMObject(obj));
+
+    XPCCallContext ccx(NATIVE_CALLER, cx);
+    if (!ccx.IsValid())
         return false;
-    nsresult rv;
-    nsCOMPtr<nsINode> node = do_QueryInterface(native, &rv);
-    if (NS_FAILED(rv))
+
+    JSObject *obj2 = nullptr;
+    nsIXPConnectWrappedNative *wrapper =
+        XPCWrappedNative::GetWrappedNativeOfJSObject(cx, obj, nullptr, &obj2);
+    nsISupports *supports = nullptr;
+
+    if (wrapper) {
+        supports = wrapper->Native();
+    } else if (obj2) {
+        supports = static_cast<nsISupports*>(xpc_GetJSPrivate(obj2));
+    }
+
+    if (supports) {
+        // For pre-Paris DOM bindings objects, we only support Node.
+        if (nsCOMPtr<nsINode> node = do_QueryInterface(supports)) {
+            nsContentUtils::PreserveWrapper(supports, node);
+            return true;
+        }
         return false;
-    nsContentUtils::PreserveWrapper(native, node);
-    return true;
+    }
+
+    return mozilla::dom::TryPreserveWrapper(obj);
 }
 
 static nsresult

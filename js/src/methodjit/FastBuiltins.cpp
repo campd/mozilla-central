@@ -605,6 +605,9 @@ CompileStatus
 mjit::Compiler::compileArrayConcat(types::TypeSet *thisTypes, types::TypeSet *argTypes,
                                    FrameEntry *thisValue, FrameEntry *argValue)
 {
+    frame.forgetMismatchedObject(thisValue);
+    frame.forgetMismatchedObject(argValue);
+
     /*
      * Require the 'this' types to have a specific type matching the current
      * global, so we can create the result object inline.
@@ -760,7 +763,7 @@ mjit::Compiler::compileArrayWithArgs(uint32_t argc)
         return Compile_Error;
     templateObject->setType(type);
 
-    JS_ASSERT(templateObject->getDenseArrayCapacity() >= argc);
+    JS_ASSERT(templateObject->getDenseCapacity() >= argc);
 
     RegisterID result = frame.allocReg();
     Jump emptyFreeList = getNewObject(cx, result, templateObject);

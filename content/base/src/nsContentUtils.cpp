@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=78: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -115,7 +115,7 @@
 #include "nsTextEditorState.h"
 #include "nsIPluginHost.h"
 #include "nsICategoryManager.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsEventStateManager.h"
 #include "nsIDOMHTMLInputElement.h"
 #include "nsParserConstants.h"
@@ -123,6 +123,7 @@
 #include "nsILoadContext.h"
 #include "nsTextFragment.h"
 #include "mozilla/Selection.h"
+#include <algorithm>
 
 #ifdef IBMBIDI
 #include "nsIBidiKeyboard.h"
@@ -247,25 +248,29 @@ static NS_DEFINE_CID(kParserServiceCID, NS_PARSERSERVICE_CID);
 static NS_DEFINE_CID(kCParserCID, NS_PARSER_CID);
 
 static PLDHashTable sEventListenerManagersHash;
-static nsCOMPtr<nsIMemoryReporter> sEventListenerManagersHashReporter;
 
-NS_MEMORY_REPORTER_MALLOC_SIZEOF_FUN(EventListenerManagersHashMallocSizeOf)
-
-static int64_t GetEventListenerManagersHash()
+class DOMEventListenerManagersHashReporter MOZ_FINAL : public MemoryReporterBase
 {
-  // We don't measure the |nsEventListenerManager| objects pointed to by the
-  // entries because those references are non-owning.
-  return PL_DHashTableSizeOfExcludingThis(&sEventListenerManagersHash,
-                                          nullptr,
-                                          EventListenerManagersHashMallocSizeOf);
-}
+public:
+  DOMEventListenerManagersHashReporter()
+    : MemoryReporterBase(
+        "explicit/dom/event-listener-managers-hash",
+        KIND_HEAP,
+        UNITS_BYTES,
+        "Memory used by the event listener manager's hash table.")
+  {}
 
-NS_MEMORY_REPORTER_IMPLEMENT(EventListenerManagersHash,
-  "explicit/dom/event-listener-managers-hash",
-  KIND_HEAP,
-  UNITS_BYTES,
-  GetEventListenerManagersHash,
-  "Memory used by the event listener manager's hash table.")
+private:
+  int64_t Amount()
+  {
+    // We don't measure the |nsEventListenerManager| objects pointed to by the
+    // entries because those references are non-owning.
+    return sEventListenerManagersHash.ops
+         ? PL_DHashTableSizeOfExcludingThis(&sEventListenerManagersHash,
+                                            nullptr, MallocSizeOf)
+         : 0;
+  }
+};
 
 class EventListenerManagerMapEntry : public PLDHashEntryHdr
 {
@@ -403,9 +408,7 @@ nsContentUtils::Init()
       return NS_ERROR_OUT_OF_MEMORY;
     }
 
-    sEventListenerManagersHashReporter =
-      new NS_MEMORY_REPORTER_NAME(EventListenerManagersHash);
-    (void)::NS_RegisterMemoryReporter(sEventListenerManagersHashReporter);
+    NS_RegisterMemoryReporter(new DOMEventListenerManagersHashReporter);
   }
 
   sBlockedScriptRunners = new nsTArray< nsCOMPtr<nsIRunnable> >;
@@ -1487,9 +1490,6 @@ nsContentUtils::Shutdown()
     if (sEventListenerManagersHash.entryCount == 0) {
       PL_DHashTableFinish(&sEventListenerManagersHash);
       sEventListenerManagersHash.ops = nullptr;
-
-      (void)::NS_UnregisterMemoryReporter(sEventListenerManagersHashReporter);
-      sEventListenerManagersHashReporter = nullptr;
     }
   }
 
@@ -1929,7 +1929,7 @@ nsContentUtils::GetCommonAncestor(nsINode* aNode1,
   uint32_t pos2 = parents2.Length();
   nsINode* parent = nullptr;
   uint32_t len;
-  for (len = NS_MIN(pos1, pos2); len > 0; --len) {
+  for (len = std::min(pos1, pos2); len > 0; --len) {
     nsINode* child1 = parents1.ElementAt(--pos1);
     nsINode* child2 = parents2.ElementAt(--pos2);
     if (child1 != child2) {
@@ -1980,7 +1980,7 @@ nsContentUtils::ComparePoints(nsINode* aParent1, int32_t aOffset1,
   // Find where the parent chains differ
   nsINode* parent = parents1.ElementAt(pos1);
   uint32_t len;
-  for (len = NS_MIN(pos1, pos2); len > 0; --len) {
+  for (len = std::min(pos1, pos2); len > 0; --len) {
     nsINode* child1 = parents1.ElementAt(--pos1);
     nsINode* child2 = parents2.ElementAt(--pos2);
     if (child1 != child2) {
@@ -4715,7 +4715,7 @@ nsContentUtils::GetLocalizedEllipsis()
   static PRUnichar sBuf[4] = { 0, 0, 0, 0 };
   if (!sBuf[0]) {
     nsAdoptingString tmp = Preferences::GetLocalizedString("intl.ellipsis");
-    uint32_t len = NS_MIN(uint32_t(tmp.Length()),
+    uint32_t len = std::min(uint32_t(tmp.Length()),
                           uint32_t(ArrayLength(sBuf) - 1));
     CopyUnicodeTo(tmp, 0, sBuf, len);
     if (!sBuf[0])
@@ -5053,164 +5053,7 @@ nsContentUtils::GetViewportInfo(nsIDocument *aDocument,
                                 uint32_t aDisplayWidth,
                                 uint32_t aDisplayHeight)
 {
-  nsAutoString viewport;
-  aDocument->GetHeaderData(nsGkAtoms::viewport, viewport);
-  if (viewport.IsEmpty()) {
-    // If the docType specifies that we are on a site optimized for mobile,
-    // then we want to return specially crafted defaults for the viewport info.
-    nsCOMPtr<nsIDOMDocument> domDoc(do_QueryInterface(aDocument));
-    nsCOMPtr<nsIDOMDocumentType> docType;
-    nsresult rv = domDoc->GetDoctype(getter_AddRefs(docType));
-    if (NS_SUCCEEDED(rv) && docType) {
-      nsAutoString docId;
-      rv = docType->GetPublicId(docId);
-      if (NS_SUCCEEDED(rv)) {
-        if ((docId.Find("WAP") != -1) ||
-            (docId.Find("Mobile") != -1) ||
-            (docId.Find("WML") != -1))
-        {
-          nsViewportInfo ret(aDisplayWidth, aDisplayHeight);
-          return ret;
-        }
-      }
-    }
-
-    nsAutoString handheldFriendly;
-    aDocument->GetHeaderData(nsGkAtoms::handheldFriendly, handheldFriendly);
-    if (handheldFriendly.EqualsLiteral("true")) {
-      nsViewportInfo ret(aDisplayWidth, aDisplayHeight);
-      return ret;
-    }
-  }
-
-  nsAutoString minScaleStr;
-  aDocument->GetHeaderData(nsGkAtoms::viewport_minimum_scale, minScaleStr);
-
-  nsresult errorCode;
-  float scaleMinFloat = minScaleStr.ToFloat(&errorCode);
-
-  if (NS_FAILED(errorCode)) {
-    scaleMinFloat = kViewportMinScale;
-  }
-
-  scaleMinFloat = NS_MIN((double)scaleMinFloat, kViewportMaxScale);
-  scaleMinFloat = NS_MAX((double)scaleMinFloat, kViewportMinScale);
-
-  nsAutoString maxScaleStr;
-  aDocument->GetHeaderData(nsGkAtoms::viewport_maximum_scale, maxScaleStr);
-
-  // We define a special error code variable for the scale and max scale,
-  // because they are used later (see the width calculations).
-  nsresult scaleMaxErrorCode;
-  float scaleMaxFloat = maxScaleStr.ToFloat(&scaleMaxErrorCode);
-
-  if (NS_FAILED(scaleMaxErrorCode)) {
-    scaleMaxFloat = kViewportMaxScale;
-  }
-
-  scaleMaxFloat = NS_MIN((double)scaleMaxFloat, kViewportMaxScale);
-  scaleMaxFloat = NS_MAX((double)scaleMaxFloat, kViewportMinScale);
-
-  nsAutoString scaleStr;
-  aDocument->GetHeaderData(nsGkAtoms::viewport_initial_scale, scaleStr);
-
-  nsresult scaleErrorCode;
-  float scaleFloat = scaleStr.ToFloat(&scaleErrorCode);
-
-  nsAutoString widthStr, heightStr;
-
-  aDocument->GetHeaderData(nsGkAtoms::viewport_height, heightStr);
-  aDocument->GetHeaderData(nsGkAtoms::viewport_width, widthStr);
-
-  bool autoSize = false;
-
-  if (widthStr.EqualsLiteral("device-width")) {
-    autoSize = true;
-  }
-
-  if (widthStr.IsEmpty() &&
-     (heightStr.EqualsLiteral("device-height") ||
-          scaleFloat == 1.0))
-  {
-    autoSize = true;
-  }
-
-  // Now convert the scale into device pixels per CSS pixel.
-  nsIWidget *widget = WidgetForDocument(aDocument);
-  double pixelRatio = widget ? GetDevicePixelsPerMetaViewportPixel(widget) : 1.0;
-  scaleFloat *= pixelRatio;
-  scaleMinFloat *= pixelRatio;
-  scaleMaxFloat *= pixelRatio;
-
-  uint32_t width, height;
-  if (autoSize) {
-    // aDisplayWidth and aDisplayHeight are in device pixels; convert them to
-    // CSS pixels for the viewport size.
-    width = aDisplayWidth / pixelRatio;
-    height = aDisplayHeight / pixelRatio;
-  } else {
-    nsresult widthErrorCode, heightErrorCode;
-    width = widthStr.ToInteger(&widthErrorCode);
-    height = heightStr.ToInteger(&heightErrorCode);
-
-    // If width or height has not been set to a valid number by this point,
-    // fall back to a default value.
-    bool validWidth = (!widthStr.IsEmpty() && NS_SUCCEEDED(widthErrorCode) && width > 0);
-    bool validHeight = (!heightStr.IsEmpty() && NS_SUCCEEDED(heightErrorCode) && height > 0);
-
-    if (!validWidth) {
-      if (validHeight && aDisplayWidth > 0 && aDisplayHeight > 0) {
-        width = uint32_t((height * aDisplayWidth) / aDisplayHeight);
-      } else {
-        width = Preferences::GetInt("browser.viewport.desktopWidth",
-                                    kViewportDefaultScreenWidth);
-      }
-    }
-
-    if (!validHeight) {
-      if (aDisplayWidth > 0 && aDisplayHeight > 0) {
-        height = uint32_t((width * aDisplayHeight) / aDisplayWidth);
-      } else {
-        height = width;
-      }
-    }
-  }
-
-  width = NS_MIN(width, kViewportMaxWidth);
-  width = NS_MAX(width, kViewportMinWidth);
-
-  // Also recalculate the default zoom, if it wasn't specified in the metadata,
-  // and the width is specified.
-  if (scaleStr.IsEmpty() && !widthStr.IsEmpty()) {
-    scaleFloat = NS_MAX(scaleFloat, float(aDisplayWidth) / float(width));
-  }
-
-  height = NS_MIN(height, kViewportMaxHeight);
-  height = NS_MAX(height, kViewportMinHeight);
-
-  // We need to perform a conversion, but only if the initial or maximum
-  // scale were set explicitly by the user.
-  if (!scaleStr.IsEmpty() && NS_SUCCEEDED(scaleErrorCode)) {
-    width = NS_MAX(width, (uint32_t)(aDisplayWidth / scaleFloat));
-    height = NS_MAX(height, (uint32_t)(aDisplayHeight / scaleFloat));
-  } else if (!maxScaleStr.IsEmpty() && NS_SUCCEEDED(scaleMaxErrorCode)) {
-    width = NS_MAX(width, (uint32_t)(aDisplayWidth / scaleMaxFloat));
-    height = NS_MAX(height, (uint32_t)(aDisplayHeight / scaleMaxFloat));
-  }
-
-  bool allowZoom = true;
-  nsAutoString userScalable;
-  aDocument->GetHeaderData(nsGkAtoms::viewport_user_scalable, userScalable);
-
-  if ((userScalable.EqualsLiteral("0")) ||
-      (userScalable.EqualsLiteral("no")) ||
-      (userScalable.EqualsLiteral("false"))) {
-    allowZoom = false;
-  }
-
-  nsViewportInfo ret(scaleFloat, scaleMinFloat, scaleMaxFloat, width, height,
-                     autoSize, allowZoom);
-  return ret;
+  return aDocument->GetViewportInfo(aDisplayWidth, aDisplayHeight);
 }
 
 /* static */
@@ -5675,44 +5518,6 @@ nsContentUtils::EqualsIgnoreASCIICase(const nsAString& aStr1,
     }
   }
 
-  return true;
-}
-
-/* static */
-bool
-nsContentUtils::EqualsLiteralIgnoreASCIICase(const nsAString& aStr1,
-                                             const char* aStr2,
-                                             const uint32_t len)
-{
-  if (aStr1.Length() != len) {
-    return false;
-  }
-  
-  const PRUnichar* str1 = aStr1.BeginReading();
-  const char*      str2 = aStr2;
-  const PRUnichar* end = str1 + len;
-  
-  while (str1 < end) {
-    PRUnichar c1 = *str1++;
-    PRUnichar c2 = *str2++;
-
-    // First check if any bits other than the 0x0020 differs
-    if ((c1 ^ c2) & 0xffdf) {
-      return false;
-    }
-    
-    // We know they can only differ in the 0x0020 bit.
-    // Likely the two chars are the same, so check that first
-    if (c1 != c2) {
-      // They do differ, but since it's only in the 0x0020 bit, check if it's
-      // the same ascii char, but just differing in case
-      PRUnichar c1Upper = c1 & 0xffdf;
-      if (!('A' <= c1Upper && c1Upper <= 'Z')) {
-        return false;
-      }
-    }
-  }
-  
   return true;
 }
 
@@ -6435,11 +6240,11 @@ nsContentUtils::WidgetForDocument(nsIDocument* aDoc)
 {
   nsIPresShell* shell = FindPresShellForDocument(aDoc);
   if (shell) {
-    nsIViewManager* VM = shell->GetViewManager();
+    nsViewManager* VM = shell->GetViewManager();
     if (VM) {
       nsView* rootView = VM->GetRootView();
       if (rootView) {
-        nsView* displayRoot = nsIViewManager::GetDisplayRootFor(rootView);
+        nsView* displayRoot = nsViewManager::GetDisplayRootFor(rootView);
         if (displayRoot) {
           return displayRoot->GetNearestWidget(nullptr);
         }
@@ -6929,8 +6734,8 @@ nsContentUtils::GetSelectionInTextControl(Selection* aSelection,
   }
 
   // Make sure aOutStartOffset <= aOutEndOffset.
-  aOutStartOffset = NS_MIN(anchorOffset, focusOffset);
-  aOutEndOffset = NS_MAX(anchorOffset, focusOffset);
+  aOutStartOffset = std::min(anchorOffset, focusOffset);
+  aOutEndOffset = std::max(anchorOffset, focusOffset);
 }
 
 nsIEditor*

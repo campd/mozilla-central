@@ -368,6 +368,11 @@ pref("browser.search.update.interval", 21600);
 // enable search suggestions by default
 pref("browser.search.suggest.enabled", true);
 
+#ifdef MOZ_OFFICIAL_BRANDING
+// {moz:official} expands to "official"
+pref("browser.search.official", true);
+#endif
+
 pref("browser.sessionhistory.max_entries", 50);
 
 // handle links targeting new windows
@@ -536,6 +541,11 @@ pref("mousewheel.with_shift.action", 1);
 // acceleration is the best modifier for zoom-in/out.  However, we should keep
 // the control key setting for backward compatibility.
 pref("mousewheel.with_meta.action", 3); // command key on Mac
+// Disable control-/meta-modified horizontal mousewheel events, since
+// those are used on Mac as part of modified swipe gestures (e.g.
+// Left swipe+Cmd = go back in a new tab).
+pref("mousewheel.with_control.action.override_x", 0);
+pref("mousewheel.with_meta.action.override_x", 0);
 #else
 pref("mousewheel.with_alt.action", 1);
 pref("mousewheel.with_shift.action", 2);
@@ -724,15 +734,18 @@ pref("browser.safebrowsing.reportMalwareErrorURL", "http://%LOCALE%.malware-erro
 pref("browser.safebrowsing.warning.infoURL", "http://www.mozilla.com/%LOCALE%/firefox/phishing-protection/");
 pref("browser.safebrowsing.malware.reportURL", "http://safebrowsing.clients.google.com/safebrowsing/diagnostic?client=%NAME%&hl=%LOCALE%&site=");
 
+#ifdef MOZILLA_OFFICIAL
+// Normally the "client ID" sent in updates is appinfo.name, but for
+// official Firefox releases from Mozilla we use a special identifier.
+pref("browser.safebrowsing.id", "navclient-auto-ffox");
+#endif
+
 // Name of the about: page contributed by safebrowsing to handle display of error
 // pages on phishing/malware hits.  (bug 399233)
 pref("urlclassifier.alternate_error_page", "blocked");
 
 // The number of random entries to send with a gethash request.
 pref("urlclassifier.gethashnoise", 4);
-
-// Randomize all UrlClassifier data with a per-client key.
-pref("urlclassifier.randomizeclient", false);
 
 // The list of tables that use the gethash request to confirm partial results.
 pref("urlclassifier.gethashtables", "goog-phish-shavar,goog-malware-shavar");
@@ -851,6 +864,10 @@ pref("breakpad.reportURL", "http://crash-stats.mozilla.com/report/index/");
 // Override submission of plugin hang reports to a different processing server
 pref("toolkit.crashreporter.pluginHangSubmitURL",
      "https://hang-reports.mozilla.org/submit");
+
+// URL for "Learn More" for Crash Reporter
+pref("toolkit.crashreporter.infoURL",
+     "http://www.mozilla.com/legal/privacy/firefox.html#crash-reporter");
 
 // base URL for web-based support pages
 pref("app.support.baseURL", "http://support.mozilla.org/1/firefox/%VERSION%/%OS%/%LOCALE%/");

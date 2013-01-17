@@ -5,12 +5,13 @@
 
 #include "DOMSVGTransformList.h"
 #include "DOMSVGTransform.h"
-#include "DOMSVGMatrix.h"
+#include "mozilla/dom/SVGMatrix.h"
 #include "SVGAnimatedTransformList.h"
 #include "nsSVGElement.h"
 #include "nsContentUtils.h"
 #include "mozilla/dom/SVGTransformListBinding.h"
 #include "nsError.h"
+#include <algorithm>
 
 // local helper functions
 namespace {
@@ -197,7 +198,7 @@ DOMSVGTransformList::InsertItemBefore(DOMSVGTransform& newItem,
     return nullptr;
   }
 
-  index = NS_MIN(index, LengthNoFlush());
+  index = std::min(index, LengthNoFlush());
   if (index >= DOMSVGTransform::MaxListIndex()) {
     error.Throw(NS_ERROR_DOM_INDEX_SIZE_ERR);
     return nullptr;
@@ -316,7 +317,7 @@ DOMSVGTransformList::RemoveItem(uint32_t index, ErrorResult& error)
 }
 
 already_AddRefed<DOMSVGTransform>
-DOMSVGTransformList::CreateSVGTransformFromMatrix(DOMSVGMatrix& matrix)
+DOMSVGTransformList::CreateSVGTransformFromMatrix(dom::SVGMatrix& matrix)
 {
   nsCOMPtr<DOMSVGTransform> result = new DOMSVGTransform(matrix.Matrix());
   return result.forget();

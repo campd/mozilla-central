@@ -18,7 +18,7 @@
 #include "nsDOMAttributeMap.h"
 #include "nsIAtom.h"
 #include "nsINodeInfo.h"
-#include "nsIDocument.h"
+#include "nsIDocumentInlines.h"
 #include "nsIDOMNodeList.h"
 #include "nsIDOMDocument.h"
 #include "nsIContentIterator.h"
@@ -94,7 +94,7 @@
 #include "nsContentCreatorFunctions.h"
 #include "nsIControllers.h"
 #include "nsView.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsIScrollableFrame.h"
 #include "nsXBLInsertionPoint.h"
 #include "mozilla/css/StyleRule.h" /* For nsCSSSelectorList */
@@ -464,7 +464,7 @@ Element::GetClassList()
 }
 
 void
-Element::GetClassList(nsIDOMDOMTokenList** aClassList)
+Element::GetClassList(nsISupports** aClassList)
 {
   NS_IF_ADDREF(*aClassList = GetClassList());
 }
@@ -1155,30 +1155,19 @@ Element::BindToTree(nsIDocument* aDocument, nsIContent* aParent,
                NODE_NEEDS_FRAME | NODE_DESCENDANTS_NEED_FRAMES |
                // And the restyle bits
                ELEMENT_ALL_RESTYLE_FLAGS);
+
+    // Propagate scoped style sheet tracking bit.
+    SetIsElementInStyleScope(mParent->IsElementInStyleScope());
   } else {
     // If we're not in the doc, update our subtree pointer.
     SetSubtreeRootPointer(aParent->SubtreeRoot());
   }
 
-  // This has to be here, rather than in nsGenericHTMLElement::BindToTree, 
+  // This has to be here, rather than in nsGenericHTMLElement::BindToTree,
   //  because it has to happen after updating the parent pointer, but before
   //  recursively binding the kids.
   if (IsHTML()) {
-    if (aParent && aParent->NodeOrAncestorHasDirAuto()) {
-      SetAncestorHasDirAuto();
-      // if we are binding an element to the tree that already has descendants,
-      // and the parent has NodeHasDirAuto or NodeAncestorHasDirAuto, we may
-      // need to reset the direction of an ancestor with dir=auto
-      if (GetFirstChild()) {
-        WalkAncestorsResetAutoDirection(this);
-      }
-    }
-
-    if (!HasDirAuto()) {
-      // if the element doesn't have dir=auto, set its directionality from
-      // the dir attribute or by inheriting from its ancestors.
-      RecomputeDirectionality(this, false);
-    }
+    SetDirOnBind(this, aParent);
   }
 
   // If NODE_FORCE_XBL_BINDINGS was set we might have anonymous children
@@ -1369,8 +1358,8 @@ Element::UnbindFromTree(bool aDeep, bool aNullParent)
   // This has to be here, rather than in nsGenericHTMLElement::UnbindFromTree, 
   //  because it has to happen after unsetting the parent pointer, but before
   //  recursively unbinding the kids.
-  if (IsHTML() && !HasDirAuto()) {
-    RecomputeDirectionality(this, false);
+  if (IsHTML()) {
+    ResetDir(this);
   }
 
   if (aDeep) {
@@ -1849,7 +1838,7 @@ Element::SetAttrAndNotify(int32_t aNamespaceID,
 
   if (aNamespaceID == kNameSpaceID_None) {
     if (aName == nsGkAtoms::dir) {
-      hadValidDir = HasValidDir() || NodeInfo()->Equals(nsGkAtoms::bdi);
+      hadValidDir = HasValidDir() || IsHTML(nsGkAtoms::bdi);
     }
 
     // XXXbz Perhaps we should push up the attribute mapping function
@@ -2096,7 +2085,7 @@ Element::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aName,
   bool hadValidDir = false;
 
   if (aNameSpaceID == kNameSpaceID_None && aName == nsGkAtoms::dir) {
-    hadValidDir = HasValidDir() || NodeInfo()->Equals(nsGkAtoms::bdi);
+    hadValidDir = HasValidDir() || IsHTML(nsGkAtoms::bdi);
   }
 
   nsAttrValue oldValue;
@@ -3608,4 +3597,14 @@ Element::GetEditorInternal()
 {
   nsCOMPtr<nsITextControlElement> textCtrl = do_QueryInterface(this);
   return textCtrl ? textCtrl->GetTextEditor() : nullptr;
+}
+
+nsresult
+Element::SetBoolAttr(nsIAtom* aAttr, bool aValue)
+{
+  if (aValue) {
+    return SetAttr(kNameSpaceID_None, aAttr, EmptyString(), true);
+  }
+
+  return UnsetAttr(kNameSpaceID_None, aAttr, true);
 }

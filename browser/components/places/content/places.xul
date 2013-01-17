@@ -326,7 +326,7 @@
       </menubar>
 #endif
 
-      <spacer flex="1"/>
+      <spacer id="libraryToolbarSpacer" flex="1"/>
 
       <textbox id="searchFilter"
                clickSelectsAll="true"
@@ -368,12 +368,12 @@
               flex="1"
               type="places"
               flatList="true"
+              selectfirstnode="true"
               enableColumnDrag="true"
               onfocus="PlacesOrganizer.updateDetailsPane(event)"
               onselect="PlacesOrganizer.updateDetailsPane(event)"
               onkeypress="ContentTree.onKeyPress(event);"
-              onopenflatcontainer="PlacesOrganizer.openFlatContainer(aContainer);"
-              onclick="ContentTree.onClick(event);">
+              onopenflatcontainer="PlacesOrganizer.openFlatContainer(aContainer);">
           <treecols id="placeContentColumns" context="placesColumnsContext">
             <treecol label="&col.name.label;" id="placesContentTitle" anonid="title" flex="5" primary="true" ordinal="1" 
                       persist="width hidden ordinal sortActive sortDirection"/>
@@ -402,7 +402,7 @@
             <treecol label="&col.lastmodified.label;" id="placesContentLastModified" anonid="lastModified" flex="1" hidden="true"
                       persist="width hidden ordinal sortActive sortDirection"/>
           </treecols>
-          <treechildren flex="1"/>
+          <treechildren flex="1" onclick="ContentTree.onClick(event);"/>
         </tree>
       </deck>
       <deck id="detailsDeck" style="height: 11em;">

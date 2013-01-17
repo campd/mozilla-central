@@ -30,7 +30,7 @@
 #include "nsNetUtil.h"
 #include "nsIDocument.h"
 #include "nsView.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsGkAtoms.h"
 #include "nsStyleCoord.h"
 #include "nsStyleContext.h"
@@ -234,6 +234,40 @@ nsSubDocumentFrame::GetSubdocumentRootFrame()
     return nullptr;
   nsView* subdocView = mInnerView->GetFirstChild();
   return subdocView ? subdocView->GetFrame() : nullptr;
+}
+
+nsIntSize
+nsSubDocumentFrame::GetSubdocumentSize()
+{
+  if (GetStateBits() & NS_FRAME_FIRST_REFLOW) {
+    nsRefPtr<nsFrameLoader> frameloader = FrameLoader();
+    if (frameloader) {
+      nsCOMPtr<nsIDocument> oldContainerDoc;
+      nsView* detachedViews =
+        frameloader->GetDetachedSubdocView(getter_AddRefs(oldContainerDoc));
+      if (detachedViews) {
+        nsSize size = detachedViews->GetBounds().Size();
+        nsPresContext* presContext = detachedViews->GetFrame()->PresContext();
+        return nsIntSize(presContext->AppUnitsToDevPixels(size.width),
+                         presContext->AppUnitsToDevPixels(size.height));
+      }
+    }
+    // Pick some default size for now.  Using 10x10 because that's what the
+    // code used to do.
+    return nsIntSize(10, 10);
+  } else {
+    nsSize docSizeAppUnits;
+    nsPresContext* presContext = PresContext();
+    nsCOMPtr<nsIDOMHTMLFrameElement> frameElem =
+      do_QueryInterface(GetContent());
+    if (frameElem) {
+      docSizeAppUnits = GetSize();
+    } else {
+      docSizeAppUnits = GetContentRect().Size();
+    }
+    return nsIntSize(presContext->AppUnitsToDevPixels(docSizeAppUnits.width),
+                     presContext->AppUnitsToDevPixels(docSizeAppUnits.height));
+  }
 }
 
 bool
@@ -674,7 +708,7 @@ nsSubDocumentFrame::Reflow(nsPresContext*           aPresContext,
   }
 
   if (mInnerView) {
-    nsIViewManager* vm = mInnerView->GetViewManager();
+    nsViewManager* vm = mInnerView->GetViewManager();
     vm->MoveViewTo(mInnerView, offset.x, offset.y);
     vm->ResizeView(mInnerView, nsRect(nsPoint(0, 0), innerSize), true);
   }
@@ -958,7 +992,7 @@ InsertViewsInReverseOrder(nsView* aSibling, nsView* aParent)
   NS_PRECONDITION(aParent, "");
   NS_PRECONDITION(!aParent->GetFirstChild(), "inserting into non-empty list");
 
-  nsIViewManager* vm = aParent->GetViewManager();
+  nsViewManager* vm = aParent->GetViewManager();
   while (aSibling) {
     nsView* next = aSibling->GetNextSibling();
     aSibling->SetNextSibling(nullptr);
@@ -1092,7 +1126,7 @@ nsSubDocumentFrame::EnsureInnerView()
   NS_ASSERTION(outerView, "Must have an outer view already");
   nsRect viewBounds(0, 0, 0, 0); // size will be fixed during reflow
 
-  nsIViewManager* viewMan = outerView->GetViewManager();
+  nsViewManager* viewMan = outerView->GetViewManager();
   nsView* innerView = viewMan->CreateView(viewBounds, outerView);
   if (!innerView) {
     NS_ERROR("Could not create inner view");

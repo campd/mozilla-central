@@ -14,7 +14,7 @@
 #include "nsFrameList.h"
 #include "mozilla/Attributes.h"
 #include "nsIWebProgress.h"
-#include "nsHTMLCanvasElement.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
 #include "nsIWebProgressListener.h"
 #include "nsWeakReference.h"
 
@@ -280,6 +280,7 @@ protected:
 
   int32_t mLoadCounter;
   bool mDidLoadDataForPrinting;
+  bool mIsDestroying;
 
   nsresult AfterNetworkPrint(bool aHandleError);
 

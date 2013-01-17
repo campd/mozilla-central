@@ -24,6 +24,7 @@
 #include "SVGContentUtils.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 //----------------------------------------------------------------------
 // Helper classes
@@ -105,8 +106,7 @@ nsSVGPatternFrame::Init(nsIContent* aContent,
                         nsIFrame* aParent,
                         nsIFrame* aPrevInFlow)
 {
-  nsCOMPtr<nsIDOMSVGPatternElement> patternElement = do_QueryInterface(aContent);
-  NS_ASSERTION(patternElement, "Content is not an SVG pattern");
+  NS_ASSERTION(aContent->IsSVG(nsGkAtoms::pattern), "Content is not an SVG pattern");
 
   return nsSVGPatternFrameBase::Init(aContent, aParent, aPrevInFlow);
 }
@@ -618,7 +618,7 @@ nsSVGPatternFrame::ConstructCTM(const nsSVGViewBox& aViewBox,
                                 nsIFrame *aTarget)
 {
   gfxMatrix tCTM;
-  nsSVGSVGElement *ctx = nullptr;
+  SVGSVGElement *ctx = nullptr;
   nsIContent* targetContent = aTarget->GetContent();
 
   // The objectBoundingBox conversion must be handled in the CTM:

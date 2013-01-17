@@ -16,7 +16,6 @@
 #include "mozilla/css/StyleRule.h"
 #include "nsIDocument.h"
 #include "nsIDocumentEncoder.h"
-#include "nsIDOMHTMLBodyElement.h"
 #include "nsIDOMHTMLDocument.h"
 #include "nsIDOMAttr.h"
 #include "nsIDOMDocumentFragment.h"
@@ -38,7 +37,7 @@
 #include "nsIFrame.h"
 #include "nsIScrollableFrame.h"
 #include "nsView.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsIWidget.h"
 #include "nsRange.h"
 #include "nsIPresShell.h"
@@ -87,6 +86,7 @@
 #include "nsDOMMutationObserver.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/dom/FromParser.h"
+#include "mozilla/dom/UndoManager.h"
 #include "mozilla/BloomFilter.h"
 
 #include "HTMLPropertiesCollection.h"
@@ -99,6 +99,7 @@
 #include "nsHTMLDocument.h"
 #include "nsDOMTouchEvent.h"
 #include "nsGlobalWindow.h"
+#include "mozilla/dom/HTMLBodyElement.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -232,9 +233,8 @@ class nsGenericHTMLElementTearoff : public nsIDOMElementCSSInlineStyle
 
   NS_IMETHOD GetStyle(nsIDOMCSSStyleDeclaration** aStyle)
   {
-    mozilla::ErrorResult rv;
-    NS_IF_ADDREF(*aStyle = mElement->GetStyle(rv));
-    return rv.ErrorCode();
+    NS_ADDREF(*aStyle = mElement->Style());
+    return NS_OK;
   }
 
   NS_DECL_CYCLE_COLLECTION_CLASS_AMBIGUOUS(nsGenericHTMLElementTearoff,
@@ -981,6 +981,8 @@ nsGenericHTMLElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
 {
   bool contentEditable = aNameSpaceID == kNameSpaceID_None &&
                            aName == nsGkAtoms::contenteditable;
+  bool undoScope = aNameSpaceID == kNameSpaceID_None &&
+                           aName == nsGkAtoms::undoscope;
   bool accessKey = aName == nsGkAtoms::accesskey && 
                      aNameSpaceID == kNameSpaceID_None;
 
@@ -1004,6 +1006,11 @@ nsGenericHTMLElement::SetAttr(int32_t aNameSpaceID, nsIAtom* aName,
     }
 
     ChangeEditableState(change);
+  }
+
+  if (undoScope) {
+    rv = SetUndoScopeInternal(true);
+    NS_ENSURE_SUCCESS(rv, rv);
   }
 
   if (accessKey && !aValue.IsEmpty()) {
@@ -1031,6 +1038,10 @@ nsGenericHTMLElement::UnsetAttr(int32_t aNameSpaceID, nsIAtom* aAttribute,
     else if (aAttribute == nsGkAtoms::contenteditable) {
       contentEditable = true;
       contentEditableChange = GetContentEditableValue() == eTrue ? -1 : 0;
+    }
+    else if (aAttribute == nsGkAtoms::undoscope) {
+      nsresult rv = SetUndoScopeInternal(false);
+      NS_ENSURE_SUCCESS(rv, rv);
     }
     else if (aAttribute == nsGkAtoms::accesskey) {
       // Have to unregister before clearing flag. See UnregAccessKey
@@ -1858,16 +1869,6 @@ nsGenericHTMLElement::SetAttrHelper(nsIAtom* aAttr, const nsAString& aValue)
   return SetAttr(kNameSpaceID_None, aAttr, aValue, true);
 }
 
-nsresult
-nsGenericHTMLElement::SetBoolAttr(nsIAtom* aAttr, bool aValue)
-{
-  if (aValue) {
-    return SetAttr(kNameSpaceID_None, aAttr, EmptyString(), true);
-  }
-
-  return UnsetAttr(kNameSpaceID_None, aAttr, true);
-}
-
 int32_t
 nsGenericHTMLElement::GetIntAttr(nsIAtom* aAttr, int32_t aDefault) const
 {
@@ -2063,6 +2064,78 @@ nsGenericHTMLElement::IsLabelable() const
 {
   return Tag() == nsGkAtoms::progress ||
          Tag() == nsGkAtoms::meter;
+}
+
+already_AddRefed<UndoManager>
+nsGenericHTMLElement::GetUndoManager()
+{
+  nsDOMSlots* slots = GetExistingDOMSlots();
+  if (slots && slots->mUndoManager) {
+    nsRefPtr<UndoManager> undoManager = slots->mUndoManager;
+    return undoManager.forget();
+  } else {
+    return nullptr;
+  }
+}
+
+bool
+nsGenericHTMLElement::UndoScope()
+{
+  nsDOMSlots* slots = GetExistingDOMSlots();
+  return slots && slots->mUndoManager;
+}
+
+void
+nsGenericHTMLElement::SetUndoScope(bool aUndoScope, mozilla::ErrorResult& aError)
+{
+  nsresult rv = SetUndoScopeInternal(aUndoScope);
+  if (NS_FAILED(rv)) {
+    aError.Throw(rv);
+    return;
+  }
+
+  // The undoScope property must reflect the undoscope boolean attribute.
+  if (aUndoScope) {
+    rv = SetAttr(kNameSpaceID_None, nsGkAtoms::undoscope,
+                 NS_LITERAL_STRING(""), true);
+  } else {
+    rv = UnsetAttr(kNameSpaceID_None, nsGkAtoms::undoscope, true);
+  }
+
+  if (NS_FAILED(rv)) {
+    aError.Throw(rv);
+    return;
+  }
+}
+
+nsresult
+nsGenericHTMLElement::SetUndoScopeInternal(bool aUndoScope)
+{
+  if (aUndoScope) {
+    nsDOMSlots* slots = DOMSlots();
+    if (!slots->mUndoManager) {
+      slots->mUndoManager = new UndoManager(this);
+    }
+  } else {
+    nsDOMSlots* slots = GetExistingDOMSlots();
+    if (slots && slots->mUndoManager) {
+      // Clear transaction history and disconnect.
+      ErrorResult rv;
+      slots->mUndoManager->ClearRedo(rv);
+      if (rv.Failed()) {
+        return rv.ErrorCode();
+      }
+
+      slots->mUndoManager->ClearUndo(rv);
+      if (rv.Failed()) {
+        return rv.ErrorCode();
+      }
+
+      slots->mUndoManager->Disconnect();
+      slots->mUndoManager = nullptr;
+    }
+  }
+  return NS_OK;
 }
 
 // static
@@ -2951,8 +3024,7 @@ nsGenericHTMLElement::IsCurrentBodyElement()
 {
   // TODO Bug 698498: Should this handle the case where GetBody returns a
   //                  frameset?
-  nsCOMPtr<nsIDOMHTMLBodyElement> bodyElement = do_QueryInterface(this);
-  if (!bodyElement) {
+  if (!IsHTML(nsGkAtoms::body)) {
     return false;
   }
 
@@ -2964,7 +3036,7 @@ nsGenericHTMLElement::IsCurrentBodyElement()
 
   nsCOMPtr<nsIDOMHTMLElement> htmlElement;
   htmlDocument->GetBody(getter_AddRefs(htmlElement));
-  return htmlElement == bodyElement;
+  return htmlElement == static_cast<HTMLBodyElement*>(this);
 }
 
 // static
@@ -3200,16 +3272,16 @@ nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom)
     list = new nsDOMSettableTokenList(this, aAtom);
     NS_ADDREF(list);
     SetProperty(aAtom, list, nsDOMSettableTokenListPropertyDestructor);
-  }                       
+  }
   return list;
-}  
+}
 
 void
 nsGenericHTMLElement::GetTokenList(nsIAtom* aAtom, nsIVariant** aResult)
 {
-  nsIDOMDOMSettableTokenList* itemType = GetTokenList(aAtom);
+  nsISupports* itemType = GetTokenList(aAtom);
   nsCOMPtr<nsIWritableVariant> out = new nsVariant();
-  out->SetAsInterface(NS_GET_IID(nsIDOMDOMSettableTokenList), itemType);
+  out->SetAsInterface(NS_GET_IID(nsISupports), itemType);
   out.forget(aResult);
 }
 
@@ -3219,14 +3291,16 @@ nsGenericHTMLElement::SetTokenList(nsIAtom* aAtom, nsIVariant* aValue)
   nsDOMSettableTokenList* itemType = GetTokenList(aAtom);
   nsAutoString string;
   aValue->GetAsAString(string);
-  return itemType->SetValue(string);
+  ErrorResult rv;
+  itemType->SetValue(string, rv);
+  return rv.ErrorCode();
 }
 
 static void
 HTMLPropertiesCollectionDestructor(void *aObject, nsIAtom *aProperty,
                                    void *aPropertyValue, void *aData)
 {
-  HTMLPropertiesCollection* properties = 
+  HTMLPropertiesCollection* properties =
     static_cast<HTMLPropertiesCollection*>(aPropertyValue);
   NS_IF_RELEASE(properties);
 }
@@ -3234,7 +3308,7 @@ HTMLPropertiesCollectionDestructor(void *aObject, nsIAtom *aProperty,
 HTMLPropertiesCollection*
 nsGenericHTMLElement::Properties()
 {
-  HTMLPropertiesCollection* properties = 
+  HTMLPropertiesCollection* properties =
     static_cast<HTMLPropertiesCollection*>(GetProperty(nsGkAtoms::microdataProperties));
   if (!properties) {
      properties = new HTMLPropertiesCollection(this);

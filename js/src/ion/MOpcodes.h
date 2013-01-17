@@ -31,6 +31,7 @@ namespace ion {
     _(DefVar)                                                               \
     _(DefFun)                                                               \
     _(CreateThis)                                                           \
+    _(CreateThisWithProto)                                                  \
     _(CreateThisWithTemplate)                                               \
     _(PrepareCall)                                                          \
     _(PassArg)                                                              \
@@ -122,6 +123,7 @@ namespace ion {
     _(CallGetProperty)                                                      \
     _(GetNameCache)                                                         \
     _(CallGetIntrinsicValue)                                                \
+    _(CallsiteCloneCache)                                                   \
     _(CallGetElement)                                                       \
     _(CallSetElement)                                                       \
     _(CallSetProperty)                                                      \

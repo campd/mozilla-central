@@ -1459,7 +1459,7 @@ ValueToScript(JSContext *cx, jsval v, JSFunction **funp = NULL)
         return UnrootedScript(NULL);
 
     RootedScript script(cx);
-    fun->maybeGetOrCreateScript(cx, &script);
+    JSFunction::maybeGetOrCreateScript(cx, fun, &script);
     if (!script)
         JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_SCRIPTS_ONLY);
 
@@ -1916,9 +1916,9 @@ DisassembleScript(JSContext *cx, HandleScript script, JSFunction *fun, bool line
             RawObject obj = objects->vector[i];
             if (obj->isFunction()) {
                 Sprint(sp, "\n");
-                RawFunction fun = obj->toFunction();
+                RootedFunction fun(cx, obj->toFunction());
                 RootedScript script(cx);
-                fun->maybeGetOrCreateScript(cx, &script);
+                JSFunction::maybeGetOrCreateScript(cx, fun, &script);
                 if (!DisassembleScript(cx, script, fun, lines, recursive, sp))
                     return false;
             }
@@ -2440,47 +2440,6 @@ ToInt32(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
-static const char* badUTF8 = "...\xC0...";
-static const char* bigUTF8 = "...\xFB\xBF\xBF\xBF\xBF...";
-static const jschar badSurrogate[] = { 'A', 'B', 'C', 0xDEEE, 'D', 'E', 0 };
-
-static JSBool
-TestUTF8(JSContext *cx, unsigned argc, jsval *vp)
-{
-    int32_t mode = 1;
-    jschar chars[20];
-    size_t charsLength = 5;
-    char bytes[20];
-    size_t bytesLength = 20;
-    if (argc && !JS_ValueToInt32(cx, *JS_ARGV(cx, vp), &mode))
-        return false;
-
-    /* The following throw errors if compiled with UTF-8. */
-    switch (mode) {
-      /* mode 1: malformed UTF-8 string. */
-      case 1:
-        JS_NewStringCopyZ(cx, badUTF8);
-        break;
-      /* mode 2: big UTF-8 character. */
-      case 2:
-        JS_NewStringCopyZ(cx, bigUTF8);
-        break;
-      /* mode 3: bad surrogate character. */
-      case 3:
-        DeflateStringToBuffer(cx, badSurrogate, 6, bytes, &bytesLength);
-        break;
-      /* mode 4: use a too small buffer. */
-      case 4:
-        JS_DecodeBytes(cx, "1234567890", 10, chars, &charsLength);
-        break;
-      default:
-        JS_ReportError(cx, "invalid mode parameter");
-        return false;
-    }
-    JS_SET_RVAL(cx, vp, JSVAL_VOID);
-    return !JS_IsExceptionPending (cx);
-}
-
 static JSBool
 ThrowError(JSContext *cx, unsigned argc, jsval *vp)
 {
@@ -2743,7 +2702,7 @@ CopyProperty(JSContext *cx, HandleObject obj, HandleObject referent, HandleId id
         propFlags = shape->getFlags();
     } else if (IsProxy(referent)) {
         PropertyDescriptor desc;
-        if (!Proxy::getOwnPropertyDescriptor(cx, referent, id, false, &desc))
+        if (!Proxy::getOwnPropertyDescriptor(cx, referent, id, &desc, 0))
             return false;
         if (!desc.obj)
             return true;
@@ -3343,6 +3302,30 @@ Snarf(JSContext *cx, unsigned argc, jsval *vp)
     return true;
 }
 
+static JSBool
+System(JSContext *cx, unsigned argc, jsval *vp)
+{
+    JSString *str;
+
+    if (argc != 1) {
+        JS_ReportErrorNumber(cx, my_GetErrorMessage, NULL, JSSMSG_INVALID_ARGS,
+                             "system");
+        return false;
+    }
+
+    str = JS_ValueToString(cx, JS_ARGV(cx, vp)[0]);
+    if (!str)
+        return false;
+    JSAutoByteString command(cx, str);
+    if (!command)
+        return false;
+
+    int result = system(command.ptr());
+
+    *vp = Int32Value(result);
+    return true;
+}
+
 static bool
 DecompileFunctionSomehow(JSContext *cx, unsigned argc, Value *vp,
                          JSString *(*decompiler)(JSContext *, JSFunction *, unsigned))
@@ -3716,10 +3699,6 @@ static JSFunctionSpecWithHelp shell_functions[] = {
 "pc2line(fun[, pc])",
 "  Map PC to line number."),
 
-    JS_FN_HELP("testUTF8", TestUTF8, 1, 0,
-"testUTF8(mode)",
-"  Perform UTF-8 tests (modes are 1 to 4)."),
-
     JS_FN_HELP("throwError", ThrowError, 0, 0,
 "throwError()",
 "  Throw an error from JS_ReportError."),
@@ -3838,13 +3817,17 @@ static JSFunctionSpecWithHelp shell_functions[] = {
 "  Sleep for dt seconds."),
 
 #endif
-    JS_FN_HELP("snarf", Snarf, 0, 0,
+    JS_FN_HELP("snarf", Snarf, 1, 0,
 "snarf(filename)",
 "  Read filename into returned string."),
 
-    JS_FN_HELP("read", Snarf, 0, 0,
+    JS_FN_HELP("read", Snarf, 1, 0,
 "read(filename)",
 "  Synonym for snarf."),
+
+    JS_FN_HELP("system", System, 1, 0,
+"system(command)",
+"  Execute command on the current host, returning result code."),
 
     JS_FN_HELP("compile", Compile, 1, 0,
 "compile(code)",
@@ -4977,12 +4960,17 @@ BindScriptArgs(JSContext *cx, JSObject *obj_, OptionParser *op)
     return true;
 }
 
+// This function is currently only called from "#if defined(JS_ION)" chunks,
+// so we're guarding the function definition with an #ifdef, too, to avoid
+// build warning for unused function in non-ion-enabled builds:
+#if defined(JS_ION)
 static int
 OptionFailure(const char *option, const char *str)
 {
     fprintf(stderr, "Unrecognized option for %s: %s\n", option, str);
     return EXIT_FAILURE;
 }
+#endif /* JS_ION */
 
 static int
 ProcessArgs(JSContext *cx, JSObject *obj_, OptionParser *op)
@@ -5393,9 +5381,6 @@ main(int argc, char **argv, char **envp)
 
     JS_SetGCParameter(rt, JSGC_MODE, JSGC_MODE_INCREMENTAL);
     JS_SetGCParameterForThread(cx, JSGC_MAX_CODE_CACHE_BYTES, 16 * 1024 * 1024);
-#ifdef JS_GC_ZEAL
-    JS_SetGCZeal(cx, 0, 0);
-#endif
 
     /* Must be done before creating the global object */
     if (op.getBoolOption('D'))

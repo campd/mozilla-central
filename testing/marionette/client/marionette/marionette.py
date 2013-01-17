@@ -2,8 +2,10 @@
 # License, v. 2.0. If a copy of the MPL was not distributed with this
 # file, You can obtain one at http://mozilla.org/MPL/2.0/.
 
+import datetime
 import socket
 import sys
+import time
 import traceback
 
 from client import MarionetteClient
@@ -95,6 +97,9 @@ class Marionette(object):
 
     CONTEXT_CHROME = 'chrome'
     CONTEXT_CONTENT = 'content'
+    TIMEOUT_SEARCH = 'implicit'
+    TIMEOUT_SCRIPT = 'script'
+    TIMEOUT_PAGE = 'page load'
 
     def __init__(self, host='localhost', port=2828, bin=None, profile=None,
                  emulator=None, sdcard=None, emulatorBinary=None,
@@ -124,7 +129,7 @@ class Marionette(object):
             self.instance = GeckoInstance(host=self.host, port=self.port,
                                           bin=self.bin, profile=self.profile)
             self.instance.start()
-            assert(self.instance.wait_for_port())
+            assert(self.wait_for_port())
 
         if emulator:
             self.emulator = Emulator(homedir=homedir,
@@ -150,9 +155,8 @@ class Marionette(object):
 
         if emulator:
             self.emulator.setup(self, gecko_path=gecko_path,
-                                load_early=load_early)
-            if busybox:
-                self.emulator.install_busybox(busybox)
+                                load_early=load_early,
+                                busybox=busybox)
 
     def __del__(self):
         if self.emulator:
@@ -193,6 +197,22 @@ class Marionette(object):
             # Exit without a normal exception to prevent mozharness from
             # flagging the error.
             sys.exit()
+
+    def wait_for_port(self, timeout=3000):
+        starttime = datetime.datetime.now()
+        while datetime.datetime.now() - starttime < datetime.timedelta(seconds=timeout):
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((self.host, self.port))
+                data = sock.recv(16)
+                sock.close()
+                if '"from"' in data:
+                    time.sleep(5)
+                    return True
+            except socket.error:
+                pass
+            time.sleep(1)
+        return False
 
     def _send_message(self, command, response_key, **kwargs):
         if not self.session and command not in ('newSession', 'getStatus'):
@@ -387,6 +407,11 @@ class Marionette(object):
         response = self._send_message('goUrl', 'ok', value=url)
         return response
 
+    def timeouts(self, timeout_type, ms):
+        assert(timeout_type == self.TIMEOUT_SEARCH or timeout_type == self.TIMEOUT_SCRIPT or timeout_type == self.TIMEOUT_PAGE)
+        response = self._send_message('timeouts', 'ok', timeoutType=timeout_type, ms=ms)
+        return response
+
     def go_back(self):
         response = self._send_message('goBack', 'ok')
         return response
@@ -488,6 +513,10 @@ class Marionette(object):
         for x in response:
             elements.append(HTMLElement(self, x))
         return elements
+
+    def get_active_element(self):
+        response = self._send_message('getActiveElement', 'value')
+        return HTMLElement(self, response)
 
     def log(self, msg, level=None):
         return self._send_message('log', 'ok', value=msg, level=level)

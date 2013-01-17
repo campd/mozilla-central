@@ -9,7 +9,7 @@
 #include "nsReadableUtils.h"
 #include "nsCRT.h"
 
-#include "nsISelection.h"
+#include "mozilla/Selection.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsPIDOMWindow.h"
 #include "nsIDocShell.h"
@@ -20,6 +20,7 @@
 
 #include "nsView.h"
 #include "nsAsyncDOMEvent.h"
+#include <algorithm>
 
 // Print Options
 #include "nsIPrintSettings.h"
@@ -87,10 +88,9 @@ static const char kPrintingPromptService[] = "@mozilla.org/embedcomp/printingpro
 #include "nsLayoutUtils.h"
 #include "mozilla/Preferences.h"
 
-#include "nsViewsCID.h"
 #include "nsWidgetsCID.h"
 #include "nsIDeviceContextSpec.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsView.h"
 #include "nsRenderingContext.h"
 
@@ -124,6 +124,10 @@ static const char kPrintingPromptService[] = "@mozilla.org/embedcomp/printingpro
 #include "nsIURIFixup.h"
 #include "mozilla/dom/Element.h"
 #include "nsContentList.h"
+
+#ifdef MOZ_CRASHREPORTER
+#include "nsExceptionHandler.h"
+#endif
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -216,9 +220,6 @@ protected:
   bool                    mSuppressed;
 };
 
-// Class IDs
-static NS_DEFINE_CID(kViewManagerCID,       NS_VIEW_MANAGER_CID);
-
 NS_IMPL_ISUPPORTS3(nsPrintEngine, nsIWebProgressListener,
                    nsISupportsWeakReference, nsIObserver)
 
@@ -238,7 +239,8 @@ nsPrintEngine::nsPrintEngine() :
   mOldPrtPreview(nullptr),
   mDebugFile(nullptr),
   mLoadCounter(0),
-  mDidLoadDataForPrinting(false)
+  mDidLoadDataForPrinting(false),
+  mIsDestroying(false)
 {
 }
 
@@ -251,6 +253,11 @@ nsPrintEngine::~nsPrintEngine()
 //-------------------------------------------------------
 void nsPrintEngine::Destroy()
 {
+  if (mIsDestroying) {
+    return;
+  }
+  mIsDestroying = true;
+
   if (mPrt) {
     delete mPrt;
     mPrt = nullptr;
@@ -411,6 +418,7 @@ nsPrintEngine::CommonPrint(bool                    aIsPrintPreview,
                            nsIPrintSettings*       aPrintSettings,
                            nsIWebProgressListener* aWebProgressListener,
                            nsIDOMDocument* aDoc) {
+  nsRefPtr<nsPrintEngine> kungfuDeathGrip = this;
   nsresult rv = DoCommonPrint(aIsPrintPreview, aPrintSettings,
                               aWebProgressListener, aDoc);
   if (NS_FAILED(rv)) {
@@ -509,21 +517,24 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
   nsCOMPtr<nsIDocShell> webContainer(do_QueryReferent(mContainer, &rv));
   NS_ENSURE_SUCCESS(rv, rv);
 
-  mPrt->mPrintObject = new nsPrintObject();
-  NS_ENSURE_TRUE(mPrt->mPrintObject, NS_ERROR_OUT_OF_MEMORY);
-  rv = mPrt->mPrintObject->Init(webContainer, aDoc, aIsPrintPreview);
-  NS_ENSURE_SUCCESS(rv, rv);
+  {
+    nsAutoScriptBlocker scriptBlocker;
+    mPrt->mPrintObject = new nsPrintObject();
+    NS_ENSURE_TRUE(mPrt->mPrintObject, NS_ERROR_OUT_OF_MEMORY);
+    rv = mPrt->mPrintObject->Init(webContainer, aDoc, aIsPrintPreview);
+    NS_ENSURE_SUCCESS(rv, rv);
 
-  NS_ENSURE_TRUE(mPrt->mPrintDocList.AppendElement(mPrt->mPrintObject),
-                 NS_ERROR_OUT_OF_MEMORY);
+    NS_ENSURE_TRUE(mPrt->mPrintDocList.AppendElement(mPrt->mPrintObject),
+                   NS_ERROR_OUT_OF_MEMORY);
 
-  mPrt->mIsParentAFrameSet = IsParentAFrameSet(webContainer);
-  mPrt->mPrintObject->mFrameType = mPrt->mIsParentAFrameSet ? eFrameSet : eDoc;
+    mPrt->mIsParentAFrameSet = IsParentAFrameSet(webContainer);
+    mPrt->mPrintObject->mFrameType = mPrt->mIsParentAFrameSet ? eFrameSet : eDoc;
 
-  // Build the "tree" of PrintObjects
-  nsCOMPtr<nsIDocShellTreeNode> parentAsNode =
-    do_QueryInterface(mPrt->mPrintObject->mDocShell);
-  BuildDocTree(parentAsNode, &mPrt->mPrintDocList, mPrt->mPrintObject);
+    // Build the "tree" of PrintObjects
+    nsCOMPtr<nsIDocShellTreeNode> parentAsNode =
+      do_QueryInterface(mPrt->mPrintObject->mDocShell);
+    BuildDocTree(parentAsNode, &mPrt->mPrintDocList, mPrt->mPrintObject);
+  }
 
   if (!aIsPrintPreview) {
     SetIsPrinting(true);
@@ -1074,23 +1085,23 @@ nsPrintEngine::IsThereARangeSelection(nsIDOMWindow* aDOMWin)
 
   // check here to see if there is a range selection
   // so we know whether to turn on the "Selection" radio button
-  nsCOMPtr<nsISelection> selection;
-  selection = presShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
-  if (selection) {
-    int32_t count;
-    selection->GetRangeCount(&count);
-    if (count == 1) {
-      nsCOMPtr<nsIDOMRange> range;
-      if (NS_SUCCEEDED(selection->GetRangeAt(0, getter_AddRefs(range)))) {
-        // check to make sure it isn't an insertion selection
-        bool isCollapsed;
-        selection->GetIsCollapsed(&isCollapsed);
-        return !isCollapsed;
-      }
-    }
-    if (count > 1) return true;
+  Selection* selection =
+    presShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+  if (!selection) {
+    return false;
   }
-  return false;
+
+  int32_t rangeCount = selection->GetRangeCount();
+  if (!rangeCount) {
+    return false;
+  }
+
+  if (rangeCount > 1) {
+    return true;
+  }
+
+  // check to make sure it isn't an insertion selection
+  return selection->GetRangeAt(0) && !selection->IsCollapsed();
 }
 
 //---------------------------------------------------------------------
@@ -1534,6 +1545,9 @@ nsresult nsPrintEngine::CleanupOnFailure(nsresult aResult, bool aIsPrinting)
     ShowPrintErrorDialog(aResult, aIsPrinting);
   }
 
+#ifdef MOZ_CRASHREPORTER
+  CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("Unsuccessful print.\n"));
+#endif
   FirePrintCompletionEvent();
 
   return aResult;
@@ -2024,7 +2038,7 @@ nsPrintEngine::UpdateSelectionAndShrinkPrintObject(nsPrintObject* aPO,
 {
   nsCOMPtr<nsIPresShell> displayShell = aPO->mDocShell->GetPresShell();
   // Transfer Selection Ranges to the new Print PresShell
-  nsCOMPtr<nsISelection> selection, selectionPS;
+  nsRefPtr<Selection> selection, selectionPS;
   // It's okay if there is no display shell, just skip copying the selection
   if (displayShell) {
     selection = displayShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
@@ -2037,13 +2051,10 @@ nsPrintEngine::UpdateSelectionAndShrinkPrintObject(nsPrintObject* aPO,
     selectionPS->RemoveAllRanges();
   }
   if (selection && selectionPS) {
-    int32_t cnt;
-    selection->GetRangeCount(&cnt);
+    int32_t cnt = selection->GetRangeCount();
     int32_t inx;
     for (inx = 0; inx < cnt; ++inx) {
-      nsCOMPtr<nsIDOMRange> range;
-      if (NS_SUCCEEDED(selection->GetRangeAt(inx, getter_AddRefs(range))))
-        selectionPS->AddRange(range);
+        selectionPS->AddRange(selection->GetRangeAt(inx));
     }
   }
 
@@ -2197,8 +2208,7 @@ nsPrintEngine::ReflowPrintObject(nsPrintObject * aPO)
   nsresult rv = aPO->mPresContext->Init(mPrt->mPrintDC);
   NS_ENSURE_SUCCESS(rv, rv);
 
-  aPO->mViewManager = do_CreateInstance(kViewManagerCID, &rv);
-  NS_ENSURE_SUCCESS(rv,rv);
+  aPO->mViewManager = new nsViewManager();
 
   rv = aPO->mViewManager->Init(mPrt->mPrintDC);
   NS_ENSURE_SUCCESS(rv,rv);
@@ -2402,35 +2412,32 @@ GetEqualNodeInCloneTree(nsIDOMNode* aNode, nsIDocument* aDoc)
   return result.forget();
 }
 
-static nsresult CloneRangeToSelection(nsIDOMRange* aRange,
-                                      nsIDocument* aDoc,
-                                      nsISelection* aSelection)
+static void
+CloneRangeToSelection(nsRange* aRange, nsIDocument* aDoc,
+                      Selection* aSelection)
 {
-  bool collapsed = false;
-  aRange->GetCollapsed(&collapsed);
-  if (collapsed) {
-    return NS_OK;
+  if (aRange->Collapsed()) {
+    return;
   }
 
   nsCOMPtr<nsIDOMNode> startContainer, endContainer;
-  int32_t startOffset = -1, endOffset = -1;
   aRange->GetStartContainer(getter_AddRefs(startContainer));
-  aRange->GetStartOffset(&startOffset);
+  int32_t startOffset = aRange->StartOffset();
   aRange->GetEndContainer(getter_AddRefs(endContainer));
-  aRange->GetEndOffset(&endOffset);
-  NS_ENSURE_STATE(startContainer && endContainer);
+  int32_t endOffset = aRange->EndOffset();
+  NS_ENSURE_TRUE_VOID(startContainer && endContainer);
 
   nsCOMPtr<nsIDOMNode> newStart = GetEqualNodeInCloneTree(startContainer, aDoc);
   nsCOMPtr<nsIDOMNode> newEnd = GetEqualNodeInCloneTree(endContainer, aDoc);
-  NS_ENSURE_STATE(newStart && newEnd);
+  NS_ENSURE_TRUE_VOID(newStart && newEnd);
 
   nsRefPtr<nsRange> range = new nsRange();
   nsresult rv = range->SetStart(newStart, startOffset);
-  NS_ENSURE_SUCCESS(rv, rv);
+  NS_ENSURE_SUCCESS_VOID(rv);
   rv = range->SetEnd(newEnd, endOffset);
-  NS_ENSURE_SUCCESS(rv, rv);
+  NS_ENSURE_SUCCESS_VOID(rv);
 
-  return aSelection->AddRange(range);
+  aSelection->AddRange(range);
 }
 
 static nsresult CloneSelection(nsIDocument* aOrigDoc, nsIDocument* aDoc)
@@ -2439,20 +2446,15 @@ static nsresult CloneSelection(nsIDocument* aOrigDoc, nsIDocument* aDoc)
   nsIPresShell* shell = aDoc->GetShell();
   NS_ENSURE_STATE(origShell && shell);
 
-  nsCOMPtr<nsISelection> origSelection =
+  nsRefPtr<Selection> origSelection =
     origShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
-  nsCOMPtr<nsISelection> selection =
+  nsRefPtr<Selection> selection =
     shell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
   NS_ENSURE_STATE(origSelection && selection);
 
-  int32_t rangeCount = 0;
-  origSelection->GetRangeCount(&rangeCount);
+  int32_t rangeCount = origSelection->GetRangeCount();
   for (int32_t i = 0; i < rangeCount; ++i) {
-    nsCOMPtr<nsIDOMRange> range;
-    origSelection->GetRangeAt(i, getter_AddRefs(range));
-    if (range) {
-      CloneRangeToSelection(range, aDoc, selection);
-    }
+      CloneRangeToSelection(origSelection->GetRangeAt(i), aDoc, selection);
   }
   return NS_OK;
 }
@@ -2541,8 +2543,8 @@ nsPrintEngine::DoPrint(nsPrintObject * aPO)
         nsRect    startRect;
         nsRect    endRect;
 
-        nsCOMPtr<nsISelection> selectionPS;
-        selectionPS = poPresShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
+        nsRefPtr<Selection> selectionPS =
+          poPresShell->GetCurrentSelection(nsISelectionController::SELECTION_NORMAL);
 
         rv = GetPageRangeForSelection(poPresShell, poPresContext, *rc, selectionPS, pageSequence,
                                       &startFrame, startPageNum, startRect,
@@ -2564,13 +2566,13 @@ nsPrintEngine::DoPrint(nsPrintObject * aPO)
             if (startRect.y < 0) {
               // Reduce height to be the height of the positive-territory
               // region of original rect
-              startRect.height = NS_MAX(0, startRect.YMost());
+              startRect.height = std::max(0, startRect.YMost());
               startRect.y = 0;
             }
             if (endRect.y < 0) {
               // Reduce height to be the height of the positive-territory
               // region of original rect
-              endRect.height = NS_MAX(0, endRect.YMost());
+              endRect.height = std::max(0, endRect.YMost());
               endRect.y = 0;
             }
             NS_ASSERTION(endRect.y >= startRect.y,
@@ -3175,6 +3177,9 @@ nsPrintEngine::DonePrintingPages(nsPrintObject* aPO, nsresult aResult)
   }
 
   if (NS_SUCCEEDED(aResult)) {
+#ifdef MOZ_CRASHREPORTER
+    CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("Successful print.\n"));
+#endif
     FirePrintCompletionEvent();
   }
 
@@ -3793,7 +3798,7 @@ DumpViews(nsIDocShell* aDocShell, FILE* out)
     fprintf(out, "docshell=%p \n", aDocShell);
     nsIPresShell* shell = nsPrintEngine::GetPresShellFor(aDocShell);
     if (shell) {
-      nsIViewManager* vm = shell->GetViewManager();
+      nsViewManager* vm = shell->GetViewManager();
       if (vm) {
         nsView* root = vm->GetRootView();
         if (root) {

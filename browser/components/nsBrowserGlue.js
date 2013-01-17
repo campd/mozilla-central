@@ -1,4 +1,3 @@
-#filter substitution
 # -*- indent-tabs-mode: nil -*-
 # This Source Code Form is subject to the terms of the Mozilla Public
 # License, v. 2.0. If a copy of the MPL was not distributed with this
@@ -438,11 +437,6 @@ BrowserGlue.prototype = {
     // Show about:rights notification, if needed.
     if (this._shouldShowRights()) {
       this._showRightsNotification();
-#ifdef MOZ_TELEMETRY_REPORTING
-    } else {
-      // Only show telemetry notification when about:rights notification is not shown.
-      this._showTelemetryNotification();
-#endif
     }
 
     // Show update notification, if needed.
@@ -506,7 +500,7 @@ BrowserGlue.prototype = {
           var win = this.getMostRecentBrowserWindow();
           var brandBundle = win.document.getElementById("bundle_brand");
           var shellBundle = win.document.getElementById("bundle_shell");
-  
+
           var brandShortName = brandBundle.getString("brandShortName");
           var promptTitle = shellBundle.getString("setDefaultBrowserTitle");
           var promptMessage = shellBundle.getFormattedString("setDefaultBrowserMessage",
@@ -857,167 +851,6 @@ BrowserGlue.prototype = {
     }
   },
 
-#ifdef MOZ_TELEMETRY_REPORTING
-  _showTelemetryNotification: function BG__showTelemetryNotification() {
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-    const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabledPreRelease";
-    const PREF_TELEMETRY_DISPLAYED = "toolkit.telemetry.notifiedOptOut";
-#else
-    const PREF_TELEMETRY_ENABLED  = "toolkit.telemetry.enabled";
-    const PREF_TELEMETRY_DISPLAYED = "toolkit.telemetry.prompted";
-#endif
-    const PREF_TELEMETRY_REJECTED  = "toolkit.telemetry.rejected";
-    const PREF_TELEMETRY_INFOURL  = "toolkit.telemetry.infoURL";
-    const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
-    // This is used to reprompt/renotify users when privacy message changes
-    const TELEMETRY_DISPLAY_REV = @MOZ_TELEMETRY_DISPLAY_REV@;
-
-    // Stick notifications onto the selected tab of the active browser window.
-    var win = this.getMostRecentBrowserWindow();
-    var tabbrowser = win.gBrowser;
-    var notifyBox = tabbrowser.getNotificationBox();
-
-    var browserBundle = Services.strings.createBundle("chrome://browser/locale/browser.properties");
-    var brandBundle = Services.strings.createBundle("chrome://branding/locale/brand.properties");
-    var productName = brandBundle.GetStringFromName("brandFullName");
-    var serverOwner = Services.prefs.getCharPref(PREF_TELEMETRY_SERVER_OWNER);
-
-    function appendTelemetryNotification(message, buttons, hideclose) {
-      let notification = notifyBox.appendNotification(message, "telemetry", null,
-                                                      notifyBox.PRIORITY_INFO_LOW,
-                                                      buttons);
-      if (hideclose)
-        notification.setAttribute("hideclose", hideclose);
-      notification.persistence = -1;  // Until user closes it
-      return notification;
-    }
-
-    function appendLearnMoreLink(notification) {
-      let XULNS = "http://www.mozilla.org/keymaster/gatekeeper/there.is.only.xul";
-      let link = notification.ownerDocument.createElementNS(XULNS, "label");
-      link.className = "text-link telemetry-text-link";
-      link.setAttribute("value", browserBundle.GetStringFromName("telemetryLinkLabel"));
-      let description = notification.ownerDocument.getAnonymousElementByAttribute(notification, "anonid", "messageText");
-      description.appendChild(link);
-      return link;
-    }
-
-    /*
-     * Display an opt-out notification when telemetry is enabled by default,
-     * an opt-in prompt otherwise.
-     *
-     * But do not display this prompt/notification if:
-     *
-     * - The last accepted/refused policy (either by accepting the prompt or by
-     *   manually flipping the telemetry preference) is already at version
-     *   TELEMETRY_DISPLAY_REV or higher (to avoid the prompt in tests).
-     */
-    var telemetryDisplayed;
-    try {
-      telemetryDisplayed = Services.prefs.getIntPref(PREF_TELEMETRY_DISPLAYED);
-    } catch(e) {}
-    if (telemetryDisplayed >= TELEMETRY_DISPLAY_REV)
-      return;
-
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-    /*
-     * Additionally, in opt-out builds, don't display the notification if:
-     *
-     * - Telemetry is disabled
-     * - Telemetry was explicitly refused through the UI
-     * - Opt-in telemetry was already enabled, don't notify the user until next
-     *   policy update. (Do the check only at first run with opt-out builds)
-     */
-
-    var telemetryEnabled = Services.prefs.getBoolPref(PREF_TELEMETRY_ENABLED);
-    if (!telemetryEnabled)
-      return;
-
-    // If telemetry was explicitly refused through the UI,
-    // also disable opt-out telemetry and bail out.
-    var telemetryRejected = false;
-    try {
-      telemetryRejected = Services.prefs.getBoolPref(PREF_TELEMETRY_REJECTED);
-    } catch(e) {}
-    if (telemetryRejected) {
-      Services.prefs.setBoolPref(PREF_TELEMETRY_ENABLED, false);
-      Services.prefs.setIntPref(PREF_TELEMETRY_DISPLAYED, TELEMETRY_DISPLAY_REV);
-      return;
-    }
-
-    // If opt-in telemetry was enabled and this is the first run with opt-out,
-    // don't notify the user.
-    var optInTelemetryEnabled = false;
-    try {
-      optInTelemetryEnabled = Services.prefs.getBoolPref("toolkit.telemetry.enabled");
-    } catch(e) {}
-    if (optInTelemetryEnabled && telemetryDisplayed === undefined) {
-      Services.prefs.setBoolPref(PREF_TELEMETRY_REJECTED, false);
-      Services.prefs.setIntPref(PREF_TELEMETRY_DISPLAYED, TELEMETRY_DISPLAY_REV);
-      return;
-    }
-
-    var telemetryPrompt = browserBundle.formatStringFromName("telemetryOptOutPrompt",
-                                                            [productName, serverOwner, productName], 3);
-    var buttons = null;
-    var hideCloseButton = false;
-    function learnModeClickHandler() {
-      // Open the learn more url in a new tab
-      var url = Services.urlFormatter.formatURLPref("app.support.baseURL");
-      url += "how-can-i-help-submitting-performance-data";
-      tabbrowser.selectedTab = tabbrowser.addTab(url);
-      // Remove the notification on which the user clicked
-      notification.parentNode.removeNotification(notification, true);
-    }
-#else
-
-    // Clear old prefs and reprompt
-    Services.prefs.clearUserPref(PREF_TELEMETRY_ENABLED);
-    Services.prefs.clearUserPref(PREF_TELEMETRY_REJECTED);
-
-    var telemetryPrompt = browserBundle.formatStringFromName("telemetryOptInPrompt",
-                                                            [productName, serverOwner], 2);
-    var buttons = [
-                    {
-                      label:     browserBundle.GetStringFromName("telemetryYesButtonLabel2"),
-                      accessKey: browserBundle.GetStringFromName("telemetryYesButtonAccessKey"),
-                      popup:     null,
-                      callback:  function(aNotificationBar, aButton) {
-                        Services.prefs.setBoolPref(PREF_TELEMETRY_ENABLED, true);
-                        Services.prefs.setBoolPref(PREF_TELEMETRY_REJECTED, false);
-                      }
-                    },
-                    {
-                      label:     browserBundle.GetStringFromName("telemetryNoButtonLabel"),
-                      accessKey: browserBundle.GetStringFromName("telemetryNoButtonAccessKey"),
-                      popup:     null,
-                      callback:  function(aNotificationBar, aButton) {
-                        Services.prefs.setBoolPref(PREF_TELEMETRY_REJECTED, true);
-                      }
-                    }
-                  ];
-
-    var hideCloseButton = true;
-    function learnModeClickHandler() {
-      // Open the learn more url in a new tab
-      win.openUILinkIn(Services.prefs.getCharPref(PREF_TELEMETRY_INFOURL), "tab");
-      // Remove the notification on which the user clicked
-      notification.parentNode.removeNotification(notification, true);
-      // Add a new notification to that tab, with no "Learn more" link
-      notifyBox = tabbrowser.getNotificationBox();
-      appendTelemetryNotification(telemetryPrompt, buttons, true);
-    }
-#endif
-
-    // Set pref to indicate we've shown the notification.
-    Services.prefs.setIntPref(PREF_TELEMETRY_DISPLAYED, TELEMETRY_DISPLAY_REV);
-
-    var notification = appendTelemetryNotification(telemetryPrompt, buttons, hideCloseButton);
-    var link = appendLearnMoreLink(notification);
-    link.addEventListener('click', learnModeClickHandler, false);
-  },
-#endif
-
   _showPluginUpdatePage: function BG__showPluginUpdatePage() {
     Services.prefs.setBoolPref(PREF_PLUGINS_NOTIFYUSER, false);
 
@@ -1294,7 +1127,7 @@ BrowserGlue.prototype = {
   },
 
   _migrateUI: function BG__migrateUI() {
-    const UI_VERSION = 8;
+    const UI_VERSION = 9;
     const BROWSER_DOCURL = "chrome://browser/content/browser.xul#";
     let currentUIVersion = 0;
     try {
@@ -1392,15 +1225,20 @@ BrowserGlue.prototype = {
         Services.prefs.setBoolPref("browser.tabs.onTop", tabsOnTopAttribute == "true");
     }
 
-    // This migration step is executed only if the Downloads Panel feature is
-    // enabled.  By default, the feature is enabled only in the Nightly channel.
-    // This means that, unless the preference that enables the feature is
-    // changed manually, the Downloads button is added to the toolbar only if
-    // migration happens while running a build from the Nightly channel.  This
-    // migration code will be updated when the feature will be enabled on all
-    // channels, see bug 748381 for details.
-    if (currentUIVersion < 7 &&
-        !Services.prefs.getBoolPref("browser.download.useToolkitUI")) {
+    // Migration at version 7 only occurred for users who wanted to try the new
+    // Downloads Panel feature before its release. Since migration at version
+    // 9 adds the button by default, this step has been removed.
+
+    if (currentUIVersion < 8) {
+      // Reset homepage pref for users who have it set to google.com/firefox
+      let uri = Services.prefs.getComplexValue("browser.startup.homepage",
+                                               Ci.nsIPrefLocalizedString).data;
+      if (uri && /^https?:\/\/(www\.)?google(\.\w{2,3}){1,2}\/firefox\/?$/.test(uri)) {
+        Services.prefs.clearUserPref("browser.startup.homepage");
+      }
+    }
+
+    if (currentUIVersion < 9) {
       // This code adds the customizable downloads buttons.
       let currentsetResource = this._rdf.GetResource("currentset");
       let toolbarResource = this._rdf.GetResource(BROWSER_DOCURL + "nav-bar");
@@ -1427,15 +1265,9 @@ BrowserGlue.prototype = {
         }
         this._setPersist(toolbarResource, currentsetResource, currentset);
       }
-    }
 
-    if (currentUIVersion < 8) {
-      // Reset homepage pref for users who have it set to google.com/firefox
-      let uri = Services.prefs.getComplexValue("browser.startup.homepage",
-                                               Ci.nsIPrefLocalizedString).data;
-      if (uri && /^https?:\/\/(www\.)?google(\.\w{2,3}){1,2}\/firefox\/?$/.test(uri)) {
-        Services.prefs.clearUserPref("browser.startup.homepage");
-      }
+      Services.prefs.clearUserPref("browser.download.useToolkitUI");
+      Services.prefs.clearUserPref("browser.library.useNewDownloadsView");
     }
 
     if (this._dirty)

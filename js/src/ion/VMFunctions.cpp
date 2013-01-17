@@ -47,15 +47,27 @@ ShouldMonitorReturnType(JSFunction *fun)
 }
 
 bool
-InvokeFunction(JSContext *cx, JSFunction *fun, uint32_t argc, Value *argv, Value *rval)
+InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, Value *rval)
 {
-    Value fval = ObjectValue(*fun);
+    AssertCanGC();
+
+    RootedFunction fun(cx, fun0);
 
     // In order to prevent massive bouncing between Ion and JM, see if we keep
     // hitting functions that are uncompilable.
     if (fun->isInterpreted()) {
-        if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
+        if (fun->isInterpretedLazy() && !JSFunction::getOrCreateScript(cx, fun))
             return false;
+
+        if (fun->isCloneAtCallsite()) {
+            RootedScript script(cx);
+            jsbytecode *pc;
+            types::TypeScript::GetPcScript(cx, &script, &pc);
+            fun = CloneFunctionAtCallsite(cx, fun0, script, pc);
+            if (!fun)
+                return false;
+        }
+
         if (!fun->nonLazyScript()->canIonCompile()) {
             UnrootedScript script = GetTopIonJSScript(cx);
             if (script->hasIonScript() &&
@@ -86,8 +98,15 @@ InvokeFunction(JSContext *cx, JSFunction *fun, uint32_t argc, Value *argv, Value
     Value thisv = argv[0];
     Value *argvWithoutThis = argv + 1;
 
-    // Run the function in the interpreter.
-    bool ok = Invoke(cx, thisv, fval, argc, argvWithoutThis, rval);
+    // For constructing functions, |this| is constructed at caller side and we can just call Invoke.
+    // When creating this failed / is impossible at caller site, i.e. MagicValue(JS_IS_CONSTRUCTING),
+    // we use InvokeConstructor that creates it at the callee side.
+    bool ok;
+    if (thisv.isMagic(JS_IS_CONSTRUCTING))
+        ok = InvokeConstructor(cx, ObjectValue(*fun), argc, argvWithoutThis, rval);
+    else
+        ok = Invoke(cx, thisv, ObjectValue(*fun), argc, argvWithoutThis, rval);
+
     if (ok && needsMonitor)
         types::TypeScript::Monitor(cx, *rval);
 
@@ -289,7 +308,7 @@ NewInitObject(JSContext *cx, HandleObject templateObject)
 bool
 ArrayPopDense(JSContext *cx, HandleObject obj, MutableHandleValue rval)
 {
-    JS_ASSERT(obj->isDenseArray());
+    JS_ASSERT(obj->isArray());
 
     AutoDetectInvalidation adi(cx, rval.address());
 
@@ -309,7 +328,7 @@ ArrayPopDense(JSContext *cx, HandleObject obj, MutableHandleValue rval)
 bool
 ArrayPushDense(JSContext *cx, HandleObject obj, HandleValue v, uint32_t *length)
 {
-    JS_ASSERT(obj->isDenseArray());
+    JS_ASSERT(obj->isArray());
 
     Value argv[] = { UndefinedValue(), ObjectValue(*obj), v };
     AutoValueArray ava(cx, argv, 3);
@@ -323,7 +342,7 @@ ArrayPushDense(JSContext *cx, HandleObject obj, HandleValue v, uint32_t *length)
 bool
 ArrayShiftDense(JSContext *cx, HandleObject obj, MutableHandleValue rval)
 {
-    JS_ASSERT(obj->isDenseArray());
+    JS_ASSERT(obj->isArray());
 
     AutoDetectInvalidation adi(cx, rval.address());
 
@@ -343,9 +362,9 @@ ArrayShiftDense(JSContext *cx, HandleObject obj, MutableHandleValue rval)
 JSObject *
 ArrayConcatDense(JSContext *cx, HandleObject obj1, HandleObject obj2, HandleObject res)
 {
-    JS_ASSERT(obj1->isDenseArray());
-    JS_ASSERT(obj2->isDenseArray());
-    JS_ASSERT_IF(res, res->isDenseArray());
+    JS_ASSERT(obj1->isArray());
+    JS_ASSERT(obj2->isArray());
+    JS_ASSERT_IF(res, res->isArray());
 
     if (res) {
         // Fast path if we managed to allocate an object inline.
@@ -437,22 +456,25 @@ NewStringObject(JSContext *cx, HandleString str)
     return StringObject::create(cx, str);
 }
 
-bool SPSEnter(JSContext *cx, HandleScript script)
+bool
+SPSEnter(JSContext *cx, HandleScript script)
 {
     return cx->runtime->spsProfiler.enter(cx, script, script->function());
 }
 
-bool SPSExit(JSContext *cx, HandleScript script)
+bool
+SPSExit(JSContext *cx, HandleScript script)
 {
     cx->runtime->spsProfiler.exit(cx, script, script->function());
     return true;
 }
 
-bool OperatorIn(JSContext *cx, HandleValue key, HandleObject obj, JSBool *out)
+bool
+OperatorIn(JSContext *cx, HandleValue key, HandleObject obj, JSBool *out)
 {
     RootedValue dummy(cx); // Disregards atomization changes: no way to propagate.
     RootedId id(cx);
-    if (!FetchElementId(cx, obj, key, id.address(), &dummy))
+    if (!FetchElementId(cx, obj, key, &id, &dummy))
         return false;
 
     RootedObject obj2(cx);
@@ -464,9 +486,24 @@ bool OperatorIn(JSContext *cx, HandleValue key, HandleObject obj, JSBool *out)
     return true;
 }
 
-bool GetIntrinsicValue(JSContext *cx, HandlePropertyName name, MutableHandleValue rval)
+bool
+GetIntrinsicValue(JSContext *cx, HandlePropertyName name, MutableHandleValue rval)
 {
     return cx->global()->getIntrinsicValue(cx, name, rval);
+}
+
+bool
+CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval)
+{
+    rval.set(MagicValue(JS_IS_CONSTRUCTING));
+
+    if (callee->isFunction()) {
+        JSFunction *fun = callee->toFunction();
+        if (fun->isInterpreted())
+            rval.set(ObjectValue(*js_CreateThisForFunction(cx, callee, false)));
+    }
+
+    return true;
 }
 
 } // namespace ion

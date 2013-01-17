@@ -41,10 +41,6 @@ this.InspectorPanel = function InspectorPanel(iframeWindow, toolbox) {
   this.panelWin = iframeWindow;
   this.panelWin.inspector = this;
 
-  this.tabTarget = (this.target.tab != null);
-  this.winTarget = (this.target.window != null);
-  this.remoteTarget = (this.target.client != null);
-
   EventEmitter.decorate(this);
 }
 
@@ -79,7 +75,7 @@ InspectorPanel.prototype = {
 
     this.breadcrumbs = new HTMLBreadcrumbs(this);
 
-    if (this.tabTarget) {
+    if (this.target.isLocalTab) {
       this.browser = this.target.tab.linkedBrowser;
       this.scheduleLayoutChange = this.scheduleLayoutChange.bind(this);
       this.browser.addEventListener("resize", this.scheduleLayoutChange, true);
@@ -96,6 +92,33 @@ InspectorPanel.prototype = {
       }.bind(this);
       this.highlighter.on("locked", this.updateInspectorButton);
       this.highlighter.on("unlocked", this.updateInspectorButton);
+
+      // Show a warning when the debugger is paused.
+      // We show the warning only when the inspector
+      // is selected.
+      this.updateDebuggerPausedWarning = function() {
+        let notificationBox = this._toolbox.getNotificationBox();
+        let notification = notificationBox.getNotificationWithValue("inspector-script-paused");
+        if (!notification && this._toolbox.currentToolId == "inspector" &&
+            this.target.isThreadPaused) {
+          let message = this.strings.GetStringFromName("debuggerPausedWarning.message");
+          notificationBox.appendNotification(message,
+            "inspector-script-paused", "", notificationBox.PRIORITY_WARNING_HIGH);
+        }
+
+        if (notification && this._toolbox.currentToolId != "inspector") {
+          notificationBox.removeNotification(notification);
+        }
+
+        if (notification && !this.target.isThreadPaused) {
+          notificationBox.removeNotification(notification);
+        }
+
+      }.bind(this);
+      this.target.on("thread-paused", this.updateDebuggerPausedWarning);
+      this.target.on("thread-resumed", this.updateDebuggerPausedWarning);
+      this._toolbox.on("select", this.updateDebuggerPausedWarning);
+      this.updateDebuggerPausedWarning();
     }
 
     this._initMarkup();
@@ -230,7 +253,15 @@ InspectorPanel.prototype = {
 
     request.suspend();
 
-    let notificationBox = this._toolbox.getNotificationBox();
+    let notificationBox = null;
+    if (this.target.isLocalTab) {
+      let gBrowser = this.target.tab.ownerDocument.defaultView.gBrowser;
+      notificationBox = gBrowser.getNotificationBox();
+    }
+    else {
+      notificationBox = this._toolbox.getNotificationBox();
+    }
+
     let notification = notificationBox.
       getNotificationWithValue("inspector-page-navigation");
 
@@ -261,9 +292,7 @@ InspectorPanel.prototype = {
           if (request) {
             request.resume();
             request = null;
-            return true;
           }
-          return false;
         }.bind(this),
       },
       {
@@ -312,8 +341,6 @@ InspectorPanel.prototype = {
 
     this.cancelLayoutChange();
 
-    this._toolbox = null;
-
     if (this.browser) {
       this.browser.removeEventListener("resize", this.scheduleLayoutChange, true);
       this.browser = null;
@@ -327,6 +354,12 @@ InspectorPanel.prototype = {
       this.highlighter.off("unlocked", this.updateInspectorButton);
       this.highlighter.destroy();
     }
+
+    this.target.off("thread-paused", this.updateDebuggerPausedWarning);
+    this.target.off("thread-resumed", this.updateDebuggerPausedWarning);
+    this._toolbox.off("select", this.updateDebuggerPausedWarning);
+
+    this._toolbox = null;
 
     this.sidebar.off("select", this._setDefaultSidebar);
     this.sidebar.destroy();
@@ -443,12 +476,7 @@ InspectorPanel.prototype = {
 
     this._markupBox.removeAttribute("hidden");
 
-    let controllerWindow;
-    if (this.tabTarget) {
-      controllerWindow = this.target.tab.ownerDocument.defaultView;
-    } else if (this.winTarget) {
-      controllerWindow = this.target.window;
-    }
+    let controllerWindow = this._toolbox.doc.defaultView;
     this.markup = new MarkupView(this, this._markupFrame, controllerWindow);
 
     this.emit("markuploaded");

@@ -66,6 +66,16 @@ public:
   {
     return false;
   }
+
+  virtual bool CheckManifestURL(const nsAString& aManifestURL)
+  {
+    return false;
+  }
+
+  virtual bool CheckAppHasPermission(const nsAString& aPermission)
+  {
+    return false;
+  }
 };
 
 } // namespace ipc
@@ -86,7 +96,7 @@ struct nsMessageListenerInfo
 class nsFrameMessageManager MOZ_FINAL : public nsIContentFrameMessageManager,
                                         public nsIMessageBroadcaster,
                                         public nsIFrameScriptLoader,
-                                        public nsIPermissionChecker
+                                        public nsIProcessChecker
 {
   typedef mozilla::dom::StructuredCloneData StructuredCloneData;
 public:
@@ -152,7 +162,7 @@ public:
   NS_DECL_NSISYNCMESSAGESENDER
   NS_DECL_NSICONTENTFRAMEMESSAGEMANAGER
   NS_DECL_NSIFRAMESCRIPTLOADER
-  NS_DECL_NSIPERMISSIONCHECKER
+  NS_DECL_NSIPROCESSCHECKER
 
   static nsFrameMessageManager*
   NewProcessMessageManager(mozilla::dom::ContentParent* aProcess);
@@ -226,6 +236,15 @@ public:
   static nsFrameMessageManager* sChildProcessManager;
   static nsFrameMessageManager* sSameProcessParentManager;
   static nsTArray<nsCOMPtr<nsIRunnable> >* sPendingSameProcessAsyncMessages;
+private:
+  enum ProcessCheckerType {
+    PROCESS_CHECKER_PERMISSION,
+    PROCESS_CHECKER_MANIFEST_URL,
+    ASSERT_APP_HAS_PERMISSION
+  };
+  nsresult AssertProcessInternal(ProcessCheckerType aType,
+                                 const nsAString& aCapability,
+                                 bool* aValid);
 };
 
 void
@@ -265,6 +284,7 @@ protected:
   bool InitTabChildGlobalInternal(nsISupports* aScope);
   static void Traverse(nsFrameScriptExecutor *tmp,
                        nsCycleCollectionTraversalCallback &cb);
+  static void Unlink(nsFrameScriptExecutor* aTmp);
   nsCOMPtr<nsIXPConnectJSObjectHolder> mGlobal;
   JSContext* mCx;
   uint32_t mCxStackRefCnt;

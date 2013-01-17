@@ -32,6 +32,7 @@
 
 #include "frontend/Parser.h"
 #include "frontend/TokenStream.h"
+#include "js/CharacterEncoding.h"
 #include "vm/Keywords.h"
 #include "vm/RegExpObject.h"
 #include "vm/StringBuffer.h"
@@ -119,15 +120,12 @@ frontend::IsIdentifier(JSLinearString *str)
 TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
                          StableCharPtr base, size_t length, StrictModeGetter *smg)
   : tokens(),
-    tokensRoot(cx, &tokens),
     cursor(),
     lookahead(),
     lineno(options.lineno),
     flags(),
     linebase(base.get()),
     prevLinebase(NULL),
-    linebaseRoot(cx, &linebase),
-    prevLinebaseRoot(cx, &prevLinebase),
     userbuf(base.get(), length),
     filename(options.filename),
     sourceMap(NULL),
@@ -139,7 +137,8 @@ TokenStream::TokenStream(JSContext *cx, const CompileOptions &options,
     cx(cx),
     originPrincipals(JSScript::normalizeOriginPrincipals(options.principals,
                                                          options.originPrincipals)),
-    strictModeGetter(smg)
+    strictModeGetter(smg),
+    tokenSkip(cx, &tokens)
 {
     if (originPrincipals)
         JS_HoldPrincipals(originPrincipals);
@@ -566,7 +565,8 @@ TokenStream::reportCompileErrorNumberVA(ParseNode *pn, unsigned flags, unsigned 
         err.report.uclinebuf = windowBuf.extractWellSized();
         if (!err.report.uclinebuf)
             return false;
-        err.report.linebuf = DeflateString(cx, err.report.uclinebuf, windowLength);
+        TwoByteChars tbchars(err.report.uclinebuf, windowLength);
+        err.report.linebuf = LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars).c_str();
         if (!err.report.linebuf)
             return false;
 
@@ -730,7 +730,8 @@ TokenStream::getXMLEntity()
   bad:
     /* No match: throw a TypeError per ECMA-357 10.3.2.1 step 8(a). */
     JS_ASSERT((tb.end() - bp) >= 1);
-    bytes = DeflateString(cx, bp + 1, (tb.end() - bp) - 1);
+    TwoByteChars tbchars(bp + 1, (tb.end() - bp) - 1);
+    bytes = LossyTwoByteCharsToNewLatin1CharsZ(cx, tbchars).c_str();
     if (bytes) {
         reportError(msg, bytes);
         js_free(bytes);
@@ -1441,8 +1442,6 @@ TokenStream::getTokenInternal()
     bool hasFracOrExp;
     const jschar *identStart;
     bool hadUnicodeEscape;
-
-    SkipRoot skipNum(cx, &numStart), skipIdent(cx, &identStart);
 
 #if JS_HAS_XML_SUPPORT
     /*

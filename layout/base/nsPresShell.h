@@ -70,7 +70,7 @@ public:
   // nsIPresShell
   virtual NS_HIDDEN_(nsresult) Init(nsIDocument* aDocument,
                                    nsPresContext* aPresContext,
-                                   nsIViewManager* aViewManager,
+                                   nsViewManager* aViewManager,
                                    nsStyleSet* aStyleSet,
                                    nsCompatibility aCompatMode);
   virtual NS_HIDDEN_(void) Destroy();
@@ -78,7 +78,7 @@ public:
   virtual NS_HIDDEN_(nsresult) SetPreferenceStyleRules(bool aForceReflow);
 
   NS_IMETHOD GetSelection(SelectionType aType, nsISelection** aSelection);
-  virtual nsISelection* GetCurrentSelection(SelectionType aType);
+  virtual mozilla::Selection* GetCurrentSelection(SelectionType aType);
 
   NS_IMETHOD SetDisplaySelection(int16_t aToggle);
   NS_IMETHOD GetDisplaySelection(int16_t *aToggle);
@@ -439,6 +439,8 @@ protected:
   bool mInVerifyReflow;
   void ShowEventTargetDebug();
 #endif
+
+  void RecordStyleSheetChange(nsIStyleSheet* aStyleSheet);
 
     /**
     * methods that manage rules that are used to implement the associated preferences

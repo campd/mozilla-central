@@ -27,6 +27,8 @@
 #ifdef MOZ_PEERCONNECTION
 #include "mtransport/runnable_utils.h"
 #endif
+
+#define DATACHANNEL_LOG(args) LOG(args)
 #include "DataChannel.h"
 #include "DataChannelProtocol.h"
 
@@ -152,9 +154,19 @@ DataChannelConnection::DataChannelConnection(DataConnectionListener *listener) :
 
 DataChannelConnection::~DataChannelConnection()
 {
+  LOG(("Deleting DataChannelConnection %p", (void *) this));
   // This may die on the MainThread, or on the STS thread
   MOZ_ASSERT(mState == CLOSED);
   MOZ_ASSERT(!mMasterSocket);
+  MOZ_ASSERT(mPending.GetSize() == 0);
+
+  // Already disconnected from sigslot/mTransportFlow
+  // TransportFlows must be released from the STS thread
+  if (mTransportFlow && !IsSTSThread()) {
+    MOZ_ASSERT(mSTS);
+    RUN_ON_THREAD(mSTS, WrapRunnableNM(ReleaseTransportFlow, mTransportFlow),
+                  NS_DISPATCH_NORMAL);
+  }
 }
 
 void
@@ -177,6 +189,19 @@ DataChannelConnection::Destroy()
 
   // We can't get any more new callbacks from the SCTP library
   // All existing callbacks have refs to DataChannelConnection
+
+  // nsDOMDataChannel objects have refs to DataChannels that have refs to us
+
+  if (mTransportFlow) {
+    MOZ_ASSERT(mSTS);
+    MOZ_ASSERT(NS_IsMainThread());
+    RUN_ON_THREAD(mSTS, WrapRunnable(nsRefPtr<DataChannelConnection>(this),
+                                     &DataChannelConnection::disconnect_all),
+                  NS_DISPATCH_NORMAL);
+    // don't release mTransportFlow until we are destroyed in case
+    // runnables are in flight.  We may well have packets to send as the
+    // SCTP lib may have sent a shutdown.
+  }
 }
 
 NS_IMPL_THREADSAFE_ISUPPORTS1(DataChannelConnection,
@@ -807,6 +832,9 @@ DataChannelConnection::SendOpenRequestMessage(const nsACString& label,
 // Alternatively, it can use a timeout, but that's guaranteed to be wrong
 // (just not sure in what direction).  We could re-implement NSPR's
 // PR_POLL_WRITE/etc handling... with a lot of work.
+
+// Better yet, use the SCTP stack's notifications on buffer state to avoid
+// filling the SCTP's buffers.
 
 // returns if we're still blocked or not
 bool
@@ -1507,8 +1535,11 @@ DataChannelConnection::HandleStreamResetEvent(const struct sctp_stream_reset_eve
 
           LOG(("Incoming: Channel %d outgoing/%d incoming closed, state %d",
                channel->mStreamOut, channel->mStreamIn, channel->mState));
-          MOZ_ASSERT(channel->mState == OPEN || channel->mState == CLOSING);
-          if (channel->mState == OPEN) {
+          MOZ_ASSERT(channel->mState == DataChannel::OPEN ||
+                     channel->mState == DataChannel::CLOSING ||
+                     channel->mState == DataChannel::WAITING_TO_OPEN);
+          if (channel->mState == DataChannel::OPEN ||
+              channel->mState == DataChannel::WAITING_TO_OPEN) {
             ResetOutgoingStream(channel->mStreamOut);
             NS_DispatchToMainThread(new DataChannelOnMessageAvailable(
                                       DataChannelOnMessageAvailable::ON_CHANNEL_CLOSED, this,
@@ -2010,6 +2041,10 @@ DataChannelConnection::Close(uint16_t streamOut)
   if (channel) {
     LOG(("Connection %p/Channel %p: Closing stream %d",
          (void *) channel->mConnection.get(), (void *) channel.get(), streamOut));
+    if (channel->mState == CLOSED || channel->mState == CLOSING) {
+      LOG(("Channel already closing/closed (%d)", channel->mState));
+      return;
+    }
     channel->mBufferedData.Clear();
     if (channel->mStreamOut != INVALID_STREAM)
       ResetOutgoingStream(channel->mStreamOut);
@@ -2039,8 +2074,10 @@ void DataChannelConnection::CloseAll()
 
   // Clean up any pending opens for channels
   nsRefPtr<DataChannel> channel;
-  while (nullptr != (channel = dont_AddRef(static_cast<DataChannel *>(mPending.PopFront()))))
+  while (nullptr != (channel = dont_AddRef(static_cast<DataChannel *>(mPending.PopFront())))) {
+    LOG(("closing pending channel %p, stream %d", channel.get(), channel->mStreamOut));
     channel->Close(); // also releases the ref on each iteration
+  }
 }
 
 DataChannel::~DataChannel()
@@ -2053,6 +2090,8 @@ DataChannel::~DataChannel()
 void
 DataChannel::Destroy()
 {
+  ENSURE_DATACONNECTION;
+
   LOG(("Destroying Data channel %d/%d", mStreamOut, mStreamIn));
   MOZ_ASSERT_IF(mStreamOut != INVALID_STREAM,
                 !mConnection->FindChannelByStreamOut(mStreamOut));
@@ -2072,6 +2111,7 @@ DataChannel::Close()
     return;
   }
   mState = CLOSING;
+  ENSURE_DATACONNECTION;
   mConnection->Close(mStreamOut);
 }
 
@@ -2087,6 +2127,8 @@ DataChannel::SetListener(DataChannelListener *aListener, nsISupports *aContext)
 void
 DataChannel::AppReady()
 {
+  ENSURE_DATACONNECTION;
+
   MutexAutoLock lock(mConnection->mLock);
 
   mReady = true;

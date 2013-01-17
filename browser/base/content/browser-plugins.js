@@ -280,8 +280,7 @@ var gPluginHandler = {
 
     let notification = PopupNotifications.getNotification("click-to-play-plugins", aBrowser);
     if (notification && plugins.length > 0 && !haveVisibleCTPPlugin && !this._notificationDisplayedOnce) {
-      notification.dismissed = false;
-      PopupNotifications._update(notification.anchorElement);
+      notification.reshow();
       this._notificationDisplayedOnce = true;
     }
 
@@ -313,7 +312,7 @@ var gPluginHandler = {
 
   activatePlugins: function PH_activatePlugins(aContentWindow) {
     let browser = gBrowser.getBrowserForDocument(aContentWindow.document);
-    browser._clickToPlayPluginsActivated = true;
+    browser._clickToPlayAllPluginsActivated = true;
     let cwu = aContentWindow.QueryInterface(Ci.nsIInterfaceRequestor)
                             .getInterface(Ci.nsIDOMWindowUtils);
     let plugins = cwu.plugins;
@@ -436,7 +435,9 @@ var gPluginHandler = {
       return;
     }
 
-    if (browser._clickToPlayPluginsActivated) {
+    let pluginInfo = this._getPluginInfo(aPlugin);
+    if (browser._clickToPlayAllPluginsActivated ||
+        browser._clickToPlayPluginsActivated.get(pluginInfo.pluginName)) {
       objLoadingContent.playPlugin();
       return;
     }
@@ -573,6 +574,7 @@ var gPluginHandler = {
           for (let objLoadingContent of plugins) {
             objLoadingContent.playPlugin();
           }
+          aBrowser._clickToPlayPluginsActivated.set(this.message, true);
 
           let notification = PopupNotifications.getNotification("click-to-play-plugins", aBrowser);
           if (notification &&

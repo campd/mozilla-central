@@ -11,6 +11,7 @@
 #include "mozilla/DebugOnly.h"
 #include "mozilla/Util.h"
 #include "mozilla/Likely.h"
+#include <algorithm>
 
 #ifdef MOZ_LOGGING
 // so we can get logging even in release builds
@@ -41,12 +42,11 @@
 #include "nsIDOMStyleSheet.h"
 #include "nsDOMAttribute.h"
 #include "nsIDOMDOMStringList.h"
-#include "nsIDOMDOMImplementation.h"
 #include "nsIDOMDocumentXBL.h"
 #include "mozilla/dom/Element.h"
 #include "nsGenericHTMLElement.h"
-#include "nsIDOMCDATASection.h"
-#include "nsIDOMProcessingInstruction.h"
+#include "mozilla/dom/CDATASection.h"
+#include "mozilla/dom/ProcessingInstruction.h"
 #include "nsDOMString.h"
 #include "nsNodeUtils.h"
 #include "nsLayoutUtils.h" // for GetFrameForPoint
@@ -170,7 +170,6 @@
 #include "mozilla/dom/DOMImplementation.h"
 #include "mozilla/dom/Comment.h"
 #include "nsTextNode.h"
-#include "nsXMLProcessingInstruction.h"
 #include "mozilla/dom/Link.h"
 #include "nsXULAppAPI.h"
 #include "nsDOMTouchEvent.h"
@@ -184,9 +183,12 @@
 #include "nsIAppsService.h"
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/DocumentFragment.h"
-#include "nsFrame.h" 
+#include "mozilla/dom/HTMLBodyElement.h"
+#include "mozilla/dom/UndoManager.h"
+#include "nsFrame.h"
 #include "nsDOMCaretPosition.h"
 #include "nsIDOMHTMLTextAreaElement.h"
+#include "nsViewportInfo.h"
 
 using namespace mozilla;
 using namespace mozilla::dom;
@@ -1325,6 +1327,7 @@ nsIDocument::nsIDocument()
 nsDocument::nsDocument(const char* aContentType)
   : nsIDocument()
   , mAnimatingImages(true)
+  , mViewportType(Unknown)
 {
   SetContentTypeInternal(nsDependentCString(aContentType));
 
@@ -1679,6 +1682,7 @@ NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INTERNAL(nsDocument)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mOriginalDocument)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mCachedEncoder)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStateObjectCached)
+  NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mUndoManager)
 
   // Traverse all our nsCOMArrays.
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mStyleSheets)
@@ -1736,6 +1740,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsDocument)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mImageMaps)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mOriginalDocument)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mCachedEncoder)
+  NS_IMPL_CYCLE_COLLECTION_UNLINK(mUndoManager)
 
   tmp->mParentDocument = nullptr;
 
@@ -2025,6 +2030,25 @@ nsDocument::ResetToURI(nsIURI *aURI, nsILoadGroup *aLoadGroup,
 }
 
 void
+nsDocument::RemoveDocStyleSheetsFromStyleSets()
+{
+  // The stylesheets should forget us
+  int32_t indx = mStyleSheets.Count();
+  while (--indx >= 0) {
+    nsIStyleSheet* sheet = mStyleSheets[indx];
+    sheet->SetOwningDocument(nullptr);
+
+    if (sheet->IsApplicable()) {
+      nsCOMPtr<nsIPresShell> shell = GetShell();
+      if (shell) {
+        shell->StyleSet()->RemoveDocStyleSheet(sheet);
+      }
+    }
+    // XXX Tell observers?
+  }
+}
+
+void
 nsDocument::RemoveStyleSheetsFromStyleSets(nsCOMArray<nsIStyleSheet>& aSheets, nsStyleSet::sheetType aType)
 {
   // The stylesheets should forget us
@@ -2051,7 +2075,7 @@ nsDocument::ResetStylesheetsToURI(nsIURI* aURI)
   NS_PRECONDITION(aURI, "Null URI passed to ResetStylesheetsToURI");
 
   mozAutoDocUpdate upd(this, UPDATE_STYLE, true);
-  RemoveStyleSheetsFromStyleSets(mStyleSheets, nsStyleSet::eDocSheet);
+  RemoveDocStyleSheetsFromStyleSets();
   RemoveStyleSheetsFromStyleSets(mCatalogSheets, nsStyleSet::eAgentSheet);
   RemoveStyleSheetsFromStyleSets(mAdditionalSheets[eAgentSheet], nsStyleSet::eAgentSheet);
   RemoveStyleSheetsFromStyleSets(mAdditionalSheets[eUserSheet], nsStyleSet::eUserSheet);
@@ -2265,18 +2289,51 @@ nsDocument::InitCSP(nsIChannel* aChannel)
   }
 
   nsAutoCString tCspHeaderValue, tCspROHeaderValue;
+  nsAutoCString tCspOldHeaderValue, tCspOldROHeaderValue;
+
   nsCOMPtr<nsIHttpChannel> httpChannel = do_QueryInterface(aChannel);
   if (httpChannel) {
     httpChannel->GetResponseHeader(
         NS_LITERAL_CSTRING("x-content-security-policy"),
-        tCspHeaderValue);
+        tCspOldHeaderValue);
 
     httpChannel->GetResponseHeader(
         NS_LITERAL_CSTRING("x-content-security-policy-report-only"),
+        tCspOldROHeaderValue);
+
+    httpChannel->GetResponseHeader(
+        NS_LITERAL_CSTRING("content-security-policy"),
+        tCspHeaderValue);
+
+    httpChannel->GetResponseHeader(
+        NS_LITERAL_CSTRING("content-security-policy-report-only"),
         tCspROHeaderValue);
   }
   NS_ConvertASCIItoUTF16 cspHeaderValue(tCspHeaderValue);
   NS_ConvertASCIItoUTF16 cspROHeaderValue(tCspROHeaderValue);
+  NS_ConvertASCIItoUTF16 cspOldHeaderValue(tCspOldHeaderValue);
+  NS_ConvertASCIItoUTF16 cspOldROHeaderValue(tCspOldROHeaderValue);
+
+  // Until we want to turn on our CSP 1.0 spec compliant support
+  // only use the 1.0 spec compliant headers if a pref to do so
+  // is set (this lets us land CSP 1.0 support with tests without
+  // having to turn it on before it's ready). When we turn on
+  // CSP 1.0 in the release, we should remove this pref check.
+  // This pref will never be set by default, it should only
+  // be created/set by the CSP tests.
+  if (!cspHeaderValue.IsEmpty() || !cspROHeaderValue.IsEmpty()) {
+    bool specCompliantEnabled =
+      Preferences::GetBool("security.csp.speccompliant");
+
+    // If spec compliant pref isn't set, pretend we never got
+    // these headers.
+    if (!specCompliantEnabled) {
+      PR_LOG(gCspPRLog, PR_LOG_DEBUG,
+             ("Got spec compliant CSP headers but pref was not set"));
+      cspHeaderValue.Truncate();
+      cspROHeaderValue.Truncate();
+    }
+  }
 
   // ----- Figure out if we need to apply an app default CSP
   bool applyAppDefaultCSP = false;
@@ -2310,10 +2367,12 @@ nsDocument::InitCSP(nsIChannel* aChannel)
     PR_LOG(gCspPRLog, PR_LOG_DEBUG, ("Failed to get app status from principal"));
 #endif
 
-  // If there's no CSP to apply go ahead and return early
+  // If there's no CSP to apply, go ahead and return early
   if (!applyAppDefaultCSP &&
       cspHeaderValue.IsEmpty() &&
-      cspROHeaderValue.IsEmpty()) {
+      cspROHeaderValue.IsEmpty() &&
+      cspOldHeaderValue.IsEmpty() &&
+      cspOldROHeaderValue.IsEmpty()) {
 #ifdef PR_LOGGING
     nsCOMPtr<nsIURI> chanURI;
     aChannel->GetURI(getter_AddRefs(chanURI));
@@ -2360,34 +2419,63 @@ nsDocument::InitCSP(nsIChannel* aChannel)
     }
 
     if (appCSP)
-      csp->RefinePolicy(appCSP, chanURI);
+      csp->RefinePolicy(appCSP, chanURI, true);
+  }
+
+  // While we are supporting both CSP 1.0 and the x- headers, the 1.0 headers
+  // take priority.  If any spec-compliant headers are present, the x- headers
+  // are ignored, and the spec compliant parser is used.
+  bool cspSpecCompliant = (!cspHeaderValue.IsEmpty() || !cspROHeaderValue.IsEmpty());
+
+  // If the old header is present, warn that it will be deprecated.
+  if (!cspOldHeaderValue.IsEmpty() || !cspOldROHeaderValue.IsEmpty()) {
+    nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
+                                    "CSP", this,
+                                    nsContentUtils::eDOM_PROPERTIES,
+                                    "OldCSPHeaderDeprecated");
+
+    // Also, if the new headers AND the old headers were present, warn
+    // that the old headers will be ignored.
+    if (cspSpecCompliant) {
+      nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
+                                      "CSP", this,
+                                      nsContentUtils::eDOM_PROPERTIES,
+                                      "BothCSPHeadersPresent");
+    }
   }
 
   // ----- if there's a full-strength CSP header, apply it.
-  if (!cspHeaderValue.IsEmpty()) {
+  bool applyCSPFromHeader =
+    (( cspSpecCompliant && !cspHeaderValue.IsEmpty()) ||
+     (!cspSpecCompliant && !cspOldHeaderValue.IsEmpty()));
+
+  if (applyCSPFromHeader) {
     // Need to tokenize the header value since multiple headers could be
     // concatenated into one comma-separated list of policies.
     // See RFC2616 section 4.2 (last paragraph)
-    nsCharSeparatedTokenizer tokenizer(cspHeaderValue, ',');
+    nsCharSeparatedTokenizer tokenizer(cspSpecCompliant ?
+                                       cspHeaderValue :
+                                       cspOldHeaderValue, ',');
     while (tokenizer.hasMoreTokens()) {
         const nsSubstring& policy = tokenizer.nextToken();
-        csp->RefinePolicy(policy, chanURI);
+        csp->RefinePolicy(policy, chanURI, cspSpecCompliant);
 #ifdef PR_LOGGING
         {
           PR_LOG(gCspPRLog, PR_LOG_DEBUG,
-                  ("CSP refined with policy: \"%s\"",
-                    NS_ConvertUTF16toUTF8(policy).get()));
+                 ("CSP refined with policy: \"%s\"",
+                  NS_ConvertUTF16toUTF8(policy).get()));
         }
 #endif
     }
   }
 
   // ----- if there's a report-only CSP header, apply it
-  if (!cspROHeaderValue.IsEmpty()) {
+  if (( cspSpecCompliant && !cspROHeaderValue.IsEmpty()) ||
+      (!cspSpecCompliant && !cspOldROHeaderValue.IsEmpty())) {
     // post a warning and skip report-only CSP when both read only and regular
     // CSP policies are present since CSP only allows one policy and it can't
     // be partially report-only.
-    if (applyAppDefaultCSP || !cspHeaderValue.IsEmpty()) {
+    if (applyAppDefaultCSP || applyCSPFromHeader) {
       nsContentUtils::ReportToConsole(nsIScriptError::warningFlag,
                                       "CSP", this,
                                       nsContentUtils::eDOM_PROPERTIES,
@@ -2404,10 +2492,12 @@ nsDocument::InitCSP(nsIChannel* aChannel)
       // Need to tokenize the header value since multiple headers could be
       // concatenated into one comma-separated list of policies.
       // See RFC2616 section 4.2 (last paragraph)
-      nsCharSeparatedTokenizer tokenizer(cspROHeaderValue, ',');
+      nsCharSeparatedTokenizer tokenizer(cspSpecCompliant ?
+                                         cspROHeaderValue :
+                                         cspOldROHeaderValue, ',');
       while (tokenizer.hasMoreTokens()) {
         const nsSubstring& policy = tokenizer.nextToken();
-        csp->RefinePolicy(policy, chanURI);
+        csp->RefinePolicy(policy, chanURI, cspSpecCompliant);
 #ifdef PR_LOGGING
         {
           PR_LOG(gCspPRLog, PR_LOG_DEBUG,
@@ -2638,6 +2728,22 @@ nsDocument::GetAllowPlugins(bool * aAllowPlugins)
   }
 
   return NS_OK;
+}
+
+already_AddRefed<UndoManager>
+nsDocument::GetUndoManager()
+{
+  Element* rootElement = GetRootElement();
+  if (!rootElement) {
+    return nullptr;
+  }
+
+  if (!mUndoManager) {
+    mUndoManager = new UndoManager(rootElement);
+  }
+
+  nsRefPtr<UndoManager> undoManager = mUndoManager;
+  return undoManager.forget();
 }
 
 /* Return true if the document is in the focused top-level window, and is an
@@ -3070,6 +3176,17 @@ nsDocument::SetHeaderData(nsIAtom* aHeaderField, const nsAString& aData)
     // Chromium treats any value other than 'on' (case insensitive) as 'off'.
     mAllowDNSPrefetch = aData.IsEmpty() || aData.LowerCaseEqualsLiteral("on");
   }
+
+  if (aHeaderField == nsGkAtoms::viewport ||
+      aHeaderField == nsGkAtoms::handheldFriendly ||
+      aHeaderField == nsGkAtoms::viewport_minimum_scale ||
+      aHeaderField == nsGkAtoms::viewport_maximum_scale ||
+      aHeaderField == nsGkAtoms::viewport_initial_scale ||
+      aHeaderField == nsGkAtoms::viewport_height ||
+      aHeaderField == nsGkAtoms::viewport_width ||
+      aHeaderField ==  nsGkAtoms::viewport_user_scalable) {
+    mViewportType = Unknown;
+  }
 }
 
 bool
@@ -3100,7 +3217,7 @@ nsDocument::TryChannelCharset(nsIChannel *aChannel,
 }
 
 nsresult
-nsDocument::CreateShell(nsPresContext* aContext, nsIViewManager* aViewManager,
+nsDocument::CreateShell(nsPresContext* aContext, nsViewManager* aViewManager,
                         nsStyleSet* aStyleSet,
                         nsIPresShell** aInstancePtrResult)
 {
@@ -3113,7 +3230,7 @@ nsDocument::CreateShell(nsPresContext* aContext, nsIViewManager* aViewManager,
 
 nsresult
 nsDocument::doCreateShell(nsPresContext* aContext,
-                          nsIViewManager* aViewManager, nsStyleSet* aStyleSet,
+                          nsViewManager* aViewManager, nsStyleSet* aStyleSet,
                           nsCompatibility aCompatMode,
                           nsIPresShell** aInstancePtrResult)
 {
@@ -3484,7 +3601,7 @@ nsDocument::RemoveStyleSheetFromStyleSets(nsIStyleSheet* aSheet)
 {
   nsCOMPtr<nsIPresShell> shell = GetShell();
   if (shell) {
-    shell->StyleSet()->RemoveStyleSheet(nsStyleSet::eDocSheet, aSheet);
+    shell->StyleSet()->RemoveDocStyleSheet(aSheet);
   }
 }
 
@@ -4374,7 +4491,7 @@ nsDocument::GetDoctype(nsIDOMDocumentType** aDoctype)
 }
 
 NS_IMETHODIMP
-nsDocument::GetImplementation(nsIDOMDOMImplementation** aImplementation)
+nsDocument::GetImplementation(nsISupports** aImplementation)
 {
   ErrorResult rv;
   *aImplementation = GetImplementation(rv);
@@ -4591,7 +4708,7 @@ nsDocument::CreateCDATASection(const nsAString& aData,
   return rv.ErrorCode();
 }
 
-already_AddRefed<nsIDOMCDATASection>
+already_AddRefed<CDATASection>
 nsIDocument::CreateCDATASection(const nsAString& aData,
                                 ErrorResult& rv)
 {
@@ -4616,8 +4733,7 @@ nsIDocument::CreateCDATASection(const nsAString& aData,
   // Don't notify; this node is still being created.
   content->SetText(aData, false);
 
-  nsCOMPtr<nsIDOMCDATASection> section = do_QueryInterface(content);
-  return section.forget();
+  return static_cast<CDATASection*>(content.forget().get());
 }
 
 NS_IMETHODIMP
@@ -4630,7 +4746,7 @@ nsDocument::CreateProcessingInstruction(const nsAString& aTarget,
   return rv.ErrorCode();
 }
 
-already_AddRefed<nsXMLProcessingInstruction>
+already_AddRefed<ProcessingInstruction>
 nsIDocument::CreateProcessingInstruction(const nsAString& aTarget,
                                          const nsAString& aData,
                                          mozilla::ErrorResult& rv) const
@@ -4654,7 +4770,7 @@ nsIDocument::CreateProcessingInstruction(const nsAString& aTarget,
     return nullptr;
   }
 
-  return static_cast<nsXMLProcessingInstruction*>(content.forget().get());
+  return static_cast<ProcessingInstruction*>(content.forget().get());
 }
 
 NS_IMETHODIMP
@@ -6357,6 +6473,188 @@ nsIDocument::AdoptNode(nsINode& aAdoptedNode, ErrorResult& rv)
   return adoptedNode;
 }
 
+nsViewportInfo
+nsDocument::GetViewportInfo(uint32_t aDisplayWidth,
+                            uint32_t aDisplayHeight)
+{
+  switch (mViewportType) {
+  case DisplayWidthHeight:
+    return nsViewportInfo(aDisplayWidth, aDisplayHeight);
+  case Unknown:
+  {
+    nsAutoString viewport;
+    GetHeaderData(nsGkAtoms::viewport, viewport);
+    if (viewport.IsEmpty()) {
+      // If the docType specifies that we are on a site optimized for mobile,
+      // then we want to return specially crafted defaults for the viewport info.
+      nsCOMPtr<nsIDOMDocumentType> docType;
+      nsresult rv = GetDoctype(getter_AddRefs(docType));
+      if (NS_SUCCEEDED(rv) && docType) {
+        nsAutoString docId;
+        rv = docType->GetPublicId(docId);
+        if (NS_SUCCEEDED(rv)) {
+          if ((docId.Find("WAP") != -1) ||
+              (docId.Find("Mobile") != -1) ||
+              (docId.Find("WML") != -1))
+          {
+            // We're making an assumption that the docType can't change here
+            mViewportType = DisplayWidthHeight;
+            nsViewportInfo ret(aDisplayWidth, aDisplayHeight);
+            return ret;
+          }
+        }
+      }
+
+      nsAutoString handheldFriendly;
+      GetHeaderData(nsGkAtoms::handheldFriendly, handheldFriendly);
+      if (handheldFriendly.EqualsLiteral("true")) {
+        mViewportType = DisplayWidthHeight;
+        nsViewportInfo ret(aDisplayWidth, aDisplayHeight);
+        return ret;
+      }
+    }
+
+    nsAutoString minScaleStr;
+    GetHeaderData(nsGkAtoms::viewport_minimum_scale, minScaleStr);
+
+    nsresult errorCode;
+    mScaleMinFloat = minScaleStr.ToFloat(&errorCode);
+
+    if (NS_FAILED(errorCode)) {
+      mScaleMinFloat = kViewportMinScale;
+    }
+
+    mScaleMinFloat = std::min((double)mScaleMinFloat, kViewportMaxScale);
+    mScaleMinFloat = std::max((double)mScaleMinFloat, kViewportMinScale);
+
+    nsAutoString maxScaleStr;
+    GetHeaderData(nsGkAtoms::viewport_maximum_scale, maxScaleStr);
+
+    // We define a special error code variable for the scale and max scale,
+    // because they are used later (see the width calculations).
+    nsresult scaleMaxErrorCode;
+    mScaleMaxFloat = maxScaleStr.ToFloat(&scaleMaxErrorCode);
+
+    if (NS_FAILED(scaleMaxErrorCode)) {
+      mScaleMaxFloat = kViewportMaxScale;
+    }
+
+    mScaleMaxFloat = std::min((double)mScaleMaxFloat, kViewportMaxScale);
+    mScaleMaxFloat = std::max((double)mScaleMaxFloat, kViewportMinScale);
+
+    nsAutoString scaleStr;
+    GetHeaderData(nsGkAtoms::viewport_initial_scale, scaleStr);
+
+    nsresult scaleErrorCode;
+    mScaleFloat = scaleStr.ToFloat(&scaleErrorCode);
+
+    nsAutoString widthStr, heightStr;
+
+    GetHeaderData(nsGkAtoms::viewport_height, heightStr);
+    GetHeaderData(nsGkAtoms::viewport_width, widthStr);
+
+    mAutoSize = false;
+
+    if (widthStr.EqualsLiteral("device-width")) {
+      mAutoSize = true;
+    }
+
+    if (widthStr.IsEmpty() &&
+        (heightStr.EqualsLiteral("device-height") ||
+         (mScaleFloat /* not adjusted for pixel ratio */ == 1.0)))
+    {
+      mAutoSize = true;
+    }
+
+    nsresult widthErrorCode, heightErrorCode;
+    mViewportWidth = widthStr.ToInteger(&widthErrorCode);
+    mViewportHeight = heightStr.ToInteger(&heightErrorCode);
+
+    // If width or height has not been set to a valid number by this point,
+    // fall back to a default value.
+    mValidWidth = (!widthStr.IsEmpty() && NS_SUCCEEDED(widthErrorCode) && mViewportWidth > 0);
+    mValidHeight = (!heightStr.IsEmpty() && NS_SUCCEEDED(heightErrorCode) && mViewportHeight > 0);
+
+
+    mAllowZoom = true;
+    nsAutoString userScalable;
+    GetHeaderData(nsGkAtoms::viewport_user_scalable, userScalable);
+
+    if ((userScalable.EqualsLiteral("0")) ||
+        (userScalable.EqualsLiteral("no")) ||
+        (userScalable.EqualsLiteral("false"))) {
+      mAllowZoom = false;
+    }
+
+    mScaleStrEmpty = scaleStr.IsEmpty();
+    mWidthStrEmpty = widthStr.IsEmpty();
+    mValidScaleFloat = !scaleStr.IsEmpty() && NS_SUCCEEDED(scaleErrorCode);
+    mValidMaxScale = !maxScaleStr.IsEmpty() && NS_SUCCEEDED(scaleMaxErrorCode);
+  
+    mViewportType = Specified;
+  }
+  case Specified:
+  default:
+    uint32_t width = mViewportWidth, height = mViewportHeight;
+
+    if (!mValidWidth) {
+      if (mValidHeight && aDisplayWidth > 0 && aDisplayHeight > 0) {
+        width = uint32_t((height * aDisplayWidth) / aDisplayHeight);
+      } else {
+        width = Preferences::GetInt("browser.viewport.desktopWidth",
+                                             kViewportDefaultScreenWidth);
+      }
+    }
+
+    if (!mValidHeight) {
+      if (aDisplayWidth > 0 && aDisplayHeight > 0) {
+        height = uint32_t((width * aDisplayHeight) / aDisplayWidth);
+      } else {
+        height = width;
+      }
+    }
+    // Now convert the scale into device pixels per CSS pixel.
+    nsIWidget *widget = nsContentUtils::WidgetForDocument(this);
+    double pixelRatio = widget ? nsContentUtils::GetDevicePixelsPerMetaViewportPixel(widget) : 1.0;
+    float scaleFloat = mScaleFloat * pixelRatio;
+    float scaleMinFloat= mScaleMinFloat * pixelRatio;
+    float scaleMaxFloat = mScaleMaxFloat * pixelRatio;
+
+    if (mAutoSize) {
+      // aDisplayWidth and aDisplayHeight are in device pixels; convert them to
+      // CSS pixels for the viewport size.
+      width = aDisplayWidth / pixelRatio;
+      height = aDisplayHeight / pixelRatio;
+    }
+
+    width = std::min(width, kViewportMaxWidth);
+    width = std::max(width, kViewportMinWidth);
+
+    // Also recalculate the default zoom, if it wasn't specified in the metadata,
+    // and the width is specified.
+    if (mScaleStrEmpty && !mWidthStrEmpty) {
+      scaleFloat = std::max(scaleFloat, float(aDisplayWidth) / float(width));
+    }
+
+    height = std::min(height, kViewportMaxHeight);
+    height = std::max(height, kViewportMinHeight);
+
+    // We need to perform a conversion, but only if the initial or maximum
+    // scale were set explicitly by the user.
+    if (mValidScaleFloat) {
+      width = std::max(width, (uint32_t)(aDisplayWidth / scaleFloat));
+      height = std::max(height, (uint32_t)(aDisplayHeight / scaleFloat));
+    } else if (mValidMaxScale) {
+      width = std::max(width, (uint32_t)(aDisplayWidth / scaleMaxFloat));
+      height = std::max(height, (uint32_t)(aDisplayHeight / scaleMaxFloat));
+    }
+
+    nsViewportInfo ret(scaleFloat, scaleMinFloat, scaleMaxFloat, width, height,
+                       mAutoSize, mAllowZoom);
+    return ret;
+  }
+}
+
 nsEventListenerManager*
 nsDocument::GetListenerManager(bool aCreateIfNotFound)
 {
@@ -6462,7 +6760,7 @@ nsDocument::FlushPendingNotifications(mozFlushType aType)
   if (mParentDocument && IsSafeToFlush()) {
     mozFlushType parentType = aType;
     if (aType >= Flush_Style)
-      parentType = NS_MAX(Flush_Layout, aType);
+      parentType = std::max(Flush_Layout, aType);
     mParentDocument->FlushPendingNotifications(parentType);
   }
 
@@ -8834,32 +9132,29 @@ ResetFullScreen(nsIDocument* aDocument, void* aData)
   return true;
 }
 
-NS_IMETHODIMP
-nsDocument::CaretPositionFromPoint(float aX, float aY, nsISupports** aCaretPos)
+already_AddRefed<nsDOMCaretPosition>
+nsIDocument::CaretPositionFromPoint(float aX, float aY)
 {
-  NS_ENSURE_ARG_POINTER(aCaretPos);
-  *aCaretPos = nullptr;
-
   nscoord x = nsPresContext::CSSPixelsToAppUnits(aX);
   nscoord y = nsPresContext::CSSPixelsToAppUnits(aY);
   nsPoint pt(x, y);
 
   nsIPresShell *ps = GetShell();
   if (!ps) {
-    return NS_OK;
+    return nullptr;
   }
 
   nsIFrame *rootFrame = ps->GetRootFrame();
 
   // XUL docs, unlike HTML, have no frame tree until everything's done loading
   if (!rootFrame) {
-    return NS_OK; // return null to premature XUL callers as a reminder to wait
+    return nullptr;
   }
 
   nsIFrame *ptFrame = nsLayoutUtils::GetFrameForPoint(rootFrame, pt, true,
                                                       false);
   if (!ptFrame) {
-    return NS_OK;
+    return nullptr;
   }
 
   // GetContentOffsetsFromPoint requires frame-relative coordinates, so we need
@@ -8887,8 +9182,15 @@ nsDocument::CaretPositionFromPoint(float aX, float aY, nsISupports** aCaretPos)
     }
   }
 
-  *aCaretPos = new nsDOMCaretPosition(node, offset);
-  NS_ADDREF(*aCaretPos);
+  nsRefPtr<nsDOMCaretPosition> aCaretPos = new nsDOMCaretPosition(node, offset);
+  return aCaretPos.forget();
+}
+
+NS_IMETHODIMP
+nsDocument::CaretPositionFromPoint(float aX, float aY, nsISupports** aCaretPos)
+{
+  NS_ENSURE_ARG_POINTER(aCaretPos);
+  *aCaretPos = nsIDocument::CaretPositionFromPoint(aX, aY).get();
   return NS_OK;
 }
 

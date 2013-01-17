@@ -99,9 +99,8 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitNewCallObject(LNewCallObject *lir);
     bool visitNewStringObject(LNewStringObject *lir);
     bool visitInitProp(LInitProp *lir);
-    bool emitCreateThisVM(LInstruction *lir, const LAllocation *proto, const LAllocation *callee);
-    bool visitCreateThisV(LCreateThisV *lir);
-    bool visitCreateThisO(LCreateThisO *lir);
+    bool visitCreateThis(LCreateThis *lir);
+    bool visitCreateThisWithProto(LCreateThisWithProto *lir);
     bool visitCreateThisWithTemplate(LCreateThisWithTemplate *lir);
     bool visitReturnFromCtor(LReturnFromCtor *lir);
     bool visitArrayLength(LArrayLength *lir);
@@ -202,6 +201,7 @@ class CodeGenerator : public CodeGeneratorSpecific
     bool visitOutOfLineSetPropertyCache(OutOfLineCache *ool);
     bool visitOutOfLineBindNameCache(OutOfLineCache *ool);
     bool visitOutOfLineGetNameCache(OutOfLineCache *ool);
+    bool visitOutOfLineCallsiteCloneCache(OutOfLineCache *ool);
 
     bool visitGetPropertyCacheV(LGetPropertyCacheV *ins) {
         return visitCache(ins);
@@ -222,6 +222,9 @@ class CodeGenerator : public CodeGeneratorSpecific
         return visitCache(ins);
     }
     bool visitGetNameCache(LGetNameCache *ins) {
+        return visitCache(ins);
+    }
+    bool visitCallsiteCloneCache(LCallsiteCloneCache *ins) {
         return visitCache(ins);
     }
 

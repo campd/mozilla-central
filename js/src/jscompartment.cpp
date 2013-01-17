@@ -80,6 +80,7 @@ JSCompartment::JSCompartment(JSRuntime *rt)
     gcGrayRoots(),
     gcMallocBytes(0),
     debugModeBits(rt->debugMode ? DebugFromC : 0),
+    rngState(0),
     watchpointMap(NULL),
     scriptCountsMap(NULL),
     debugScriptMap(NULL),
@@ -127,6 +128,9 @@ JSCompartment::init(JSContext *cx)
 
     if (!regExps.init(cx))
         return false;
+
+    if (cx)
+        InitRandom(cx->runtime, &rngState);
 
 #ifdef JSGC_GENERATIONAL
     /*
@@ -297,7 +301,7 @@ JSCompartment::wrap(JSContext *cx, Value *vp, JSObject *existing)
 
     /* Unwrap incoming objects. */
     if (vp->isObject()) {
-        Rooted<JSObject*> obj(cx, &vp->toObject());
+        RootedObject obj(cx, &vp->toObject());
 
         if (obj->compartment() == this)
             return WrapForSameCompartment(cx, obj, vp);
@@ -349,10 +353,10 @@ JSCompartment::wrap(JSContext *cx, Value *vp, JSObject *existing)
 
     if (vp->isString()) {
         RootedValue orig(cx, *vp);
-        JSStableString *str = vp->toString()->ensureStable(cx);
+        Rooted<JSStableString *> str(cx, vp->toString()->ensureStable(cx));
         if (!str)
             return false;
-        JSString *wrapped = js_NewStringCopyN(cx, str->chars().get(), str->length());
+        RootedString wrapped(cx, js_NewStringCopyN(cx, str->chars().get(), str->length()));
         if (!wrapped)
             return false;
         vp->setString(wrapped);
@@ -450,7 +454,12 @@ JSCompartment::wrapId(JSContext *cx, jsid *idp)
     RootedValue value(cx, IdToValue(*idp));
     if (!wrap(cx, value.address()))
         return false;
-    return ValueToId(cx, value.get(), idp);
+    RootedId id(cx);
+    if (!ValueToId(cx, value.get(), &id))
+        return false;
+
+    *idp = id;
+    return true;
 }
 
 bool
@@ -569,8 +578,6 @@ JSCompartment::markTypes(JSTracer *trc)
         MarkTypeObjectRoot(trc, &type, "mark_types_scan");
         JS_ASSERT(type == i.get<types::TypeObject>());
     }
-
-    gcTypesMarked = true;
 }
 
 void
@@ -646,6 +653,7 @@ JSCompartment::sweep(FreeOp *fop, bool releaseTypes)
         sweepNewTypeObjectTable(newTypeObjects);
         sweepNewTypeObjectTable(lazyTypeObjects);
         sweepBreakpoints(fop);
+        sweepCallsiteClones();
 
         if (global_ && IsObjectAboutToBeFinalized(global_.unsafeGet()))
             global_ = NULL;
@@ -791,7 +799,7 @@ JSCompartment::onTooMuchMalloc()
 bool
 JSCompartment::hasScriptsOnStack()
 {
-    for (AllFramesIter afi(rt->stackSpace); !afi.done(); ++afi) {
+    for (AllFramesIter afi(rt); !afi.done(); ++afi) {
 #ifdef JS_ION
         // If this is an Ion frame, check the IonActivation instead
         if (afi.isIon())
@@ -884,6 +892,15 @@ JSCompartment::updateForDebugMode(FreeOp *fop, AutoDebugModeGC &dmgc)
 bool
 JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
 {
+    AutoDebugModeGC dmgc(cx->runtime);
+    return addDebuggee(cx, global, dmgc);
+}
+
+bool
+JSCompartment::addDebuggee(JSContext *cx,
+                           js::GlobalObject *global,
+                           AutoDebugModeGC &dmgc)
+{
     bool wasEnabled = debugMode();
     if (!debuggees.put(global)) {
         js_ReportOutOfMemory(cx);
@@ -891,7 +908,6 @@ JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
     }
     debugModeBits |= DebugFromJS;
     if (!wasEnabled) {
-        AutoDebugModeGC dmgc(cx->runtime);
         updateForDebugMode(cx->runtime->defaultFreeOp(), dmgc);
     }
     return true;
@@ -900,6 +916,16 @@ JSCompartment::addDebuggee(JSContext *cx, js::GlobalObject *global)
 void
 JSCompartment::removeDebuggee(FreeOp *fop,
                               js::GlobalObject *global,
+                              js::GlobalObjectSet::Enum *debuggeesEnum)
+{
+    AutoDebugModeGC dmgc(rt);
+    return removeDebuggee(fop, global, dmgc, debuggeesEnum);
+}
+
+void
+JSCompartment::removeDebuggee(FreeOp *fop,
+                              js::GlobalObject *global,
+                              AutoDebugModeGC &dmgc,
                               js::GlobalObjectSet::Enum *debuggeesEnum)
 {
     bool wasEnabled = debugMode();
@@ -912,7 +938,6 @@ JSCompartment::removeDebuggee(FreeOp *fop,
     if (debuggees.empty()) {
         debugModeBits &= ~DebugFromJS;
         if (wasEnabled && !debugMode()) {
-            AutoDebugModeGC dmgc(rt);
             DebugScopes::onCompartmentLeaveDebugMode(this);
             updateForDebugMode(fop, dmgc);
         }

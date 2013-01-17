@@ -23,6 +23,8 @@
 # include <string>
 #endif  // ANDROID
 
+#include "mozilla/Util.h"
+
 #include "jstypes.h"
 #include "jsutil.h"
 #include "jsclist.h"
@@ -55,6 +57,7 @@
 # include "methodjit/MethodJIT.h"
 #endif
 #include "gc/Marking.h"
+#include "js/CharacterEncoding.h"
 #include "js/MemoryMetrics.h"
 #include "frontend/TokenStream.h"
 #include "frontend/ParseMaps.h"
@@ -69,6 +72,7 @@ using namespace js;
 using namespace js::gc;
 
 using mozilla::DebugOnly;
+using mozilla::PointerRangeSize;
 
 bool
 js::AutoCycleDetector::init()
@@ -242,6 +246,58 @@ JSRuntime::createJaegerRuntime(JSContext *cx)
 }
 #endif
 
+void
+JSCompartment::sweepCallsiteClones()
+{
+    if (callsiteClones.initialized()) {
+        for (CallsiteCloneTable::Enum e(callsiteClones); !e.empty(); e.popFront()) {
+            CallsiteCloneKey key = e.front().key;
+            JSFunction *fun = e.front().value;
+            if (!key.script->isMarked() || !fun->isMarked())
+                e.removeFront();
+        }
+    }
+}
+
+RawFunction
+js::CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun, HandleScript script, jsbytecode *pc)
+{
+    JS_ASSERT(cx->typeInferenceEnabled());
+    JS_ASSERT(fun->isCloneAtCallsite());
+    JS_ASSERT(types::UseNewTypeForClone(fun));
+    JS_ASSERT(!fun->nonLazyScript()->enclosingStaticScope());
+
+    typedef CallsiteCloneKey Key;
+    typedef CallsiteCloneTable Table;
+
+    Table &table = cx->compartment->callsiteClones;
+    if (!table.initialized() && !table.init())
+        return NULL;
+
+    Key key;
+    key.script = script;
+    key.offset = pc - script->code;
+    key.original = fun;
+
+    Table::AddPtr p = table.lookupForAdd(key);
+    if (p)
+        return p->value;
+
+    RootedObject parent(cx, fun->environment());
+    RootedFunction clone(cx, CloneFunctionObject(cx, fun, parent,
+                                                 JSFunction::ExtendedFinalizeKind));
+    if (!clone)
+        return NULL;
+
+    // Store a link back to the original for function.caller.
+    clone->setExtendedSlot(0, ObjectValue(*fun));
+
+    if (!table.relookupOrAdd(p, key, clone.get()))
+        return NULL;
+
+    return clone;
+}
+
 JSContext *
 js::NewContext(JSRuntime *rt, size_t stackChunkSize)
 {
@@ -264,8 +320,6 @@ js::NewContext(JSRuntime *rt, size_t stackChunkSize)
      */
     bool first = rt->contextList.isEmpty();
     rt->contextList.insertBack(cx);
-
-    js_InitRandom(cx);
 
     /*
      * If cx is the first context on this runtime, initialize well-known atoms,
@@ -782,8 +836,10 @@ js_ExpandErrorArguments(JSContext *cx, JSErrorCallback callback,
                 JS_ASSERT(expandedArgs == argCount);
                 *out = 0;
                 js_free(buffer);
-                *messagep = DeflateString(cx, reportp->ucmessage,
-                                          size_t(out - reportp->ucmessage));
+                TwoByteChars ucmsg(reportp->ucmessage,
+                                   PointerRangeSize(static_cast<const jschar *>(reportp->ucmessage),
+                                                    static_cast<const jschar *>(out)));
+                *messagep = LossyTwoByteCharsToNewLatin1CharsZ(cx, ucmsg).c_str();
                 if (!*messagep)
                     goto error;
             }
@@ -1117,7 +1173,6 @@ JSContext::JSContext(JSRuntime *rt)
     outstandingRequests(0),
 #endif
     resolveFlags(0),
-    rngSeed(0),
     iterValue(MagicValue(JS_NO_ITER_VALUE)),
 #ifdef JS_METHODJIT
     methodJitEnabled(false),

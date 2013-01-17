@@ -91,6 +91,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitPrepareCall(MPrepareCall *ins);
     bool visitPassArg(MPassArg *arg);
     bool visitCreateThisWithTemplate(MCreateThisWithTemplate *ins);
+    bool visitCreateThisWithProto(MCreateThisWithProto *ins);
     bool visitCreateThis(MCreateThis *ins);
     bool visitReturnFromCtor(MReturnFromCtor *ins);
     bool visitCall(MCall *call);
@@ -174,6 +175,7 @@ class LIRGenerator : public LIRGeneratorSpecific
     bool visitDeleteProperty(MDeleteProperty *ins);
     bool visitGetNameCache(MGetNameCache *ins);
     bool visitCallGetIntrinsicValue(MCallGetIntrinsicValue *ins);
+    bool visitCallsiteCloneCache(MCallsiteCloneCache *ins);
     bool visitCallGetElement(MCallGetElement *ins);
     bool visitCallSetElement(MCallSetElement *ins);
     bool visitSetPropertyCache(MSetPropertyCache *ins);

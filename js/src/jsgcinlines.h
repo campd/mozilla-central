@@ -195,20 +195,11 @@ GetGCKindSlots(AllocKind thingKind, Class *clasp)
 }
 
 static inline void
-GCPoke(JSRuntime *rt, Value oldval)
+GCPoke(JSRuntime *rt)
 {
     AutoAssertNoGC nogc;
 
-    /*
-     * Since we're forcing a GC from JS_GC anyway, don't bother wasting cycles
-     * loading oldval.  XXX remove implied force, fix jsinterp.c's "second arg
-     * ignored", etc.
-     */
-#if 1
     rt->gcPoke = true;
-#else
-    rt->gcPoke = oldval.isGCThing();
-#endif
 
 #ifdef JS_GC_ZEAL
     /* Schedule a GC to happen "soon" after a GC poke. */
@@ -485,19 +476,6 @@ class GCCompartmentGroupIter {
  * in the partially initialized thing.
  */
 
-template<typename T>
-static inline void
-UnpoisonThing(T *thing)
-{
-#ifdef DEBUG
-    /* Change the contents of memory slightly so that IsThingPoisoned returns false. */
-    JS_STATIC_ASSERT(sizeof(T) >= sizeof(FreeSpan) + sizeof(uint8_t));
-    uint8_t *p =
-        reinterpret_cast<uint8_t *>(reinterpret_cast<FreeSpan *>(thing) + 1);
-    *p = 0;
-#endif
-}
-
 template <typename T>
 inline T *
 NewGCThing(JSContext *cx, js::gc::AllocKind kind, size_t thingSize)
@@ -534,8 +512,6 @@ NewGCThing(JSContext *cx, js::gc::AllocKind kind, size_t thingSize)
         comp->gcNursery.insertPointer(t);
 #endif
 
-    if (t)
-        UnpoisonThing(t);
     return t;
 }
 
@@ -567,8 +543,6 @@ TryNewGCThing(JSContext *cx, js::gc::AllocKind kind, size_t thingSize)
         comp->gcNursery.insertPointer(t);
 #endif
 
-    if (t)
-        UnpoisonThing(t);
     return t;
 }
 

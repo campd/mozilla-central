@@ -85,13 +85,20 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
     RootedFunction fun(cx, obj->toFunction());
 
     /*
+     * Callsite clones should never escape to script, so get the original
+     * function.
+     */
+    if (fun->isCallsiteClone())
+        fun = fun->getExtendedSlot(0).toObject().toFunction();
+
+    /*
      * Mark the function's script as uninlineable, to expand any of its
      * frames on the stack before we go looking for them. This allows the
      * below walk to only check each explicit frame rather than needing to
      * check any calls that were inlined.
      */
     if (fun->isInterpreted()) {
-        fun->getOrCreateScript(cx)->uninlineable = true;
+        JSFunction::getOrCreateScript(cx, fun)->uninlineable = true;
         MarkTypeObjectFlags(cx, fun, OBJECT_FLAG_UNINLINEABLE);
     }
 
@@ -99,7 +106,7 @@ fun_getProperty(JSContext *cx, HandleObject obj_, HandleId id, MutableHandleValu
     vp.setNull();
 
     /* Find fun's top-most activation record. */
-    StackIter iter(cx);
+    NonBuiltinScriptFrameIter iter(cx);
     for (; !iter.done(); ++iter) {
         if (!iter.isFunctionFrame() || iter.isEvalFrame())
             continue;
@@ -341,7 +348,7 @@ fun_resolve(JSContext *cx, HandleObject obj, HandleId id, unsigned flags,
             PropertyOp getter;
             StrictPropertyOp setter;
             unsigned attrs = JSPROP_PERMANENT;
-            if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
+            if (fun->isInterpretedLazy() && !JSFunction::getOrCreateScript(cx, fun))
                 return false;
             if (fun->isInterpreted() ? fun->strict() : fun->isBoundFunction()) {
                 JSObject *throwTypeError = fun->global().getThrowTypeError();
@@ -1479,7 +1486,7 @@ js_CloneFunctionObject(JSContext *cx, HandleFunction fun, HandleObject parent,
     if (fun->isInterpreted()) {
         if (fun->isInterpretedLazy()) {
             AutoCompartment ac(cx, fun);
-            if (!fun->getOrCreateScript(cx))
+            if (!JSFunction::getOrCreateScript(cx, fun))
                 return NULL;
         }
         clone->initScript(fun->nonLazyScript());
@@ -1514,29 +1521,8 @@ js_CloneFunctionObject(JSContext *cx, HandleFunction fun, HandleObject parent,
          * (JS_CloneFunctionObject) which dynamically ensures that 'script' has
          * no enclosing lexical scope (only the global scope).
          */
-        if (clone->isInterpreted()) {
-            RootedScript script(cx, clone->nonLazyScript());
-            JS_ASSERT(script->compartment() == fun->compartment());
-            JS_ASSERT_IF(script->compartment() != cx->compartment,
-                         !script->enclosingStaticScope());
-
-            RootedObject scope(cx, script->enclosingStaticScope());
-
-            clone->mutableScript().init(NULL);
-
-            RootedScript cscript(cx, CloneScript(cx, scope, clone, script));
-            if (!cscript)
-                return NULL;
-
-            clone->setScript(cscript);
-            cscript->setFunction(clone);
-
-            GlobalObject *global = script->compileAndGo ? &script->global() : NULL;
-
-            script = clone->nonLazyScript();
-            CallNewScriptHook(cx, script, clone);
-            Debugger::onNewScript(cx, script, global);
-        }
+        if (clone->isInterpreted() && !CloneFunctionScript(cx, fun, clone))
+            return NULL;
     }
     return clone;
 }

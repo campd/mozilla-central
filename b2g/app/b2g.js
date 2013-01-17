@@ -283,10 +283,14 @@ pref("content.image.allow_locking", true);
 pref("image.mem.min_discard_timeout_ms", 10000);
 pref("image.mem.max_decoded_image_kb", 5120); /* 5MB */
 
+// XXX this isn't a good check for "are touch events supported", but
+// we don't really have a better one at the moment.
+#ifdef MOZ_WIDGET_GONK
 // enable touch events interfaces
 pref("dom.w3c_touch_events.enabled", 1);
 pref("dom.w3c_touch_events.safetyX", 0); // escape borders in units of 1/240"
 pref("dom.w3c_touch_events.safetyY", 120); // escape borders in units of 1/240"
+#endif
 
 #ifdef MOZ_SAFE_BROWSING
 // Safe browsing does nothing unless this pref is set
@@ -323,9 +327,6 @@ pref("urlclassifier.alternate_error_page", "blocked");
 
 // The number of random entries to send with a gethash request.
 pref("urlclassifier.gethashnoise", 4);
-
-// Randomize all UrlClassifier data with a per-client key.
-pref("urlclassifier.randomizeclient", false);
 
 // The list of tables that use the gethash request to confirm partial results.
 pref("urlclassifier.gethashtables", "goog-phish-shavar,goog-malware-shavar");
@@ -454,6 +455,9 @@ pref("shutdown.watchdog.timeoutSecs", 5);
 pref("b2g.update.apply-prompt-timeout", 60000); // milliseconds
 // Amount of time to wait after the user is idle before prompting to apply an update
 pref("b2g.update.apply-idle-timeout", 600000); // milliseconds
+// Amount of time after which connection will be restarted if no progress
+pref("b2g.update.download-watchdog-timeout", 120000); // milliseconds
+pref("b2g.update.download-watchdog-max-retries", 5);
 
 pref("app.update.enabled", true);
 pref("app.update.auto", false);
@@ -529,6 +533,9 @@ pref("javascript.options.mem.gc_low_frequency_heap_growth", 105);
 pref("javascript.options.mem.high_water_mark", 6);
 pref("javascript.options.mem.gc_allocation_threshold_mb", 3);
 
+// Allocation Threshold for workers
+pref("dom.workers.mem.gc_allocation_threshold_mb", 3);
+
 // Show/Hide scrollbars when active/inactive
 pref("ui.showHideScrollbars", 1);
 
@@ -544,6 +551,8 @@ pref("hal.processPriorityManager.gonk.masterOomScoreAdjust", 0);
 pref("hal.processPriorityManager.gonk.masterKillUnderMB", 1);
 pref("hal.processPriorityManager.gonk.foregroundOomScoreAdjust", 67);
 pref("hal.processPriorityManager.gonk.foregroundKillUnderMB", 4);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableOomScoreAdjust", 134);
+pref("hal.processPriorityManager.gonk.backgroundPerceivebleKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenOomScoreAdjust", 200);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundOomScoreAdjust", 400);
@@ -613,9 +622,17 @@ pref("memory.free_dirty_pages", true);
 pref("wap.UAProf.url", "");
 pref("wap.UAProf.tagname", "x-wap-profile");
 
+// Enable native identity (persona/browserid)
+pref("dom.identity.enabled", true);
+
 // Wait up to this much milliseconds when orientation changed
 pref("layers.orientation.sync.timeout", 1000);
 
 // Don't discard WebGL contexts for foreground apps on memory
 // pressure.
 pref("webgl.can-lose-context-in-foreground", false);
+
+// Allow nsMemoryInfoDumper to create a fifo in the temp directory.  We use
+// this fifo to trigger about:memory dumps, among other things.
+pref("memory_info_dumper.watch_fifo.enabled", true);
+pref("memory_info_dumper.watch_fifo.directory", "/data/local");

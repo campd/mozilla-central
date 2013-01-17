@@ -1015,7 +1015,7 @@ TypedArray::obj_lookupGeneric(JSContext *cx, HandleObject tarray, HandleId id,
     JS_ASSERT(tarray->isTypedArray());
 
     if (isArrayIndex(tarray, id)) {
-        MarkNonNativePropertyFound(tarray, propp);
+        MarkNonNativePropertyFound(propp);
         objp.set(tarray);
         return true;
     }
@@ -1045,7 +1045,7 @@ TypedArray::obj_lookupElement(JSContext *cx, HandleObject tarray, uint32_t index
     JS_ASSERT(tarray->isTypedArray());
 
     if (index < length(tarray)) {
-        MarkNonNativePropertyFound(tarray, propp);
+        MarkNonNativePropertyFound(propp);
         objp.set(tarray);
         return true;
     }
@@ -1283,7 +1283,7 @@ class TypedArrayTemplate
             return obj_getElement(cx, obj, receiver, index, vp);
 
         Rooted<SpecialId> sid(cx);
-        if (ValueIsSpecial(obj, &idval, sid.address(), cx))
+        if (ValueIsSpecial(obj, &idval, &sid, cx))
             return obj_getSpecial(cx, obj, receiver, sid, vp);
 
         JSAtom *atom = ToAtom(cx, idval);
@@ -2153,10 +2153,10 @@ class TypedArrayTemplate
         SkipRoot skipDest(cx, &dest);
         SkipRoot skipSrc(cx, &src);
 
-        if (ar->isDenseArray() && ar->getDenseArrayInitializedLength() >= len) {
+        if (ar->isArray() && !ar->isIndexed() && ar->getDenseInitializedLength() >= len) {
             JS_ASSERT(ar->getArrayLength() == len);
 
-            src = ar->getDenseArrayElements();
+            src = ar->getDenseElements();
             for (uint32_t i = 0; i < len; ++i) {
                 NativeType n;
                 if (!nativeFromValue(cx, src[i], &n))
@@ -3771,13 +3771,18 @@ JS_GetTypedArrayByteLength(JSObject *obj)
 }
 
 JS_FRIEND_API(JSArrayBufferViewType)
-JS_GetTypedArrayType(JSObject *obj)
+JS_GetArrayBufferViewType(JSObject *obj)
 {
     obj = UnwrapObjectChecked(obj);
     if (!obj)
         return ArrayBufferView::TYPE_MAX;
-    JS_ASSERT(obj->isTypedArray());
-    return static_cast<JSArrayBufferViewType>(TypedArray::type(obj));
+
+    if (obj->isTypedArray())
+        return static_cast<JSArrayBufferViewType>(TypedArray::type(obj));
+    else if (obj->isDataView())
+        return ArrayBufferView::TYPE_DATAVIEW;
+    JS_NOT_REACHED("invalid ArrayBufferView type");
+    return ArrayBufferView::TYPE_MAX;
 }
 
 JS_FRIEND_API(int8_t *)

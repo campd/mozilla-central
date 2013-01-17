@@ -473,6 +473,14 @@ class MDefinition : public MNode
         JS_ASSERT(getAliasSet().flags() & store->getAliasSet().flags());
         return true;
     }
+    // This indicates if this instruction is "integral at heart".  This will
+    // be the case if
+    // a) its result type is int32
+    // b) it is an instruction that is very likely to produce an integer or integer-truncatable
+    //    result (add, mul, sub), and both of its inputs are ints. (currently only implemented for add)
+    virtual bool isBigIntOutput() { return resultType_ == MIRType_Int32; }
+    virtual void recalculateBigInt() {}
+
 };
 
 // An MUseDefIterator walks over uses in a definition, skipping any use that is
@@ -1171,18 +1179,23 @@ class MCall
     CompilerRootFunction target_;
     // Original value of argc from the bytecode.
     uint32_t numActualArgs_;
+    // The typeset of the callee, could be NULL.
+    types::StackTypeSet *calleeTypes_;
 
-    MCall(JSFunction *target, uint32_t numActualArgs, bool construct)
+    MCall(JSFunction *target, uint32_t numActualArgs, bool construct,
+          types::StackTypeSet *calleeTypes)
       : construct_(construct),
         target_(target),
-        numActualArgs_(numActualArgs)
+        numActualArgs_(numActualArgs),
+        calleeTypes_(calleeTypes)
     {
         setResultType(MIRType_Value);
     }
 
   public:
     INSTRUCTION_HEADER(Call)
-    static MCall *New(JSFunction *target, size_t maxArgc, size_t numActualArgs, bool construct);
+    static MCall *New(JSFunction *target, size_t maxArgc, size_t numActualArgs, bool construct,
+                      types::StackTypeSet *calleeTypes);
 
     void initPrepareCall(MDefinition *start) {
         JS_ASSERT(start->isPrepareCall());
@@ -1213,6 +1226,9 @@ class MCall
 
     bool isConstructing() const {
         return construct_;
+    }
+    types::StackTypeSet *calleeTypes() const {
+        return calleeTypes_;
     }
 
     // The number of stack arguments is the max between the number of formal
@@ -1688,29 +1704,21 @@ class MCreateThisWithTemplate
 
 // Caller-side allocation of |this| for |new|:
 // Given a prototype operand, construct |this| for JSOP_NEW.
-// For native constructors, returns MagicValue(JS_IS_CONSTRUCTING).
-class MCreateThis
-  : public MAryInstruction<2>,
+class MCreateThisWithProto
+  : public MBinaryInstruction,
     public MixPolicy<ObjectPolicy<0>, ObjectPolicy<1> >
 {
-    bool needNativeCheck_;
-
-    MCreateThis(MDefinition *callee, MDefinition *prototype)
-      : needNativeCheck_(true)
+    MCreateThisWithProto(MDefinition *callee, MDefinition *prototype)
+      : MBinaryInstruction(callee, prototype)
     {
-        initOperand(0, callee);
-        initOperand(1, prototype);
-
-        // Type is mostly object, except for native constructors
-        // therefore the need of Value type.
-        setResultType(MIRType_Value);
+        setResultType(MIRType_Object);
     }
 
   public:
-    INSTRUCTION_HEADER(CreateThis)
-    static MCreateThis *New(MDefinition *callee, MDefinition *prototype)
+    INSTRUCTION_HEADER(CreateThisWithProto)
+    static MCreateThisWithProto *New(MDefinition *callee, MDefinition *prototype)
     {
-        return new MCreateThis(callee, prototype);
+        return new MCreateThisWithProto(callee, prototype);
     }
 
     MDefinition *getCallee() const {
@@ -1719,12 +1727,37 @@ class MCreateThis
     MDefinition *getPrototype() const {
         return getOperand(1);
     }
-    void removeNativeCheck() {
-        needNativeCheck_ = false;
-        setResultType(MIRType_Object);
+
+    // Although creation of |this| modifies global state, it is safely repeatable.
+    AliasSet getAliasSet() const {
+        return AliasSet::None();
     }
-    bool needNativeCheck() const {
-        return needNativeCheck_;
+    TypePolicy *typePolicy() {
+        return this;
+    }
+};
+
+// Caller-side allocation of |this| for |new|:
+// Constructs |this| when possible, else MagicValue(JS_IS_CONSTRUCTING).
+class MCreateThis
+  : public MUnaryInstruction,
+    public ObjectPolicy<0>
+{
+    MCreateThis(MDefinition *callee)
+      : MUnaryInstruction(callee)
+    {
+        setResultType(MIRType_Value);
+    }
+
+  public:
+    INSTRUCTION_HEADER(CreateThis)
+    static MCreateThis *New(MDefinition *callee)
+    {
+        return new MCreateThis(callee);
+    }
+
+    MDefinition *getCallee() const {
+        return getOperand(0);
     }
 
     // Although creation of |this| modifies global state, it is safely repeatable.
@@ -2542,11 +2575,13 @@ class MMathFunction
 
 class MAdd : public MBinaryArithInstruction
 {
-    bool implicitTruncate_;
-
+    int implicitTruncate_;
+    // Is this instruction really an int at heart?
+    bool isBigInt_;
     MAdd(MDefinition *left, MDefinition *right)
       : MBinaryArithInstruction(left, right),
-        implicitTruncate_(false)
+        implicitTruncate_(0),
+        isBigInt_(left->isBigIntOutput() && right->isBigIntOutput())
     {
         setResultType(MIRType_Value);
     }
@@ -2558,10 +2593,10 @@ class MAdd : public MBinaryArithInstruction
     }
     void analyzeTruncateBackward();
 
-    bool isTruncated() const {
+    int isTruncated() const {
         return implicitTruncate_;
     }
-    void setTruncated(bool truncate) {
+    void setTruncated(int truncate) {
         implicitTruncate_ = truncate;
     }
     bool updateForReplacement(MDefinition *ins);
@@ -2571,14 +2606,24 @@ class MAdd : public MBinaryArithInstruction
 
     bool fallible();
     void computeRange();
+    // This is an add, so the return value is from only
+    // integer sources if we know we return an int32
+    // or it has been explicitly marked as being a large int.
+    virtual bool isBigIntOutput() {
+        return (type() == MIRType_Int32) || isBigInt_;
+    }
+    // An add will produce a big int if both of its sources are big ints.
+    virtual void recalculateBigInt() {
+        isBigInt_ = (lhs()->isBigIntOutput() && rhs()->isBigIntOutput());
+    }
 };
 
 class MSub : public MBinaryArithInstruction
 {
-    bool implicitTruncate_;
+    int implicitTruncate_;
     MSub(MDefinition *left, MDefinition *right)
       : MBinaryArithInstruction(left, right),
-        implicitTruncate_(false)
+        implicitTruncate_(0)
     {
         setResultType(MIRType_Value);
     }
@@ -2590,10 +2635,10 @@ class MSub : public MBinaryArithInstruction
     }
 
     void analyzeTruncateBackward();
-    bool isTruncated() const {
+    int isTruncated() const {
         return implicitTruncate_;
     }
-    void setTruncated(bool truncate) {
+    void setTruncated(int truncate) {
         implicitTruncate_ = truncate;
     }
     bool updateForReplacement(MDefinition *ins);
@@ -2708,14 +2753,14 @@ class MDiv : public MBinaryArithInstruction
     bool canBeNegativeZero_;
     bool canBeNegativeOverflow_;
     bool canBeDivideByZero_;
-    bool implicitTruncate_;
+    int implicitTruncate_;
 
     MDiv(MDefinition *left, MDefinition *right, MIRType type)
       : MBinaryArithInstruction(left, right),
         canBeNegativeZero_(true),
         canBeNegativeOverflow_(true),
         canBeDivideByZero_(true),
-        implicitTruncate_(false)
+        implicitTruncate_(0)
     {
         if (type != MIRType_Value)
             specialization_ = type;
@@ -2742,10 +2787,10 @@ class MDiv : public MBinaryArithInstruction
         return 1;
     }
 
-    bool isTruncated() const {
+    int isTruncated() const {
         return implicitTruncate_;
     }
-    void setTruncated(bool truncate) {
+    void setTruncated(int truncate) {
         implicitTruncate_ = truncate;
     }
 
@@ -4326,12 +4371,16 @@ class InlinePropertyTable : public TempObject
         return entries_[i]->func;
     }
 
-    void trimToTargets(AutoObjectVector &targets) {
+    void trimToAndMaybePatchTargets(AutoObjectVector &targets, AutoObjectVector &originals) {
         size_t i = 0;
         while (i < numEntries()) {
             bool foundFunc = false;
-            for (size_t j = 0; j < targets.length(); j++) {
-                if (entries_[i]->func == targets[j]) {
+            // Compare using originals, but if we find a matching function,
+            // patch it to the target, which might be a clone.
+            for (size_t j = 0; j < originals.length(); j++) {
+                if (entries_[i]->func == originals[j]) {
+                    if (entries_[i]->func != targets[j])
+                        entries_[i] = new Entry(entries_[i]->typeObj, targets[j]->toFunction());
                     foundFunc = true;
                     break;
                 }
@@ -4956,6 +5005,41 @@ class MCallGetIntrinsicValue : public MNullaryInstruction
     }
     PropertyName *name() const {
         return name_;
+    }
+};
+
+class MCallsiteCloneCache
+  : public MUnaryInstruction,
+    public SingleObjectPolicy
+{
+    jsbytecode *callPc_;
+
+    MCallsiteCloneCache(MDefinition *callee, jsbytecode *callPc)
+      : MUnaryInstruction(callee),
+        callPc_(callPc)
+    {
+        setResultType(MIRType_Object);
+    }
+
+  public:
+    INSTRUCTION_HEADER(CallsiteCloneCache);
+
+    static MCallsiteCloneCache *New(MDefinition *callee, jsbytecode *callPc) {
+        return new MCallsiteCloneCache(callee, callPc);
+    }
+    TypePolicy *typePolicy() {
+        return this;
+    }
+    MDefinition *callee() const {
+        return getOperand(0);
+    }
+    jsbytecode *callPc() const {
+        return callPc_;
+    }
+
+    // Callsite cloning is idempotent.
+    AliasSet getAliasSet() const {
+        return AliasSet::None();
     }
 };
 

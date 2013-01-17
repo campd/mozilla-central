@@ -56,22 +56,53 @@ js_ReportAllocationOverflow(JSContext *cx);
 
 namespace js {
 
+struct CallsiteCloneKey {
+    /* The original function that we are cloning. */
+    JSFunction *original;
+
+    /* The script of the call. */
+    JSScript *script;
+
+    /* The offset of the call. */
+    uint32_t offset;
+
+    CallsiteCloneKey() { PodZero(this); }
+
+    typedef CallsiteCloneKey Lookup;
+
+    static inline uint32_t hash(CallsiteCloneKey key) {
+        return uint32_t(size_t(key.script->code + key.offset) ^ size_t(key.original));
+    }
+
+    static inline bool match(const CallsiteCloneKey &a, const CallsiteCloneKey &b) {
+        return a.script == b.script && a.offset == b.offset && a.original == b.original;
+    }
+};
+
+typedef HashMap<CallsiteCloneKey,
+                ReadBarriered<JSFunction>,
+                CallsiteCloneKey,
+                SystemAllocPolicy> CallsiteCloneTable;
+
+RawFunction CloneFunctionAtCallsite(JSContext *cx, HandleFunction fun,
+                                    HandleScript script, jsbytecode *pc);
+
 typedef HashSet<JSObject *> ObjectSet;
 
 /* Detects cycles when traversing an object graph. */
 class AutoCycleDetector
 {
     JSContext *cx;
-    JSObject *obj;
+    RootedObject obj;
     bool cyclic;
     uint32_t hashsetGenerationAtInit;
     ObjectSet::AddPtr hashsetAddPointer;
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 
   public:
-    AutoCycleDetector(JSContext *cx, JSObject *obj
+    AutoCycleDetector(JSContext *cx, HandleObject objArg
                       MOZ_GUARD_OBJECT_NOTIFIER_PARAM)
-      : cx(cx), obj(obj), cyclic(true)
+      : cx(cx), obj(cx, objArg), cyclic(true)
     {
         MOZ_GUARD_OBJECT_NOTIFIER_INIT;
     }
@@ -730,6 +761,7 @@ struct JSRuntime : js::RuntimeFriendFields
     int                 gcSweepPhase;
     JSCompartment       *gcSweepCompartment;
     int                 gcSweepKindIndex;
+    bool                gcAbortSweepAfterCurrentGroup;
 
     /*
      * List head of arenas allocated during the sweep phase.
@@ -1042,6 +1074,8 @@ struct JSRuntime : js::RuntimeFriendFields
 
     js::ThreadPool threadPool;
 
+    js::CTypesActivityCallback  ctypesActivityCallback;
+
   private:
     // In certain cases, we want to optimize certain opcodes to typed instructions,
     // to avoid carrying an extra register to feed into an unbox. Unfortunately,
@@ -1218,6 +1252,16 @@ struct JSRuntime : js::RuntimeFriendFields
         return 0;
 #endif
     }
+
+  private:
+    /*
+     * Used to ensure that compartments created at the same time get different
+     * random number sequences. See js::InitRandom.
+     */
+    uint64_t rngNonce;
+
+  public:
+    uint64_t nextRNGNonce() { return rngNonce++; }
 };
 
 /* Common macros to access thread-local caches in JSRuntime. */
@@ -1580,9 +1624,6 @@ struct JSContext : js::ContextFriendFields,
 
     /* Stored here to avoid passing it around as a parameter. */
     unsigned               resolveFlags;
-
-    /* Random number generator state, used by jsmath.cpp. */
-    int64_t             rngSeed;
 
     /* Location to stash the iteration value between JSOP_MOREITER and JSOP_ITERNEXT. */
     js::Value           iterValue;
@@ -2173,6 +2214,17 @@ class AutoValueArray : public AutoGCRooter
 
     RawValue *start() { return start_; }
     unsigned length() const { return length_; }
+
+    MutableHandleValue handleAt(unsigned i)
+    {
+        JS_ASSERT(i < length_);
+        return MutableHandleValue::fromMarkedLocation(&start_[i]);
+    }
+    HandleValue handleAt(unsigned i) const
+    {
+        JS_ASSERT(i < length_);
+        return HandleValue::fromMarkedLocation(&start_[i]);
+    }
 
     MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
 };

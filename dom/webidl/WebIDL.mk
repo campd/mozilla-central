@@ -21,7 +21,10 @@ webidl_files = \
   Blob.webidl \
   CanvasRenderingContext2D.webidl \
   CaretPosition.webidl \
+  CDATASection.webidl \
+  CharacterData.webidl \
   ClientRectList.webidl \
+  Comment.webidl \
   CSS.webidl \
   CSSPrimitiveValue.webidl \
   CSSStyleDeclaration.webidl \
@@ -36,6 +39,7 @@ webidl_files = \
   DOMSettableTokenList.webidl \
   DOMStringMap.webidl \
   DOMTokenList.webidl \
+  DOMTransaction.webidl \
   DynamicsCompressorNode.webidl \
   Element.webidl \
   EventHandler.webidl \
@@ -49,10 +53,12 @@ webidl_files = \
   FormData.webidl \
   Function.webidl \
   GainNode.webidl \
+  HTMLAnchorElement.webidl \
   HTMLBodyElement.webidl \
   HTMLCollection.webidl \
   HTMLDataListElement.webidl \
   HTMLDivElement.webidl \
+  HTMLDListElement.webidl \
   HTMLDocument.webidl \
   HTMLElement.webidl \
   HTMLFontElement.webidl \
@@ -60,9 +66,22 @@ webidl_files = \
   HTMLHeadingElement.webidl \
   HTMLImageElement.webidl \
   HTMLLabelElement.webidl \
+  HTMLLIElement.webidl \
+  HTMLOListElement.webidl \
   HTMLOptionsCollection.webidl \
+  HTMLParagraphElement.webidl \
+  HTMLPreElement.webidl \
   HTMLPropertiesCollection.webidl \
+  HTMLScriptElement.webidl \
+  HTMLSpanElement.webidl \
+  HTMLTableCaptionElement.webidl \
+  HTMLTableCellElement.webidl \
+  HTMLTableColElement.webidl \
+  HTMLTableElement.webidl \
+  HTMLTableRowElement.webidl \
+  HTMLTableSectionElement.webidl \
   HTMLTitleElement.webidl \
+  HTMLUListElement.webidl \
   ImageData.webidl \
   Location.webidl \
   MutationObserver.webidl \
@@ -75,31 +94,78 @@ webidl_files = \
   Performance.webidl \
   PerformanceNavigation.webidl \
   PerformanceTiming.webidl \
+  ProcessingInstruction.webidl \
   Rect.webidl \
   RGBColor.webidl \
   Screen.webidl \
+  SVGAElement.webidl \
+  SVGAltGlyphElement.webidl \
   SVGAngle.webidl \
   SVGAnimatedAngle.webidl \
   SVGAnimatedBoolean.webidl \
   SVGAnimatedLengthList.webidl \
   SVGAnimatedNumberList.webidl \
+  SVGAnimatedPoints.webidl \
   SVGAnimatedPreserveAspectRatio.webidl \
   SVGAnimatedTransformList.webidl \
+  SVGAnimateElement.webidl \
+  SVGAnimateMotionElement.webidl \
+  SVGAnimateTransformElement.webidl \
+  SVGAnimationElement.webidl \
+  SVGCircleElement.webidl \
+  SVGDefsElement.webidl \
+  SVGDescElement.webidl \
   SVGElement.webidl \
+  SVGEllipseElement.webidl \
+  SVGFitToViewBox.webidl \
+  SVGForeignObjectElement.webidl \
+  SVGGElement.webidl \
+  SVGGradientElement.webidl \
+  SVGGraphicsElement.webidl \
+  SVGImageElement.webidl \
   SVGLengthList.webidl \
+  SVGLinearGradientElement.webidl \
+  SVGLineElement.webidl \
+  SVGLocatableElement.webidl \
   SVGMatrix.webidl \
+  SVGMetadataElement.webidl \
+  SVGMPathElement.webidl \
   SVGNumberList.webidl \
   SVGPathSeg.webidl \
   SVGPathSegList.webidl \
   SVGPoint.webidl \
   SVGPointList.webidl \
+  SVGPolygonElement.webidl \
+  SVGPolylineElement.webidl \
   SVGPreserveAspectRatio.webidl \
+  SVGRadialGradientElement.webidl \
+  SVGRectElement.webidl \
+  SVGScriptElement.webidl \
+  SVGSetElement.webidl \
+  SVGStopElement.webidl \
+  SVGStyleElement.webidl \
+  SVGSVGElement.webidl \
+  SVGSwitchElement.webidl \
+  SVGTests.webidl \
+  SVGTextContentElement.webidl \
+  SVGTextElement.webidl \
+  SVGTextPathElement.webidl \
+  SVGTextPositioningElement.webidl \
+  SVGTitleElement.webidl \
   SVGTransform.webidl \
+  SVGTransformableElement.webidl \
   SVGTransformList.webidl \
+  SVGTSpanElement.webidl \
+  SVGUnitTypes.webidl \
+  SVGURIReference.webidl \
+  SVGViewElement.webidl \
+  SVGZoomAndPan.webidl \
+  Text.webidl \
   TextDecoder.webidl \
   TextEncoder.webidl \
   URL.webidl \
   WebSocket.webidl \
+  UndoManager.webidl \
   XMLHttpRequest.webidl \
   XMLHttpRequestEventTarget.webidl \
   XMLHttpRequestUpload.webidl \

@@ -94,6 +94,12 @@ class nsDOMNavigationTiming;
 class nsWindowSizes;
 class nsHtml5TreeOpExecutor;
 
+namespace mozilla {
+namespace dom {
+class UndoManager;
+}
+}
+
 /**
  * Right now our identifier map entries contain information for 'name'
  * and 'id' mappings of a given string. This is so that
@@ -562,12 +568,14 @@ public:
    * shared among multiple presentation shell's).
    */
   virtual nsresult CreateShell(nsPresContext* aContext,
-                               nsIViewManager* aViewManager,
+                               nsViewManager* aViewManager,
                                nsStyleSet* aStyleSet,
                                nsIPresShell** aInstancePtrResult);
   virtual void DeleteShell();
 
   virtual nsresult GetAllowPlugins(bool* aAllowPlugins);
+
+  virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager();
 
   virtual nsresult SetSubDocumentFor(Element* aContent,
                                      nsIDocument* aSubDoc);
@@ -729,6 +737,10 @@ public:
   // for radio group
   nsRadioGroupStruct* GetRadioGroup(const nsAString& aName) const;
   nsRadioGroupStruct* GetOrCreateRadioGroup(const nsAString& aName);
+
+  virtual nsViewportInfo GetViewportInfo(uint32_t aDisplayWidth,
+                                         uint32_t aDisplayHeight);
+
 
 private:
   nsRadioGroupStruct* GetRadioGroupInternal(const nsAString& aName) const;
@@ -1068,10 +1080,11 @@ public:
 
 protected:
   nsresult doCreateShell(nsPresContext* aContext,
-                         nsIViewManager* aViewManager, nsStyleSet* aStyleSet,
+                         nsViewManager* aViewManager, nsStyleSet* aStyleSet,
                          nsCompatibility aCompatMode,
                          nsIPresShell** aInstancePtrResult);
 
+  void RemoveDocStyleSheetsFromStyleSets();
   void RemoveStyleSheetsFromStyleSets(nsCOMArray<nsIStyleSheet>& aSheets, 
                                       nsStyleSet::sheetType aType);
   nsresult ResetStylesheetsToURI(nsIURI* aURI);
@@ -1348,6 +1361,23 @@ private:
 
   // Tracking for plugins in the document.
   nsTHashtable< nsPtrHashKey<nsIObjectLoadingContent> > mPlugins;
+
+  nsRefPtr<mozilla::dom::UndoManager> mUndoManager;
+
+  enum ViewportType {
+    DisplayWidthHeight,
+    Specified,
+    Unknown
+  };
+
+  ViewportType mViewportType;
+
+  // These member variables cache information about the viewport so we don't have to
+  // recalculate it each time.
+  bool mValidWidth, mValidHeight;
+  float mScaleMinFloat, mScaleMaxFloat, mScaleFloat, mPixelRatio;
+  bool mAutoSize, mAllowZoom, mValidScaleFloat, mValidMaxScale, mScaleStrEmpty, mWidthStrEmpty;
+  uint32_t mViewportWidth, mViewportHeight;
 
 #ifdef DEBUG
 protected:

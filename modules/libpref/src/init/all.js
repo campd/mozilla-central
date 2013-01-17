@@ -175,7 +175,7 @@ pref("media.dash.enabled", false);
 pref("media.gstreamer.enabled", true);
 #endif
 #ifdef MOZ_WEBRTC
-pref("media.navigator.enabled", false);
+pref("media.navigator.enabled", true);
 pref("media.peerconnection.enabled", false);
 pref("media.navigator.permission.disabled", false);
 #else
@@ -367,6 +367,9 @@ pref("toolkit.telemetry.debugSlowSql", false);
 // Identity module
 pref("toolkit.identity.enabled", false);
 pref("toolkit.identity.debug", false);
+
+// Enable deprecation warnings.
+pref("devtools.errorconsole.deprecation_warnings", true);
 
 // Disable remote debugging protocol logging
 pref("devtools.debugger.log", false);
@@ -693,6 +696,9 @@ pref("dom.experimental_bindings", true);
 
 // Don't use new input types
 pref("dom.experimental_forms", false);
+
+// Allocation Threshold for Workers
+pref("dom.workers.mem.gc_allocation_threshold_mb", 30);
 
 // Parsing perf prefs. For now just mimic what the old code did.
 #ifndef XP_WIN
@@ -1755,11 +1761,27 @@ pref("dom.ipc.plugins.parentTimeoutSecs", 0);
 // How long a plugin launch is allowed to take before
 // we consider it failed.
 pref("dom.ipc.plugins.processLaunchTimeoutSecs", 45);
+#ifdef XP_WIN
+// How long a plugin is allowed to process a synchronous IPC message 
+// before we display the plugin hang UI
+pref("dom.ipc.plugins.hangUITimeoutSecs", 5);
+// Minimum time that the plugin hang UI will be displayed
+pref("dom.ipc.plugins.hangUIMinDisplaySecs", 10);
+#endif
+// How long a content process can take before closing its IPC channel
+// after shutdown is initiated.  If the process exceeds the timeout,
+// we fear the worst and kill it.
+pref("dom.ipc.tabs.shutdownTimeoutSecs", 5);
 #else
 // No timeout in DEBUG builds
 pref("dom.ipc.plugins.timeoutSecs", 0);
 pref("dom.ipc.plugins.processLaunchTimeoutSecs", 0);
 pref("dom.ipc.plugins.parentTimeoutSecs", 0);
+#ifdef XP_WIN
+pref("dom.ipc.plugins.hangUITimeoutSecs", 0);
+pref("dom.ipc.plugins.hangUIMinDisplaySecs", 0);
+#endif
+pref("dom.ipc.tabs.shutdownTimeoutSecs", 0);
 #endif
 
 #ifdef XP_WIN
@@ -1777,6 +1799,13 @@ pref("svg.smil.enabled", true);
 // Enable the use of display-lists for SVG hit-testing and painting.
 pref("svg.display-lists.hit-testing.enabled", true);
 pref("svg.display-lists.painting.enabled", true);
+
+// Is support for the SVG 2 paint-order property enabled?
+#ifdef RELEASE_BUILD
+pref("svg.paint-order.enabled", false);
+#else
+pref("svg.paint-order.enabled", true);
+#endif
 
 pref("font.minimum-size.ar", 0);
 pref("font.minimum-size.x-armn", 0);
@@ -2653,12 +2682,12 @@ pref("font.name-list.monospace.x-western", "Courier,Courier New");
 pref("font.name-list.cursive.x-western", "Apple Chancery");
 pref("font.name-list.fantasy.x-western", "Papyrus");
 
-pref("font.name.serif.zh-CN", "STSong");
-pref("font.name.sans-serif.zh-CN", "STHeiti");
-pref("font.name.monospace.zh-CN", "STHeiti");
-pref("font.name-list.serif.zh-CN", "STSong,Heiti SC");
-pref("font.name-list.sans-serif.zh-CN", "STHeiti,Heiti SC");
-pref("font.name-list.monospace.zh-CN", "STHeiti,Heiti SC");
+pref("font.name.serif.zh-CN", "Times");
+pref("font.name.sans-serif.zh-CN", "Helvetica");
+pref("font.name.monospace.zh-CN", "Courier");
+pref("font.name-list.serif.zh-CN", "Times,STSong,Heiti SC");
+pref("font.name-list.sans-serif.zh-CN", "Helvetica,STHeiti,Heiti SC");
+pref("font.name-list.monospace.zh-CN", "Courier,STHeiti,Heiti SC");
 
 pref("font.name.serif.zh-TW", "Times"); 
 pref("font.name.sans-serif.zh-TW", "Helvetica");  
@@ -3897,12 +3926,20 @@ pref("social.enabled", false);
 // observers (bug 780507).
 pref("dom.idle-observers-api.fuzz_time.disabled", true);
 
-// Setting that to true grant elevated privileges to apps that ask
-// for them in their manifest.
-pref("dom.mozApps.dev_mode", false);
-
 // Lowest localId for apps.
 pref("dom.mozApps.maxLocalId", 1000);
+
+// XXX Security: You CANNOT safely add a new app store for
+// installing privileged apps just by modifying this pref and
+// adding the signing cert for that store to the cert trust
+// database. *Any* origin listed can install apps signed with
+// *any* certificate trusted; we don't try to maintain a strong
+// association between certificate with installOrign. The
+// expectation here is that in production builds the pref will
+// contain exactly one origin. However, in custom development
+// builds it may contain more than one origin so we can test
+// different stages (dev, staging, prod) of the same app store.
+pref("dom.mozApps.signed_apps_installable_from", "https://marketplace.firefox.com");
 
 // Minimum delay in milliseconds between network activity notifications (0 means
 // no notifications). The delay is the same for both download and upload, though
@@ -3927,3 +3964,12 @@ pref("dom.placeholder.show_on_focus", true);
 pref("wap.UAProf.url", "");
 pref("wap.UAProf.tagname", "x-wap-profile");
 
+// If the user puts a finger down on an element and we think the user
+// might be executing a pan gesture, how long do we wait before
+// tentatively deciding the gesture is actually a tap and activating
+// the target element?
+pref("ui.touch_activation.delay_ms", 50);
+
+// nsMemoryInfoDumper can watch a fifo in the temp directory and take various
+// actions when the fifo is written to.  Disable this in general.
+pref("memory_info_dumper.watch_fifo", false);

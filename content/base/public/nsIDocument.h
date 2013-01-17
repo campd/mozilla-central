@@ -46,7 +46,6 @@ class nsIDocumentObserver;
 class nsIDOMDocument;
 class nsIDOMDocumentFragment;
 class nsIDOMDocumentType;
-class nsXMLProcessingInstruction;
 class nsIDOMElement;
 class nsIDOMEventTarget;
 class nsIDOMNodeList;
@@ -65,7 +64,7 @@ class nsIStyleRule;
 class nsIStyleSheet;
 class nsIURI;
 class nsIVariant;
-class nsIViewManager;
+class nsViewManager;
 class nsPresContext;
 class nsRange;
 class nsScriptLoader;
@@ -74,6 +73,8 @@ class nsStyleSet;
 class nsTextNode;
 class nsWindowSizes;
 class nsSmallVoidArray;
+class nsDOMCaretPosition;
+class nsViewportInfo;
 
 namespace mozilla {
 class ErrorResult;
@@ -84,12 +85,16 @@ class ImageLoader;
 } // namespace css
 
 namespace dom {
+class CDATASection;
 class Comment;
 class DocumentFragment;
 class DocumentType;
 class DOMImplementation;
 class Element;
+class HTMLBodyElement;
 class Link;
+class ProcessingInstruction;
+class UndoManager;
 template<typename> class Sequence;
 } // namespace dom
 } // namespace mozilla
@@ -477,7 +482,7 @@ public:
    * presshell if the presshell should observe document mutations.
    */
   virtual nsresult CreateShell(nsPresContext* aContext,
-                               nsIViewManager* aViewManager,
+                               nsViewManager* aViewManager,
                                nsStyleSet* aStyleSet,
                                nsIPresShell** aInstancePtrResult) = 0;
   virtual void DeleteShell() = 0;
@@ -560,6 +565,10 @@ public:
    */
   Element* GetRootElement() const;
 
+  virtual nsViewportInfo GetViewportInfo(uint32_t aDisplayWidth,
+                                         uint32_t aDisplayHeight) = 0;
+
+
 protected:
   virtual Element *GetRootElementInternal() const = 0;
 
@@ -572,9 +581,7 @@ public:
   Element* GetHtmlChildElement(nsIAtom* aTag);
   // Get the canonical <body> element, or return null if there isn't one (e.g.
   // if the root isn't <html> or if the <body> isn't there)
-  Element* GetBodyElement() {
-    return GetHtmlChildElement(nsGkAtoms::body);
-  }
+  mozilla::dom::HTMLBodyElement* GetBodyElement();
   // Get the canonical <head> element, or return null if there isn't one (e.g.
   // if the root isn't <html> or if the <head> isn't there)
   Element* GetHeadElement() {
@@ -1647,6 +1654,8 @@ public:
    */
   virtual Element* LookupImageElement(const nsAString& aElementId) = 0;
 
+  virtual already_AddRefed<mozilla::dom::UndoManager> GetUndoManager() = 0;
+
   nsresult ScheduleFrameRequestCallback(nsIFrameRequestCallback* aCallback,
                                         int32_t *aHandle);
   void CancelFrameRequestCallback(int32_t aHandle);
@@ -1822,7 +1831,7 @@ public:
                                               mozilla::ErrorResult& rv) const;
   already_AddRefed<mozilla::dom::Comment>
     CreateComment(const nsAString& aData, mozilla::ErrorResult& rv) const;
-  already_AddRefed<nsXMLProcessingInstruction>
+  already_AddRefed<mozilla::dom::ProcessingInstruction>
     CreateProcessingInstruction(const nsAString& target, const nsAString& data,
                                 mozilla::ErrorResult& rv) const;
   already_AddRefed<nsINode>
@@ -1839,7 +1848,7 @@ public:
                      nsIDOMNodeFilter* aFilter, mozilla::ErrorResult& rv) const;
 
   // Deprecated WebIDL bits
-  already_AddRefed<nsIDOMCDATASection>
+  already_AddRefed<mozilla::dom::CDATASection>
     CreateCDATASection(const nsAString& aData, mozilla::ErrorResult& rv);
   already_AddRefed<nsIDOMAttr>
     CreateAttribute(const nsAString& aName, mozilla::ErrorResult& rv);
@@ -1913,6 +1922,19 @@ public:
   virtual nsIDOMDOMStringList* StyleSheetSets() = 0;
   virtual void EnableStyleSheetsForSet(const nsAString& aSheetSet) = 0;
   Element* ElementFromPoint(float aX, float aY);
+
+  /**
+   * Retrieve the location of the caret position (DOM node and character
+   * offset within that node), given a point.
+   *
+   * @param aX Horizontal point at which to determine the caret position, in
+   *           page coordinates.
+   * @param aY Vertical point at which to determine the caret position, in
+   *           page coordinates.
+   */
+  already_AddRefed<nsDOMCaretPosition>
+    CaretPositionFromPoint(float aX, float aY);
+
   // QuerySelector and QuerySelectorAll already defined on nsINode
   nsINodeList* GetAnonymousNodes(Element& aElement);
   Element* GetAnonymousElementByAttribute(Element& aElement,

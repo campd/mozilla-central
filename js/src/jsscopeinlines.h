@@ -1,6 +1,5 @@
-/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 4 -*-
- *
- * This Source Code Form is subject to the terms of the Mozilla Public
+/* -*- Mode: C++; tab-width: 4; indent-tabs-mode: nil; c-basic-offset: 4 -*- */
+/* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
@@ -266,7 +265,7 @@ Shape::matchesParamsAfterId(UnrootedBaseShape base, uint32_t aslot,
 }
 
 inline bool
-Shape::getUserId(JSContext *cx, jsid *idp) const
+Shape::getUserId(JSContext *cx, MutableHandleId idp) const
 {
     AssertCanGC();
     const Shape *self = this;
@@ -280,9 +279,9 @@ Shape::getUserId(JSContext *cx, jsid *idp) const
         int16_t id = self->shortid();
         if (id < 0)
             return ValueToId(cx, Int32Value(id), idp);
-        *idp = INT_TO_JSID(id);
+        idp.set(INT_TO_JSID(id));
     } else {
-        *idp = self->propid();
+        idp.set(self->propid());
     }
     return true;
 }
@@ -299,7 +298,7 @@ Shape::get(JSContext* cx, HandleObject receiver, JSObject* obj, JSObject *pobj, 
 
     Rooted<Shape *> self(cx, this);
     RootedId id(cx);
-    if (!self->getUserId(cx, id.address()))
+    if (!self->getUserId(cx, &id))
         return false;
 
     return CallJSPropertyOp(cx, self->getterOp(), receiver, id, vp);
@@ -320,7 +319,7 @@ Shape::set(JSContext* cx, HandleObject obj, HandleObject receiver, bool strict, 
 
     Rooted<Shape *> self(cx, this);
     RootedId id(cx);
-    if (!self->getUserId(cx, id.address()))
+    if (!self->getUserId(cx, &id))
         return false;
 
     /*
@@ -492,6 +491,38 @@ BaseShape::markChildren(JSTracer *trc)
 
     if (parent)
         MarkObject(trc, &parent, "parent");
+}
+
+/*
+ * Property lookup hooks on objects are required to return a non-NULL shape to
+ * signify that the property has been found. For cases where the property is
+ * not actually represented by a Shape, use a dummy value. This includes all
+ * properties of non-native objects, and dense elements for native objects.
+ * Use separate APIs for these two cases.
+ */
+
+static inline void
+MarkNonNativePropertyFound(MutableHandleShape propp)
+{
+    propp.set(reinterpret_cast<Shape*>(1));
+}
+
+static inline void
+MarkDenseElementFound(MutableHandleShape propp)
+{
+    propp.set(reinterpret_cast<Shape*>(1));
+}
+
+static inline bool
+IsImplicitDenseElement(HandleShape prop)
+{
+    return prop.get() == reinterpret_cast<Shape*>(1);
+}
+
+static inline uint8_t
+GetShapeAttributes(HandleShape shape)
+{
+    return IsImplicitDenseElement(shape) ? JSPROP_ENUMERATE : shape->attributes();
 }
 
 } /* namespace js */

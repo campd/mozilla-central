@@ -101,7 +101,7 @@ RegExpObjectBuilder::clone(Handle<RegExpObject *> other, Handle<RegExpObject *> 
         return build(source, newFlags);
     }
 
-    RegExpGuard g;
+    RegExpGuard g(cx);
     if (!other->getShared(cx, &g))
         return NULL;
 
@@ -645,6 +645,18 @@ RegExpCompartment::RegExpCompartment(JSRuntime *rt)
 RegExpCompartment::~RegExpCompartment()
 {
     JS_ASSERT(map_.empty());
+
+    /*
+     * RegExpStatics may have prevented a single RegExpShared from
+     * being collected during RegExpCompartment::sweep().
+     */
+    if (!inUse_.empty()) {
+        PendingSet::Enum e(inUse_);
+        RegExpShared *shared = e.front();
+        JS_ASSERT(shared->activeUseCount == 0);
+        js_delete(shared);
+        e.removeFront();
+    }
     JS_ASSERT(inUse_.empty());
 }
 

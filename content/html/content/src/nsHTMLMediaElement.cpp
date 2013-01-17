@@ -76,6 +76,7 @@
 #include "nsIPowerManagerService.h"
 #include <cstdlib> // for std::abs(int/long)
 #include <cmath> // for std::abs(float/double)
+#include <algorithm>
 
 #ifdef MOZ_OGG
 #include "OggDecoder.h"
@@ -459,6 +460,7 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_END
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(nsHTMLMediaElement)
   NS_INTERFACE_MAP_ENTRY(nsIObserver)
+  NS_INTERFACE_MAP_ENTRY(nsIAudioChannelAgentCallback)
 NS_INTERFACE_MAP_END_INHERITING(nsGenericHTMLElement)
 
 // nsIDOMHTMLMediaElement
@@ -1311,10 +1313,10 @@ NS_IMETHODIMP nsHTMLMediaElement::SetCurrentTime(double aCurrentTime)
   }
 
   // Clamp the time to [0, duration] as required by the spec.
-  double clampedTime = NS_MAX(0.0, aCurrentTime);
+  double clampedTime = std::max(0.0, aCurrentTime);
   double duration = mDecoder->GetDuration();
   if (duration >= 0) {
-    clampedTime = NS_MIN(clampedTime, duration);
+    clampedTime = std::min(clampedTime, duration);
   }
 
   mPlayingBeforeSeek = IsPotentiallyPlaying();
@@ -2319,8 +2321,8 @@ nsresult nsHTMLMediaElement::FinishDecoderSetup(MediaDecoder* aDecoder,
 
   // The new stream has not been suspended by us.
   mPausedForInactiveDocumentOrChannel = false;
-  mPendingEvents.Clear();
   mEventDeliveryPaused = false;
+  mPendingEvents.Clear();
 
   aDecoder->SetAudioChannelType(mAudioChannelType);
   aDecoder->SetAudioCaptured(mAudioCaptured);
@@ -3112,8 +3114,8 @@ void nsHTMLMediaElement::SuspendOrResumeElement(bool aPauseElement, bool aSuspen
         GetSrcMediaStream()->ChangeExplicitBlockerCount(-1);
       }
       if (mEventDeliveryPaused) {
-        DispatchPendingMediaEvents();
         mEventDeliveryPaused = false;
+        DispatchPendingMediaEvents();
       }
     }
   }
@@ -3569,9 +3571,10 @@ void nsHTMLMediaElement::UpdateAudioChannelPlayingState()
   // The nsHTMLMediaElement is registered to the AudioChannelService only on B2G.
 #ifdef MOZ_B2G
   bool playingThroughTheAudioChannel =
-     (mReadyState >= nsIDOMHTMLMediaElement::HAVE_CURRENT_DATA &&
-      !mPaused &&
-      !IsPlaybackEnded());
+     (!mPaused &&
+      (HasAttr(kNameSpaceID_None, nsGkAtoms::loop) ||
+       (mReadyState >= nsIDOMHTMLMediaElement::HAVE_CURRENT_DATA &&
+        !IsPlaybackEnded())));
   if (playingThroughTheAudioChannel != mPlayingThroughTheAudioChannel) {
     mPlayingThroughTheAudioChannel = playingThroughTheAudioChannel;
 
@@ -3598,6 +3601,8 @@ void nsHTMLMediaElement::UpdateAudioChannelPlayingState()
 /* void canPlayChanged (in boolean canPlay); */
 NS_IMETHODIMP nsHTMLMediaElement::CanPlayChanged(bool canPlay)
 {
+  NS_ENSURE_TRUE(nsContentUtils::IsCallerChrome(), NS_ERROR_NOT_AVAILABLE);
+
   UpdateChannelMuteState(canPlay);
   return NS_OK;
 }

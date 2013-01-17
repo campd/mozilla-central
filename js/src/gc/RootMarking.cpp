@@ -6,6 +6,7 @@
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
 
 #include "mozilla/Attributes.h"
+#include "mozilla/DebugOnly.h"
 #include "mozilla/Util.h"
 
 #include "jsapi.h"
@@ -85,35 +86,6 @@ MarkExactStackRoots(JSTracer *trc)
     }
 }
 #endif /* JSGC_USE_EXACT_ROOTING */
-
-static inline bool
-InFreeList(ArenaHeader *aheader, uintptr_t addr)
-{
-    if (!aheader->hasFreeThings())
-        return false;
-
-    FreeSpan firstSpan(aheader->getFirstFreeSpan());
-
-    for (const FreeSpan *span = &firstSpan;;) {
-        /* If the thing comes fore the current span, it's not free. */
-        if (addr < span->first)
-            return false;
-
-        /*
-         * If we find it inside the span, it's dead. We use here "<=" and not
-         * "<" even for the last span as we know that thing is inside the
-         * arena. Thus for the last span thing < span->end.
-         */
-        if (addr <= span->last)
-            return true;
-
-        /*
-         * The last possible empty span is an the end of the arena. Here
-         * span->end < thing < thingsEnd and so we must have more spans.
-         */
-        span = span->nextSpan();
-    }
-}
 
 enum ConservativeGCTest
 {
@@ -206,7 +178,7 @@ IsAddressableGCThing(JSRuntime *rt, uintptr_t w,
 }
 
 #ifdef JSGC_ROOT_ANALYSIS
-bool
+void *
 js::gc::IsAddressableGCThing(JSRuntime *rt, uintptr_t w)
 {
     void *thing;
@@ -214,7 +186,9 @@ js::gc::IsAddressableGCThing(JSRuntime *rt, uintptr_t w)
     AllocKind thingKind;
     ConservativeGCTest status =
         IsAddressableGCThing(rt, w, false, &thingKind, &aheader, &thing);
-    return status == CGCT_VALID;
+    if (status != CGCT_VALID)
+        return NULL;
+    return thing;
 }
 #endif
 
@@ -239,7 +213,7 @@ MarkIfGCThingWord(JSTracer *trc, uintptr_t w)
      * this point we no longer have the mark bits from the previous GC run and
      * we must account for newly allocated things.
      */
-    if (InFreeList(aheader, uintptr_t(thing)))
+    if (InFreeList(aheader, thing))
         return CGCT_NOTLIVE;
 
     JSGCTraceKind traceKind = MapAllocToTraceKind(thingKind);
@@ -534,7 +508,7 @@ AutoGCRooter::trace(JSTracer *trc)
       case OBJOBJHASHMAP: {
         AutoObjectObjectHashMap::HashMapImpl &map = static_cast<AutoObjectObjectHashMap *>(this)->map;
         for (AutoObjectObjectHashMap::Enum e(map); !e.empty(); e.popFront()) {
-            RawObject key = e.front().key;
+            mozilla::DebugOnly<RawObject> key = e.front().key;
             MarkObjectRoot(trc, (RawObject *) &e.front().key, "AutoObjectObjectHashMap key");
             JS_ASSERT(key == e.front().key);
             MarkObjectRoot(trc, &e.front().value, "AutoObjectObjectHashMap value");
@@ -590,10 +564,8 @@ AutoGCRooter::trace(JSTracer *trc)
       }
 
       case REGEXPSTATICS: {
-          /*
         RegExpStatics::AutoRooter *rooter = static_cast<RegExpStatics::AutoRooter *>(this);
         rooter->trace(trc);
-          */
         return;
       }
 
@@ -674,15 +646,14 @@ Shape::Range::AutoRooter::trace(JSTracer *trc)
 void
 RegExpStatics::AutoRooter::trace(JSTracer *trc)
 {
-    if (statics->regexp)
-        MarkObjectRoot(trc, reinterpret_cast<JSObject**>(&statics->regexp),
-                       "RegExpStatics::AutoRooter regexp");
     if (statics->matchesInput)
         MarkStringRoot(trc, reinterpret_cast<JSString**>(&statics->matchesInput),
                        "RegExpStatics::AutoRooter matchesInput");
     if (statics->pendingInput)
         MarkStringRoot(trc, reinterpret_cast<JSString**>(&statics->pendingInput),
                        "RegExpStatics::AutoRooter pendingInput");
+    if (statics->regexp.initialized())
+        statics->regexp->trace(trc);
 }
 
 void
@@ -759,13 +730,9 @@ js::gc::MarkRuntime(JSTracer *trc, bool useSavedRoots)
         if (IS_GC_MARKING_TRACER(trc) && !c->isCollecting())
             continue;
 
-        if (IS_GC_MARKING_TRACER(trc)) {
-            if ((c->activeAnalysis || c->isPreservingCode())) {
-                gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_MARK_TYPES);
-                c->markTypes(trc);
-            } else {
-                c->gcTypesMarked = false;
-            }
+        if (IS_GC_MARKING_TRACER(trc) && (c->activeAnalysis || c->isPreservingCode())) {
+            gcstats::AutoPhase ap(rt->gcStats, gcstats::PHASE_MARK_TYPES);
+            c->markTypes(trc);
         }
 
         /* During a GC, these are treated as weak pointers. */

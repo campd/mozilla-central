@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=78: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -175,24 +175,6 @@ static bool sNeedsFullCC = false;
 static nsJSContext *sContextList = nullptr;
 
 static nsScriptNameSpaceManager *gNameSpaceManager;
-static nsIMemoryReporter *gReporter;
-
-NS_MEMORY_REPORTER_MALLOC_SIZEOF_FUN(ScriptNameSpaceManagerMallocSizeOf)
-
-static int64_t
-GetScriptNameSpaceManagerSize()
-{
-  MOZ_ASSERT(gNameSpaceManager);
-  return gNameSpaceManager->SizeOfIncludingThis(
-             ScriptNameSpaceManagerMallocSizeOf);
-}
-
-NS_MEMORY_REPORTER_IMPLEMENT(ScriptNameSpaceManager,
-    "explicit/script-namespace-manager",
-    KIND_HEAP,
-    nsIMemoryReporter::UNITS_BYTES,
-    GetScriptNameSpaceManagerSize,
-    "Memory used for the script namespace manager.")
 
 static nsIJSRuntimeService *sRuntimeService;
 JSRuntime *nsJSRuntime::sRuntime;
@@ -1135,6 +1117,7 @@ nsJSContext::nsJSContext(JSRuntime *aRuntime, bool aGCOnDestruction,
   mOperationCallbackTime = 0;
   mModalStateTime = 0;
   mModalStateDepth = 0;
+  mProcessingScriptTag = false;
 }
 
 nsJSContext::~nsJSContext()
@@ -1206,6 +1189,10 @@ NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsJSContext)
                "Trying to unlink a context with outstanding requests.");
   tmp->mIsInitialized = false;
   tmp->mGCOnDestruction = false;
+  if (tmp->mContext) {
+    JSAutoRequest ar(tmp->mContext);
+    JS_SetGlobalObject(tmp->mContext, nullptr);
+  }
   tmp->DestroyJSContext();
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mGlobalObjectRef)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_END
@@ -1858,6 +1845,107 @@ nsJSContext::CompileFunction(JSObject* aTarget,
 
   *aFunctionObject = JS_GetFunctionObject(fun);
   return NS_OK;
+}
+
+nsresult
+nsJSContext::CallEventHandler(nsISupports* aTarget, JSObject* aScope,
+                              JSObject* aHandler, nsIArray* aargv,
+                              nsIVariant** arv)
+{
+  NS_ENSURE_TRUE(mIsInitialized, NS_ERROR_NOT_INITIALIZED);
+
+  if (!mScriptsEnabled) {
+    return NS_OK;
+  }
+
+  SAMPLE_LABEL("JS", "CallEventHandler");
+
+  nsAutoMicroTask mt;
+  xpc_UnmarkGrayObject(aScope);
+  xpc_UnmarkGrayObject(aHandler);
+
+  XPCAutoRequest ar(mContext);
+  JSObject* target = nullptr;
+  nsresult rv = JSObjectFromInterface(aTarget, aScope, &target);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  JS::AutoObjectRooter targetVal(mContext, target);
+  jsval rval = JSVAL_VOID;
+
+  // This one's a lot easier than EvaluateString because we don't have to
+  // hassle with principals: they're already compiled into the JS function.
+  // xxxmarkh - this comment is no longer true - principals are not used at
+  // all now, and never were in some cases.
+
+  nsCxPusher pusher;
+  if (!pusher.Push(mContext, true))
+    return NS_ERROR_FAILURE;
+
+  // check if the event handler can be run on the object in question
+  rv = sSecurityManager->CheckFunctionAccess(mContext, aHandler, target);
+
+  nsJSContext::TerminationFuncHolder holder(this);
+
+  if (NS_SUCCEEDED(rv)) {
+    // Convert args to jsvals.
+    uint32_t argc = 0;
+    jsval *argv = nullptr;
+
+    JSObject *funobj = aHandler;
+    jsval funval = OBJECT_TO_JSVAL(funobj);
+    JSAutoCompartment ac(mContext, funobj);
+    if (!JS_WrapObject(mContext, &target)) {
+      ReportPendingException();
+      return NS_ERROR_FAILURE;
+    }
+
+    Maybe<nsRootedJSValueArray> tempStorage;
+
+    // Use |target| as the scope for wrapping the arguments, since aScope is
+    // the safe scope in many cases, which isn't very useful.  Wrapping aTarget
+    // was OK because those typically have PreCreate methods that give them the
+    // right scope anyway, and we want to make sure that the arguments end up
+    // in the same scope as aTarget.
+    rv = ConvertSupportsTojsvals(aargv, target, &argc, &argv, tempStorage);
+    NS_ENSURE_SUCCESS(rv, rv);
+    for (uint32_t i = 0; i < argc; i++) {
+      if (!JSVAL_IS_PRIMITIVE(argv[i])) {
+        xpc_UnmarkGrayObject(JSVAL_TO_OBJECT(argv[i]));
+      }
+    }
+
+    ++mExecuteDepth;
+    bool ok = ::JS_CallFunctionValue(mContext, target,
+                                       funval, argc, argv, &rval);
+    --mExecuteDepth;
+
+    if (!ok) {
+      // Don't pass back results from failed calls.
+      rval = JSVAL_VOID;
+
+      // Tell the caller that the handler threw an error.
+      rv = NS_ERROR_FAILURE;
+    } else if (rval == JSVAL_NULL) {
+      *arv = nullptr;
+    } else if (!JS_WrapValue(mContext, &rval)) {
+      rv = NS_ERROR_FAILURE;
+    } else {
+      rv = nsContentUtils::XPConnect()->JSToVariant(mContext, rval, arv);
+    }
+
+    // Tell XPConnect about any pending exceptions. This is needed
+    // to avoid dropping JS exceptions in case we got here through
+    // nested calls through XPConnect.
+    if (NS_FAILED(rv))
+      ReportPendingException();
+  }
+
+  pusher.Pop();
+
+  // ScriptEvaluated needs to come after we pop the stack
+  ScriptEvaluated(true);
+
+  return rv;
 }
 
 nsresult
@@ -2533,7 +2621,7 @@ namespace dmd {
 // how to use DMD.
 
 static JSBool
-MaybeReportAndDump(JSContext *cx, unsigned argc, jsval *vp, bool report)
+ReportAndDump(JSContext *cx, unsigned argc, jsval *vp)
 {
   JSString *str = JS_ValueToString(cx, argc ? JS_ARGV(cx, vp)[0] : JSVAL_VOID);
   if (!str)
@@ -2549,10 +2637,9 @@ MaybeReportAndDump(JSContext *cx, unsigned argc, jsval *vp, bool report)
     return JS_FALSE;
   }
 
-  if (report) {
-    fprintf(stderr, "DMD: running reporters...\n");
-    dmd::RunReporters();
-  }
+  dmd::ClearReports();
+  fprintf(stderr, "DMD: running reporters...\n");
+  dmd::RunReporters();
   dmd::Writer writer(FpWrite, fp);
   dmd::Dump(writer);
 
@@ -2562,25 +2649,11 @@ MaybeReportAndDump(JSContext *cx, unsigned argc, jsval *vp, bool report)
   return JS_TRUE;
 }
 
-static JSBool
-ReportAndDump(JSContext *cx, unsigned argc, jsval *vp)
-{
-  return MaybeReportAndDump(cx, argc, vp, /* report = */ true);
-}
-
-static JSBool
-Dump(JSContext *cx, unsigned argc, jsval *vp)
-{
-  return MaybeReportAndDump(cx, argc, vp, /* report = */ false);
-}
-
-
 } // namespace dmd
 } // namespace mozilla
 
 static JSFunctionSpec DMDFunctions[] = {
     JS_FS("DMDReportAndDump", dmd::ReportAndDump, 1, 0),
-    JS_FS("DMDDump",          dmd::Dump,          1, 0),
     JS_FS_END
 };
 
@@ -2796,6 +2869,18 @@ nsJSContext::SetScriptsEnabled(bool aEnabled, bool aFireTimeouts)
   }
 }
 
+
+bool
+nsJSContext::GetProcessingScriptTag()
+{
+  return mProcessingScriptTag;
+}
+
+void
+nsJSContext::SetProcessingScriptTag(bool aFlag)
+{
+  mProcessingScriptTag = aFlag;
+}
 
 bool
 nsJSContext::GetExecutingScript()
@@ -3218,6 +3303,12 @@ CCTimerFired(nsITimer *aTimer, void *aClosure)
 
     PRTime now = PR_Now();
     if (sCCLockedOutTime == 0) {
+      // Reset sCCTimerFireCount so that we run forgetSkippable
+      // often enough before CC. Because of reduced ccDelay
+      // forgetSkippable will be called just a few times.
+      // NS_MAX_CC_LOCKEDOUT_TIME limit guarantees that we end up calling
+      // forgetSkippable and CycleCollectNow eventually.
+      sCCTimerFireCount = 0;
       sCCLockedOutTime = now;
       return;
     }
@@ -3633,7 +3724,6 @@ nsJSRuntime::Startup()
   sDisableExplicitCompartmentGC = false;
   sNeedsFullCC = false;
   gNameSpaceManager = nullptr;
-  gReporter = nullptr;
   sRuntimeService = nullptr;
   sRuntime = nullptr;
   sIsInitialized = false;
@@ -3976,9 +4066,6 @@ nsJSRuntime::GetNameSpaceManager()
 
     nsresult rv = gNameSpaceManager->Init();
     NS_ENSURE_SUCCESS(rv, nullptr);
-
-    gReporter = new NS_MEMORY_REPORTER_NAME(ScriptNameSpaceManager);
-    NS_RegisterMemoryReporter(gReporter);
   }
 
   return gNameSpaceManager;
@@ -3995,10 +4082,6 @@ nsJSRuntime::Shutdown()
   nsJSContext::KillInterSliceGCTimer();
 
   NS_IF_RELEASE(gNameSpaceManager);
-  if (gReporter) {
-    (void)::NS_UnregisterMemoryReporter(gReporter);
-    gReporter = nullptr;
-  }
 
   if (!sContextCount) {
     // We're being shutdown, and there are no more contexts

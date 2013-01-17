@@ -23,10 +23,10 @@ include DOMTypes;
 include URIParams;
 
 include "mozilla/chrome/RegistryMessageUtils.h";
+include "mozilla/dom/PermissionMessageUtils.h";
 include "mozilla/dom/TabMessageUtils.h";
 include "mozilla/layout/RenderFrameUtils.h";
 include "mozilla/net/NeckoMessageUtils.h";
-
 include "nsGeoPositionIPCSerialiser.h";
 
 using GeoPosition;
@@ -36,6 +36,7 @@ using ChromePackage;
 using ResourceMapping;
 using OverrideMapping;
 using IPC::Permission;
+using IPC::Principal;
 using mozilla::null_t;
 using mozilla::void_t;
 using mozilla::dom::AudioChannelType;
@@ -114,27 +115,6 @@ union DeviceStorageParams
   DeviceStorageDeleteParams;
   DeviceStorageEnumerationParams;
   DeviceStorageStatParams;
-};
-
-struct SlicedBlobConstructorParams
-{
-  PBlob source;
-  uint64_t begin;
-  uint64_t end;
-  nsString contentType;
-};
-
-struct MysteryBlobConstructorParams
-{
-  // Nothing is known about this type of blob.
-};
-
-union BlobConstructorParams
-{
-  NormalBlobConstructorParams;
-  FileBlobConstructorParams;
-  SlicedBlobConstructorParams;
-  MysteryBlobConstructorParams;
 };
 
 // An IPCTabContext which corresponds to a PBrowser opened by a child when it
@@ -326,7 +306,8 @@ child:
 
     FilePathUpdate(nsString type, nsString filepath, nsCString reasons);
 
-    FileSystemUpdate(nsString fsName, nsString mountPoint, int32_t fsState);
+    FileSystemUpdate(nsString fsName, nsString mountPoint, int32_t fsState,
+                     int32_t mountGeneration);
 
 parent:
     /**
@@ -395,7 +376,7 @@ parent:
                        nsCString aContentDisposition, bool aForceSave,
                        int64_t aContentLength, OptionalURIParams aReferrer);
 
-    AddGeolocationListener();
+    AddGeolocationListener(Principal principal);
     RemoveGeolocationListener();
     SetGeolocationHigherAccuracy(bool enable);
 
@@ -432,11 +413,21 @@ parent:
     async FirstIdle();
 
     // Get Muted from the main AudioChannelService.
-    sync AudioChannelGetMuted(AudioChannelType aType, bool aMozHidden)
+    sync AudioChannelGetMuted(AudioChannelType aType, bool aElementHidden,
+                              bool aElementWasHidden)
         returns (bool value);
 
-    async AudioChannelRegisterType(AudioChannelType aType);
-    async AudioChannelUnregisterType(AudioChannelType aType);
+    sync AudioChannelRegisterType(AudioChannelType aType);
+    sync AudioChannelUnregisterType(AudioChannelType aType,
+                                    bool aElementHidden);
+
+    async AudioChannelChangedNotification();
+
+    async FilePathUpdateNotify(nsString aType,
+                               nsString aFilepath,
+                               nsCString aReason);
+    // get nsIVolumeService to broadcast volume information
+    async BroadcastVolume(nsString volumeName);
 
 both:
      AsyncMessage(nsString aMessage, ClonedMessageData aData);

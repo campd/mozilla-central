@@ -9,16 +9,16 @@
 
 #include "nsIHttpChannel.h"
 #include "nsSimpleURI.h"
+#include "nsMimeTypes.h"
 
 #include "RasterImage.h"
 #include "VectorImage.h"
 
 #include "ImageFactory.h"
+#include <algorithm>
 
 namespace mozilla {
 namespace image {
-
-const char* SVG_MIMETYPE = "image/svg+xml";
 
 // Global preferences related to image containers.
 static bool gInitializedPrefCaches = false;
@@ -89,7 +89,7 @@ ImageFactory::CreateImage(nsIRequest* aRequest,
   uint32_t imageFlags = ComputeImageFlags(aURI, aIsMultiPart);
 
   // Select the type of image to create based on MIME type.
-  if (aMimeType.Equals(SVG_MIMETYPE)) {
+  if (aMimeType.EqualsLiteral(IMAGE_SVG_XML)) {
     return CreateVectorImage(aRequest, aStatusTracker, aMimeType,
                              aURI, imageFlags, aInnerWindowId);
   } else {
@@ -154,7 +154,7 @@ ImageFactory::CreateRasterImage(nsIRequest* aRequest,
       // its source buffer
       if (len > 0) {
         uint32_t sizeHint = (uint32_t) len;
-        sizeHint = NS_MIN<uint32_t>(sizeHint, 20000000); // Bound by something reasonable
+        sizeHint = std::min<uint32_t>(sizeHint, 20000000); // Bound by something reasonable
         rv = newImage->SetSourceSizeHint(sizeHint);
         if (NS_FAILED(rv)) {
           // Flush memory, try to get some back, and try again

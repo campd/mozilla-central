@@ -35,6 +35,7 @@
 #include "mozilla/gfx/Scale.h"
 
 #include "sampler.h"
+#include <algorithm>
 
 using namespace mozilla;
 using namespace mozilla::image;
@@ -150,8 +151,9 @@ DiscardingEnabled()
   return enabled;
 }
 
-struct ScaleRequest
+class ScaleRequest
 {
+public:
   ScaleRequest(RasterImage* aImage, const gfxSize& aScale, imgFrame* aSrcFrame)
     : scale(aScale)
     , dstLocked(false)
@@ -364,7 +366,16 @@ RasterImage::RasterImage(imgStatusTracker* aStatusTracker,
   mLoopCount(-1),
   mLockCount(0),
   mDecoder(nullptr),
+// We know DecodeRequest won't touch members of RasterImage
+// until this constructor completes
+#ifdef _MSC_VER
+#pragma warning(push)
+#pragma warning(disable : 4355)
+#endif
   mDecodeRequest(this),
+#ifdef _MSC_VER
+#pragma warning(pop)
+#endif
   mBytesDecoded(0),
   mDecodeCount(0),
 #ifdef DEBUG
@@ -842,10 +853,12 @@ RasterImage::GetCurrentImgFrameEndTime() const
     // doesn't work correctly if we have a negative timeout value. The reason
     // this positive infinity was chosen was because it works with the loop in
     // RequestRefresh() above.
-    return TimeStamp() + TimeDuration::FromMilliseconds(UINT64_MAX);
+    return TimeStamp() +
+           TimeDuration::FromMilliseconds(static_cast<double>(UINT64_MAX));
   }
 
-  TimeDuration durationOfTimeout = TimeDuration::FromMilliseconds(timeout);
+  TimeDuration durationOfTimeout =
+    TimeDuration::FromMilliseconds(static_cast<double>(timeout));
   TimeStamp currentFrameEndTime = currentFrameTime + durationOfTimeout;
 
   return currentFrameEndTime;
@@ -1475,7 +1488,7 @@ RasterImage::SetFrameDisposalMethod(uint32_t aFrameNum,
   if (aFrameNum >= mFrames.Length())
     return NS_ERROR_INVALID_ARG;
 
-  imgFrame *frame = GetImgFrame(aFrameNum);
+  imgFrame *frame = GetImgFrameNoDecode(aFrameNum);
   NS_ABORT_IF_FALSE(frame,
                     "Calling SetFrameDisposalMethod on frame that doesn't exist!");
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
@@ -1495,7 +1508,7 @@ RasterImage::SetFrameTimeout(uint32_t aFrameNum, int32_t aTimeout)
   if (aFrameNum >= mFrames.Length())
     return NS_ERROR_INVALID_ARG;
 
-  imgFrame *frame = GetImgFrame(aFrameNum);
+  imgFrame *frame = GetImgFrameNoDecode(aFrameNum);
   NS_ABORT_IF_FALSE(frame, "Calling SetFrameTimeout on frame that doesn't exist!");
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
@@ -1514,7 +1527,7 @@ RasterImage::SetFrameBlendMethod(uint32_t aFrameNum, int32_t aBlendMethod)
   if (aFrameNum >= mFrames.Length())
     return NS_ERROR_INVALID_ARG;
 
-  imgFrame *frame = GetImgFrame(aFrameNum);
+  imgFrame *frame = GetImgFrameNoDecode(aFrameNum);
   NS_ABORT_IF_FALSE(frame, "Calling SetFrameBlendMethod on frame that doesn't exist!");
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
@@ -1533,7 +1546,7 @@ RasterImage::SetFrameHasNoAlpha(uint32_t aFrameNum)
   if (aFrameNum >= mFrames.Length())
     return NS_ERROR_INVALID_ARG;
 
-  imgFrame *frame = GetImgFrame(aFrameNum);
+  imgFrame *frame = GetImgFrameNoDecode(aFrameNum);
   NS_ABORT_IF_FALSE(frame, "Calling SetFrameHasNoAlpha on frame that doesn't exist!");
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
@@ -1552,7 +1565,7 @@ RasterImage::SetFrameAsNonPremult(uint32_t aFrameNum, bool aIsNonPremult)
   if (aFrameNum >= mFrames.Length())
     return NS_ERROR_INVALID_ARG;
 
-  imgFrame* frame = GetImgFrame(aFrameNum);
+  imgFrame* frame = GetImgFrameNoDecode(aFrameNum);
   NS_ABORT_IF_FALSE(frame, "Calling SetFrameAsNonPremult on frame that doesn't exist!");
   NS_ENSURE_TRUE(frame, NS_ERROR_FAILURE);
 
@@ -2309,8 +2322,8 @@ RasterImage::DrawFrameTo(imgFrame *aSrc,
 
   if (aSrc->GetIsPaletted()) {
     // Larger than the destination frame, clip it
-    int32_t width = NS_MIN(aSrcRect.width, dstRect.width - aSrcRect.x);
-    int32_t height = NS_MIN(aSrcRect.height, dstRect.height - aSrcRect.y);
+    int32_t width = std::min(aSrcRect.width, dstRect.width - aSrcRect.x);
+    int32_t height = std::min(aSrcRect.height, dstRect.height - aSrcRect.y);
 
     // The clipped image must now fully fit within destination image frame
     NS_ASSERTION((aSrcRect.x >= 0) && (aSrcRect.y >= 0) &&
@@ -2604,7 +2617,7 @@ nsresult
 RasterImage::ShutdownDecoder(eShutdownIntent aIntent)
 {
   // Ensure that our intent is valid
-  NS_ABORT_IF_FALSE((aIntent >= 0) || (aIntent < eShutdownIntent_AllCount),
+  NS_ABORT_IF_FALSE((aIntent >= 0) && (aIntent < eShutdownIntent_AllCount),
                     "Invalid shutdown intent");
 
   // Ensure that the decoder is initialized
@@ -3183,7 +3196,7 @@ RasterImage::DecodeSomeData(uint32_t aMaxBytes)
 
 
   // write the proper amount of data
-  uint32_t bytesToDecode = NS_MIN(aMaxBytes,
+  uint32_t bytesToDecode = std::min(aMaxBytes,
                                   mSourceData.Length() - mBytesDecoded);
   nsresult rv = WriteToDecoder(mSourceData.Elements() + mBytesDecoded,
                                bytesToDecode);

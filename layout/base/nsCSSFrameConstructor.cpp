@@ -36,7 +36,7 @@
 #include "nsIPresShell.h"
 #include "nsUnicharUtils.h"
 #include "nsStyleSet.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsEventStates.h"
 #include "nsStyleConsts.h"
 #include "nsTableOuterFrame.h"
@@ -93,6 +93,7 @@
 #include "nsStyleStructInlines.h"
 #include "nsAnimationManager.h"
 #include "nsTransitionManager.h"
+#include <algorithm>
 
 #ifdef MOZ_XUL
 #include "nsIRootBox.h"
@@ -683,15 +684,18 @@ public:
   ~nsFrameConstructorSaveState();
 
 private:
-  nsAbsoluteItems* mItems;                // pointer to struct whose data we save/restore
-  bool*    mFixedPosIsAbsPos;
-
-  nsAbsoluteItems  mSavedItems;           // copy of original data
-  bool             mSavedFixedPosIsAbsPos;
+  nsAbsoluteItems* mItems;      // pointer to struct whose data we save/restore
+  nsAbsoluteItems  mSavedItems; // copy of original data
 
   // The name of the child list in which our frames would belong
   ChildListID mChildListID;
   nsFrameConstructorState* mState;
+
+  // State used only when we're saving the abs-pos state for a transformed
+  // element.
+  nsAbsoluteItems mSavedFixedItems;
+
+  bool mSavedFixedPosIsAbsPos;
 
   friend class nsFrameConstructorState;
 };
@@ -781,6 +785,8 @@ public:
   // Function to push the existing absolute containing block state and
   // create a new scope. Code that uses this function should get matching
   // logic in GetAbsoluteContainingBlock.
+  // Also makes aNewAbsoluteContainingBlock the containing block for
+  // fixed-pos elements if necessary.
   void PushAbsoluteContainingBlock(nsIFrame* aNewAbsoluteContainingBlock,
                                    nsFrameConstructorSaveState& aSaveState);
 
@@ -1027,10 +1033,14 @@ nsFrameConstructorState::PushAbsoluteContainingBlock(nsIFrame* aNewAbsoluteConta
   aSaveState.mSavedItems = mAbsoluteItems;
   aSaveState.mChildListID = nsIFrame::kAbsoluteList;
   aSaveState.mState = this;
-
-  /* Store whether we're wiring the abs-pos and fixed-pos lists together. */
-  aSaveState.mFixedPosIsAbsPos = &mFixedPosIsAbsPos;
   aSaveState.mSavedFixedPosIsAbsPos = mFixedPosIsAbsPos;
+
+  if (mFixedPosIsAbsPos) {
+    // Since we're going to replace mAbsoluteItems, we need to save it into
+    // mFixedItems now (and save the current value of mFixedItems).
+    aSaveState.mSavedFixedItems = mFixedItems;
+    mFixedItems = mAbsoluteItems;
+  }
 
   mAbsoluteItems = 
     nsAbsoluteItems(AdjustAbsoluteContainingBlock(aNewAbsoluteContainingBlock));
@@ -1235,7 +1245,13 @@ nsFrameConstructorState::ProcessFrameInsertions(nsAbsoluteItems& aFrameItems,
 
   NS_ASSERTION(containingBlock,
                "Child list without containing block?");
-  
+
+  if (aChildListID == nsIFrame::kFixedList &&
+      containingBlock->GetStyleDisplay()->HasTransform(containingBlock)) {
+    // Put this frame on the transformed-frame's abs-pos list instead.
+    aChildListID = nsIFrame::kAbsoluteList;
+  }
+
   // Insert the frames hanging out in aItems.  We can use SetInitialChildList()
   // if the containing block hasn't been reflowed yet (so NS_FRAME_FIRST_REFLOW
   // is set) and doesn't have any frames in the aChildListID child list yet.
@@ -1299,11 +1315,11 @@ nsFrameConstructorState::ProcessFrameInsertions(nsAbsoluteItems& aFrameItems,
 
 nsFrameConstructorSaveState::nsFrameConstructorSaveState()
   : mItems(nullptr),
-    mFixedPosIsAbsPos(nullptr),
     mSavedItems(nullptr),
-    mSavedFixedPosIsAbsPos(false),
     mChildListID(kPrincipalList),
-    mState(nullptr)
+    mState(nullptr),
+    mSavedFixedItems(nullptr),
+    mSavedFixedPosIsAbsPos(false)
 {
 }
 
@@ -1319,9 +1335,20 @@ nsFrameConstructorSaveState::~nsFrameConstructorSaveState()
     // Note that this only matters for the assert in ~nsAbsoluteItems.
     mSavedItems.Clear();
 #endif
-  }
-  if (mFixedPosIsAbsPos) {
-    *mFixedPosIsAbsPos = mSavedFixedPosIsAbsPos;
+    if (mItems == &mState->mAbsoluteItems) {
+      mState->mFixedPosIsAbsPos = mSavedFixedPosIsAbsPos;
+      if (mSavedFixedPosIsAbsPos) {
+        // mAbsoluteItems was moved to mFixedItems, so move mFixedItems back
+        // and repair the old mFixedItems now.
+        mState->mAbsoluteItems = mState->mFixedItems;
+        mState->mFixedItems = mSavedFixedItems;
+#ifdef DEBUG
+        mSavedFixedItems.Clear();
+#endif
+      }
+    }
+    NS_ASSERTION(!mItems->LastChild() || !mItems->LastChild()->GetNextSibling(),
+                 "Something corrupted our list");
   }
 }
 
@@ -2294,7 +2321,7 @@ nsCSSFrameConstructor::ConstructDocElementFrame(Element*                 aDocEle
                                 nullptr, aFrameState);
   // Initialize the ancestor filter with null for now; we'll push
   // aDocElement once we finish resolving style for it.
-  state.mTreeMatchContext.mAncestorFilter.Init(nullptr);
+  state.mTreeMatchContext.InitAncestors(nullptr);
 
   // XXXbz why, exactly?
   if (!mTempFrameTreeState)
@@ -2361,8 +2388,8 @@ nsCSSFrameConstructor::ConstructDocElementFrame(Element*                 aDocEle
     return NS_OK;
   }
 
-  AncestorFilter::AutoAncestorPusher
-    ancestorPusher(true, state.mTreeMatchContext.mAncestorFilter, aDocElement);
+  TreeMatchContext::AutoAncestorPusher
+    ancestorPusher(true, state.mTreeMatchContext, aDocElement);
 
   // Make sure to start any background image loads for the root element now.
   styleContext->StartBackgroundImageLoads();
@@ -3149,7 +3176,7 @@ nsCSSFrameConstructor::ConstructFieldSetFrame(nsFrameConstructorState& aState,
 
   newFrame->AddStateBits(NS_FRAME_MAY_HAVE_GENERATED_CONTENT);
 
-  // our new frame returned is the top frame which is the list frame. 
+  // Our new frame returned is the outer frame, which is the fieldset frame.
   *aNewFrame = newFrame; 
 
   return NS_OK;
@@ -3434,6 +3461,8 @@ nsCSSFrameConstructor::FindInputData(Element* aElement,
     SIMPLE_INT_CREATE(NS_FORM_INPUT_NUMBER, NS_NewTextControlFrame),
     // TODO: this is temporary until a frame is written: bug 773205.
     SIMPLE_INT_CREATE(NS_FORM_INPUT_DATE, NS_NewTextControlFrame),
+    // TODO: this is temporary until a frame is written: bug 773205
+    SIMPLE_INT_CREATE(NS_FORM_INPUT_TIME, NS_NewTextControlFrame),
     { NS_FORM_INPUT_SUBMIT,
       FCDATA_WITH_WRAPPING_BLOCK(0, NS_NewGfxButtonControlFrame,
                                  nsCSSAnonBoxes::buttonContent) },
@@ -3571,9 +3600,9 @@ nsCSSFrameConstructor::ConstructFrameFromItemInternal(FrameConstructionItem& aIt
   // frames constructed), this is the best place to bottleneck the
   // pushing of the content instead of having to do it in multiple
   // places.
-  AncestorFilter::AutoAncestorPusher
+  TreeMatchContext::AutoAncestorPusher
     ancestorPusher(aState.mTreeMatchContext.mAncestorFilter.HasFilter(),
-                   aState.mTreeMatchContext.mAncestorFilter,
+                   aState.mTreeMatchContext,
                    content->IsElement() ? content->AsElement() : nullptr);
 
   nsIFrame* newFrame;
@@ -3807,9 +3836,9 @@ nsCSSFrameConstructor::CreateAnonymousFrames(nsFrameConstructorState& aState,
 
   nsFrameConstructorState::PendingBindingAutoPusher pusher(aState,
                                                            aPendingBinding);
-  AncestorFilter::AutoAncestorPusher
+  TreeMatchContext::AutoAncestorPusher
     ancestorPusher(aState.mTreeMatchContext.mAncestorFilter.HasFilter(),
-                   aState.mTreeMatchContext.mAncestorFilter,
+                   aState.mTreeMatchContext,
                    aParent->AsElement());
 
   nsIAnonymousContentCreator* creator = do_QueryFrame(aParentFrame);
@@ -5612,6 +5641,21 @@ nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame)
 }
 
 nsIFrame*
+nsCSSFrameConstructor::GetFixedContainingBlock(nsIFrame* aFrame)
+{
+  NS_PRECONDITION(nullptr != mRootElementFrame, "no root element frame");
+
+  // Starting with aFrame, look for a frame that is CSS-transformed
+  for (nsIFrame* frame = aFrame; frame; frame = frame->GetParent()) {
+    if (frame->GetStyleDisplay()->HasTransform(frame)) {
+      return frame;
+    }
+  }
+
+  return mFixedContainingBlock;
+}
+
+nsIFrame*
 nsCSSFrameConstructor::GetFloatContainingBlock(nsIFrame* aFrame)
 {
   // Starting with aFrame, look for a frame that is a float containing block.
@@ -6605,10 +6649,10 @@ nsCSSFrameConstructor::ContentAppended(nsIContent*     aContainer,
                                         &parentAfterFrame);
   
   // Create some new frames
-  nsFrameConstructorState state(mPresShell, mFixedContainingBlock,
+  nsFrameConstructorState state(mPresShell, GetFixedContainingBlock(parentFrame),
                                 GetAbsoluteContainingBlock(parentFrame),
                                 GetFloatContainingBlock(parentFrame));
-  state.mTreeMatchContext.mAncestorFilter.Init(aContainer->AsElement());
+  state.mTreeMatchContext.InitAncestors(aContainer->AsElement());
 
   // See if the containing block has :first-letter style applied.
   bool haveFirstLetterStyle = false, haveFirstLineStyle = false;
@@ -7040,13 +7084,13 @@ nsCSSFrameConstructor::ContentRangeInserted(nsIContent*            aContainer,
     return rv;
   }
 
-  nsFrameConstructorState state(mPresShell, mFixedContainingBlock,
+  nsFrameConstructorState state(mPresShell, GetFixedContainingBlock(parentFrame),
                                 GetAbsoluteContainingBlock(parentFrame),
                                 GetFloatContainingBlock(parentFrame),
                                 aFrameState);
-  state.mTreeMatchContext.mAncestorFilter.Init(aContainer ?
-                                                 aContainer->AsElement() :
-                                                 nullptr);
+  state.mTreeMatchContext.InitAncestors(aContainer ?
+                                          aContainer->AsElement() :
+                                          nullptr);
 
   // Recover state for the containing block - we need to know if
   // it has :first-letter or :first-line style applied to it. The
@@ -8164,6 +8208,9 @@ nsCSSFrameConstructor::ProcessRestyledFrames(nsStyleChangeList& aChangeList,
       // the style resolution we will do for the frame construction
       // happens async when we're not in an animation restyle already,
       // problems could arise.
+      if (content->GetPrimaryFrame()) {
+        aTracker.RemoveFrameAndDescendants(content->GetPrimaryFrame());
+      }
       RecreateFramesForContent(content, false);
     } else {
       NS_ASSERTION(frame, "This shouldn't happen");
@@ -9532,7 +9579,15 @@ nsCSSFrameConstructor::CreateNeededAnonFlexItems(
     // there's anything wrappable immediately after it. If not, we just drop
     // the whitespace and move on. (We're not supposed to create any anonymous
     // flex items that _only_ contain whitespace).
-    if (iter.item().IsWhitespace(aState)) {
+    // (BUT if this is generated content, then we don't give whitespace nodes
+    // any special treatment, because they're probably not really whitespace --
+    // they're just temporarily empty, waiting for their generated text.)
+    // XXXdholbert If this node's generated text will *actually end up being
+    // entirely whitespace*, then we technically should still skip over it, per
+    // the flexbox spec. I'm not bothering with that at this point, since it's
+    // a pretty extreme edge case.
+    if (!aParentFrame->IsGeneratedContentFrame() &&
+        iter.item().IsWhitespace(aState)) {
       FCItemIterator afterWhitespaceIter(iter);
       bool hitEnd = afterWhitespaceIter.SkipWhitespace(aState);
       bool nextChildNeedsAnonFlexItem =
@@ -11273,9 +11328,9 @@ nsCSSFrameConstructor::BuildInlineChildItems(nsFrameConstructorState& aState,
   nsStyleContext* const parentStyleContext = aParentItem.mStyleContext;
   nsIContent* const parentContent = aParentItem.mContent;
 
-  AncestorFilter::AutoAncestorPusher
+  TreeMatchContext::AutoAncestorPusher
     ancestorPusher(aState.mTreeMatchContext.mAncestorFilter.HasFilter(),
-                   aState.mTreeMatchContext.mAncestorFilter,
+                   aState.mTreeMatchContext,
                    parentContent->AsElement());
   
   CreateGeneratedContentItem(aState, nullptr, parentContent, parentStyleContext,
@@ -12015,7 +12070,7 @@ nsCSSFrameConstructor::RebuildAllStyleData(nsChangeHint aExtraHint)
     return;
 
   // Make sure that the viewmanager will outlive the presshell
-  nsCOMPtr<nsIViewManager> vm = mPresShell->GetViewManager();
+  nsRefPtr<nsViewManager> vm = mPresShell->GetViewManager();
 
   // Processing the style changes could cause a flush that propagates to
   // the parent frame and thus destroys the pres shell.
@@ -12516,8 +12571,8 @@ nsCSSFrameConstructor::RecomputePosition(nsIFrame* aFrame)
     NS_WARN_IF_FALSE(parentSize.width != NS_INTRINSICSIZE &&
                      parentSize.height != NS_INTRINSICSIZE,
                      "parentSize should be valid");
-    parentReflowState.SetComputedWidth(NS_MAX(parentSize.width, 0));
-    parentReflowState.SetComputedHeight(NS_MAX(parentSize.height, 0));
+    parentReflowState.SetComputedWidth(std::max(parentSize.width, 0));
+    parentReflowState.SetComputedHeight(std::max(parentSize.height, 0));
     parentReflowState.mComputedMargin.SizeTo(0, 0, 0, 0);
     parentSize.height = NS_AUTOHEIGHT;
 

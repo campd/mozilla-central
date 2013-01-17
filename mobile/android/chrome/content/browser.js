@@ -73,6 +73,11 @@ XPCOMUtils.defineLazyServiceGetter(this, "DOMUtils",
 XPCOMUtils.defineLazyServiceGetter(window, "URIFixup",
   "@mozilla.org/docshell/urifixup;1", "nsIURIFixup");
 
+#ifdef MOZ_WEBRTC
+XPCOMUtils.defineLazyServiceGetter(this, "MediaManagerService",
+  "@mozilla.org/mediaManagerService;1", "nsIMediaManagerService");
+#endif
+
 const kStateActive = 0x00000001; // :active pseudoclass for elements
 
 const kXLinkNamespace = "http://www.w3.org/1999/xlink";
@@ -247,6 +252,9 @@ var BrowserApp = {
 #ifdef ACCESSIBILITY
     AccessFu.attach(window);
 #endif
+#ifdef MOZ_WEBRTC
+    WebrtcUI.init();
+#endif
 
     // Init LoginManager
     Cc["@mozilla.org/login-manager;1"].getService(Ci.nsILoginManager);
@@ -328,7 +336,7 @@ var BrowserApp = {
         NativeWindow.toast.show(label, "short");
       });
 
-    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.openInNewPrivateTab"),
+    NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.openInPrivateTab"),
       NativeWindow.contextmenus.linkOpenableContext,
       function(aTarget) {
         let url = NativeWindow.contextmenus._getLinkURL(aTarget);
@@ -467,21 +475,9 @@ var BrowserApp = {
     NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.saveImage"),
       NativeWindow.contextmenus.imageSaveableContext,
       function(aTarget) {
-        let doc = aTarget.ownerDocument;
-        let imageCache = Cc["@mozilla.org/image/tools;1"].getService(Ci.imgITools)
-                                                         .getImgCacheForDocument(doc);
-        let props = imageCache.findEntryProperties(aTarget.currentURI, doc.characterSet);
-        let contentDisposition = "";
-        let type = "";
-        try {
-           contentDisposition = String(props.get("content-disposition", Ci.nsISupportsCString));
-           type = String(props.get("type", Ci.nsISupportsCString));
-        } catch(ex) {
-           contentDisposition = "";
-           type = "";
-        }
-        ContentAreaUtils.internalSave(aTarget.currentURI.spec, null, null, contentDisposition, type, false, "SaveImageTitle", null,
-                                      aTarget.ownerDocument.documentURIObject, aTarget.ownerDocument, true, null);
+        ContentAreaUtils.saveImageURL(aTarget.currentURI.spec, null, "SaveImageTitle",
+                                      false, true, aTarget.ownerDocument.documentURIObject,
+                                      aTarget.ownerDocument);
       });
 
     NativeWindow.contextmenus.add(Strings.browser.GetStringFromName("contextmenu.setWallpaper"),
@@ -526,6 +522,9 @@ var BrowserApp = {
     Tabs.uninit();
 #ifdef MOZ_TELEMETRY_REPORTING
     Telemetry.uninit();
+#endif
+#ifdef MOZ_WEBRTC
+    WebrtcUi.uninit();
 #endif
   },
 
@@ -740,6 +739,38 @@ var BrowserApp = {
       }
     };
     sendMessageToJava(message);
+  },
+
+  /**
+   * Gets an open tab with the given URL.
+   *
+   * @param  aURL URL to look for
+   * @return the tab with the given URL, or null if no such tab exists
+   */
+  getTabWithURL: function getTabWithURL(aURL) {
+    let uri = Services.io.newURI(aURL, null, null);
+    for (let i = 0; i < this._tabs.length; ++i) {
+      let tab = this._tabs[i];
+      if (tab.browser.currentURI.equals(uri)) {
+        return tab;
+      }
+    }
+    return null;
+  },
+
+  /**
+   * If a tab with the given URL already exists, that tab is selected.
+   * Otherwise, a new tab is opened with the given URL.
+   *
+   * @param aURL URL to open
+   */
+  selectOrOpenTab: function selectOrOpenTab(aURL) {
+    let tab = this.getTabWithURL(aURL);
+    if (tab == null) {
+      this.addTab(aURL);
+    } else {
+      this.selectTab(tab);
+    }
   },
 
   // This method updates the state in BrowserApp after a tab has been selected
@@ -989,10 +1020,10 @@ var BrowserApp = {
     });
   },
 
-  scrollToFocusedInput: function(aBrowser) {
+  getFocusedInput: function(aBrowser, aOnlyInputElements = false) {
     let doc = aBrowser.contentDocument;
     if (!doc)
-      return;
+      return null;
 
     let focused = doc.activeElement;
     while (focused instanceof HTMLFrameElement || focused instanceof HTMLIFrameElement) {
@@ -1000,9 +1031,13 @@ var BrowserApp = {
       focused = doc.activeElement;
     }
 
-    if ((focused instanceof HTMLInputElement && focused.mozIsTextField(false))
-        || (focused instanceof HTMLTextAreaElement)
-        || (focused.isContentEditable)) {
+    if (focused instanceof HTMLInputElement && focused.mozIsTextField(false))
+      return focused;
+
+    if (aOnlyInputElements)
+      return null;
+
+    if  (focused instanceof HTMLTextAreaElement || focused.isContentEditable) {
 
       if (focused instanceof HTMLBodyElement) {
         // we are putting focus into a contentEditable frame. scroll the frame into
@@ -1010,53 +1045,16 @@ var BrowserApp = {
         // results in a better user experience
         focused = focused.ownerDocument.defaultView.frameElement;
       }
+      return focused;
+    }
+    return null;
+  },
 
-      let tab = BrowserApp.getTabForBrowser(aBrowser);
-      let win = aBrowser.contentWindow;
-
-      // tell gecko to scroll the field into view. this will scroll any nested scrollable elements
-      // as well as the browser's content window, and modify the scrollX and scrollY on the content window.
-      focused.scrollIntoView(false);
-
-      // As Gecko isn't aware of the zoom level we're drawing with, the element may not entirely be in view
-      // yet. Check for that, and scroll some extra to compensate, if necessary.
-      let focusedRect = focused.getBoundingClientRect();
-      let visibleContentWidth = gScreenWidth / tab._zoom;
-      let visibleContentHeight = gScreenHeight / tab._zoom;
-
-      let positionChanged = false;
-      let scrollX = win.scrollX;
-      let scrollY = win.scrollY;
-
-      if (focusedRect.right >= visibleContentWidth && focusedRect.left > 0) {
-        // the element is too far off the right side, so we need to scroll to the right more
-        scrollX += Math.min(focusedRect.left, focusedRect.right - visibleContentWidth);
-        positionChanged = true;
-      } else if (focusedRect.left < 0) {
-        // the element is too far off the left side, so we need to scroll to the left more
-        scrollX += focusedRect.left;
-        positionChanged = true;
-      }
-      if (focusedRect.bottom >= visibleContentHeight && focusedRect.top > 0) {
-        // the element is too far down, so we need to scroll down more
-        scrollY += Math.min(focusedRect.top, focusedRect.bottom - visibleContentHeight);
-        positionChanged = true;
-      } else if (focusedRect.top < 0) {
-        // the element is too far up, so we need to scroll up more
-        scrollY += focusedRect.top;
-        positionChanged = true;
-      }
-
-      if (positionChanged)
-        win.scrollTo(scrollX, scrollY);
-
-      // update userScrollPos so that we don't send a duplicate viewport update by triggering
-      // our scroll listener
-      tab.userScrollPos.x = win.scrollX;
-      tab.userScrollPos.y = win.scrollY;
-
-      // finally, let java know where we ended up
-      tab.sendViewportUpdate();
+  scrollToFocusedInput: function(aBrowser, aAllowZoom = true) {
+    let focused = this.getFocusedInput(aBrowser);
+    if (focused) {
+      // _zoomToElement will handle not sending any message if this input is already mostly filling the screen
+      BrowserEventHandler._zoomToElement(focused, -1, false, aAllowZoom);
     }
   },
 
@@ -1149,7 +1147,9 @@ var BrowserApp = {
         break;
 
       case "ScrollTo:FocusedInput":
-        this.scrollToFocusedInput(browser);
+        // these messages come from a change in the viewable area and not user interaction
+        // we allow scrolling to the selected input, but not zooming the page
+        this.scrollToFocusedInput(browser, false);
         break;
 
       case "Sanitize:ClearData":
@@ -1381,6 +1381,7 @@ var NativeWindow = {
   },
   contextmenus: {
     items: {}, //  a list of context menu items that we may show
+    _nativeItemsSeparator: 0, // the index to insert native context menu items at
     _contextId: 0, // id to assign to new context menu items if they are added
 
     init: function() {
@@ -1552,6 +1553,65 @@ var NativeWindow = {
       else this._targetRef = null;
     },
 
+    _addHTMLContextMenuItems: function cm_addContextMenuItems(aMenu, aParent) {
+      for (let i = 0; i < aMenu.childNodes.length; i++) {
+        let item = aMenu.childNodes[i];
+        if (!item.label)
+          continue;
+
+        let id = this._contextId++;
+        let menuitem = {
+          id: id,
+          isGroup: false,
+          callback: (function(aTarget, aX, aY) {
+            // If this is a menu item, show a new context menu with the submenu in it
+            if (item instanceof Ci.nsIDOMHTMLMenuElement) {
+              this.menuitems = [];
+              this._nativeItemsSeparator = 0;
+
+              this._addHTMLContextMenuItems(item, id);
+              this._innerShow(aTarget, aX, aY);
+            } else {
+              // oltherwise just click the item
+              item.click();
+            }
+          }).bind(this),
+
+          getValue: function(aElt) {
+            if (item.hasAttribute("hidden"))
+              return null;
+
+            return {
+              icon: item.icon,
+              label: item.label,
+              id: id,
+              isGroup: false,
+              inGroup: false,
+              disabled: item.disabled,
+              isParent: item instanceof Ci.nsIDOMHTMLMenuElement
+            }
+          }
+        };
+
+        this.menuitems.splice(this._nativeItemsSeparator, 0, menuitem);
+        this._nativeItemsSeparator++;
+      }
+    },
+
+    _getMenuItemForId: function(aId) {
+      if (!this.menuitems)
+        return null;
+
+      for (let i = 0; i < this.menuitems.length; i++) {
+        if (this.menuitems[i].id == aId)
+          return this.menuitems[i];
+      }
+      return null;
+    },
+
+    // Checks if there are context menu items to show, and if it finds them
+    // sends a contextmenu event to content. We also send showing events to
+    // any html5 context menus we are about to show
     _sendToContent: function(aX, aY) {
       // find and store the top most element this context menu is being shown for
       // use the highlighted element if possible, otherwise look for nearby clickable elements
@@ -1566,27 +1626,34 @@ var NativeWindow = {
       // store a weakref to the target to be used when the context menu event returns
       this._target = target;
 
-      this.menuitems = {};
+      this.menuitems = [];
       let menuitemsSet = false;
 
       // now walk up the tree and for each node look for any context menu items that apply
       let element = target;
-
+      this._nativeItemsSeparator = 0;
       while (element) {
-        for each (let item in this.items) {
-          if (!this.menuitems[item.id] && item.matches(element, aX, aY)) {
-            this.menuitems[item.id] = item;
-            menuitemsSet = true;
+        // first check for any html5 context menus that might exist
+        let contextmenu = element.contextMenu;
+        if (contextmenu) {
+          // send this before we build the list to make sure the site can update the menu
+          contextmenu.QueryInterface(Components.interfaces.nsIHTMLMenu);
+          contextmenu.sendShowEvent();
+          this._addHTMLContextMenuItems(contextmenu, null);
+        }
+
+        // then check for any context menu items registered in the ui
+         for each (let item in this.items) {
+          if (!this._getMenuItemForId(item.id) && item.matches(element, aX, aY)) {
+            this.menuitems.push(item);
           }
         }
 
-        if (this.linkOpenableContext.matches(element) || this.textContext.matches(element))
-          break;
         element = element.parentNode;
       }
 
       // only send the contextmenu event to content if we are planning to show a context menu (i.e. not on every long tap)
-      if (menuitemsSet) {
+      if (this.menuitems.length > 0) {
         let event = target.ownerDocument.createEvent("MouseEvent");
         event.initMouseEvent("contextmenu", true, true, content,
                              0, aX, aY, aX, aY, false, false, false, false,
@@ -1602,21 +1669,26 @@ var NativeWindow = {
       }
     },
 
+    // Actually shows the native context menu by passing a list of context menu items to
+    // show to the Java.
     _show: function(aEvent) {
       let popupNode = this._target;
       this._target = null;
       if (aEvent.defaultPrevented || !popupNode) {
         return;
       }
+      this._innerShow(popupNode, aEvent.clientX, aEvent.clientY);
+    },
 
+    _innerShow: function(aTarget, aX, aY) {
       Haptic.performSimpleAction(Haptic.LongPress);
 
       // spin through the tree looking for a title for this context menu
-      let node = popupNode;
+      let node = aTarget;
       let title ="";
       while(node && !title) {
         if (node.hasAttribute && node.hasAttribute("title")) {
-          title = node.getAttribute("title")
+          title = node.getAttribute("title");
         } else if ((node instanceof Ci.nsIDOMHTMLAnchorElement && node.href) ||
                 (node instanceof Ci.nsIDOMHTMLAreaElement && node.href)) {
           title = this._getLinkURL(node);
@@ -1630,9 +1702,16 @@ var NativeWindow = {
 
       // convert this.menuitems object to an array for sending to native code
       let itemArray = [];
-      for each (let item in this.menuitems) {
-        itemArray.push(item.getValue(popupNode));
+      for (let i = 0; i < this.menuitems.length; i++) {
+        let val = this.menuitems[i].getValue(aTarget);
+
+        // hidden menu items will return null from getValue
+        if (val)
+          itemArray.push(val);
       }
+
+      if (itemArray.length == 0)
+        return;
 
       let msg = {
         gecko: {
@@ -1642,19 +1721,30 @@ var NativeWindow = {
         }
       };
       let data = JSON.parse(sendMessageToJava(msg));
-      let selectedId = itemArray[data.button].id;
-      let selectedItem = this.menuitems[selectedId];
+      if (data.button == -1) {
+        // prompt was cancelled
+        return;
+      }
 
+      let selectedId = itemArray[data.button].id;
+      let selectedItem = this._getMenuItemForId(selectedId);
+
+      this.menuitems = null;
       if (selectedItem && selectedItem.callback) {
-        while (popupNode) {
-          if (selectedItem.matches(popupNode, aEvent.clientX, aEvent.clientY)) {
-            selectedItem.callback.call(selectedItem, popupNode, aEvent.clientX, aEvent.clientY);
-            break;
+        if (selectedItem.matches) {
+          // for menuitems added using the native UI, pass the dom element that matched that item to the callback
+          while (aTarget) {
+            if (selectedItem.matches(aTarget, aX, aY)) {
+              selectedItem.callback.call(selectedItem, aTarget, aX, aY);
+              break;
+            }
+            aTarget = aTarget.parentNode;
           }
-          popupNode = popupNode.parentNode;
+        } else {
+          // if this was added using the html5 context menu api, just click on the context menu item
+          selectedItem.callback.call(selectedItem, aTarget, aX, aY);
         }
       }
-      this.menuitems = null;
     },
 
     handleEvent: function(aEvent) {
@@ -1795,6 +1885,10 @@ var SelectionHandler = {
         break;
       }
       case "Tab:Selected":
+        if (this._activeType == this.TYPE_CURSOR) {
+          this.hideThumb();
+        }
+        // fall through
       case "Window:Resize": {
         if (this._activeType == this.TYPE_SELECTION) {
           // Knowing when the page is done drawing is hard, so let's just cancel
@@ -3054,8 +3148,13 @@ Tab.prototype = {
     let viewportHeight = gScreenHeight / zoom;
     let [pageWidth, pageHeight] = this.getPageSize(this.browser.contentDocument,
                                                    viewportWidth, viewportHeight);
-    let scrollPortWidth = Math.min(viewportWidth, pageWidth);
-    let scrollPortHeight = Math.min(viewportHeight, pageHeight);
+
+    // Make sure the aspect ratio of the screen is maintained when setting
+    // the clamping scroll-port size.
+    let factor = Math.min(viewportWidth / gScreenWidth, pageWidth / gScreenWidth,
+                          viewportHeight / gScreenHeight, pageHeight / gScreenHeight);
+    let scrollPortWidth = gScreenWidth * factor;
+    let scrollPortHeight = gScreenHeight * factor;
 
     let win = this.browser.contentWindow;
     win.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils).
@@ -3996,6 +4095,9 @@ var BrowserEventHandler = {
             if ((element instanceof HTMLInputElement && element.mozIsTextField(false)) ||
                 (element instanceof HTMLTextAreaElement))
                SelectionHandler.showThumb(element);
+
+            // scrollToFocusedInput does its own checks to find out if an element should be zoomed into
+            BrowserApp.scrollToFocusedInput(BrowserApp.selectedBrowser);
           } catch(e) {
             Cu.reportError(e);
           }
@@ -4040,12 +4142,6 @@ var BrowserEventHandler = {
     const maxDifference = 20;
     const maxZoomAllowed = 4; // keep this in sync with mobile/android/base/ui/PanZoomController.MAX_ZOOM
 
-    if (Math.abs(aViewport.zoom - maxZoomAllowed) < 1e-6) {
-      // we're already at the max zoom, so even if the block isn't taking up most of the viewport we can't
-      // zoom in any more. return true so that we zoom out
-      return true;
-    }
-
     let vRect = new Rect(aViewport.cssX, aViewport.cssY, aViewport.cssWidth, aViewport.cssHeight);
     let overlap = vRect.intersect(aRect);
     let overlapArea = overlap.width * overlap.height;
@@ -4053,6 +4149,12 @@ var BrowserEventHandler = {
     let showing = overlapArea / (aRect.width * availHeight);
     let dw = (aRect.width - vRect.width);
     let dx = (aRect.x - vRect.x);
+
+    if (Math.abs(aViewport.zoom - maxZoomAllowed) < 1e-6 && overlap.width / aRect.width > 0.9) {
+      // we're already at the max zoom and the block is not spilling off the side of the screen so that even
+      // if the block isn't taking up most of the viewport we can't pan/zoom in any more. return true so that we zoom out
+      return true;
+    }
 
     return (showing > 0.9 &&
             dx > minDifference && dx < maxDifference &&
@@ -4082,14 +4184,14 @@ var BrowserEventHandler = {
   /* Zoom to an element, optionally keeping a particular part of it
    * in view if it is really tall.
    */
-  _zoomToElement: function(aElement, aClickY = -1) {
+  _zoomToElement: function(aElement, aClickY = -1, aCanZoomOut = true, aCanZoomIn = true) {
     const margin = 15;
     let rect = ElementTouchHelper.getBoundingContentRect(aElement);
 
     let viewport = BrowserApp.selectedTab.getViewport();
-    let bRect = new Rect(Math.max(viewport.cssPageLeft, rect.x - margin),
+    let bRect = new Rect(aCanZoomIn ? Math.max(viewport.cssPageLeft, rect.x - margin) : viewport.cssLeft,
                          rect.y,
-                         rect.w + 2 * margin,
+                         aCanZoomIn ? rect.w + 2 * margin : viewport.cssWidth,
                          rect.h);
     // constrict the rect to the screen's right edge
     bRect.width = Math.min(bRect.width, viewport.cssPageRight - bRect.x);
@@ -4097,7 +4199,8 @@ var BrowserEventHandler = {
     // if the rect is already taking up most of the visible area and is stretching the
     // width of the page, then we want to zoom out instead.
     if (this._isRectZoomedIn(bRect, viewport)) {
-      this._zoomOut();
+      if (aCanZoomOut)
+        this._zoomOut();
       return;
     }
 
@@ -4765,6 +4868,7 @@ var FormAssistant = {
     Services.obs.addObserver(this, "FormAssist:Blocklisted", false);
     Services.obs.addObserver(this, "FormAssist:Hidden", false);
     Services.obs.addObserver(this, "invalidformsubmit", false);
+    Services.obs.addObserver(this, "PanZoom:StateChange", false);
 
     // We need to use a capturing listener for focus events
     BrowserApp.deck.addEventListener("focus", this, true);
@@ -4778,6 +4882,7 @@ var FormAssistant = {
     Services.obs.removeObserver(this, "FormAssist:Blocklisted");
     Services.obs.removeObserver(this, "FormAssist:Hidden");
     Services.obs.removeObserver(this, "invalidformsubmit");
+    Services.obs.removeObserver(this, "PanZoom:StateChange");
 
     BrowserApp.deck.removeEventListener("focus", this);
     BrowserApp.deck.removeEventListener("click", this);
@@ -4787,6 +4892,24 @@ var FormAssistant = {
 
   observe: function(aSubject, aTopic, aData) {
     switch (aTopic) {
+      case "PanZoom:StateChange":
+        // If the user is just touching the screen and we haven't entered a pan or zoom state yet do nothing
+        if (aData == "TOUCHING" || aData == "WAITING_LISTENERS")
+          break;
+        if (aData == "NOTHING") {
+          // only look for input elements, not contentEditable or multiline text areas
+          let focused = BrowserApp.getFocusedInput(BrowserApp.selectedBrowser, true);
+          if (!focused)
+            break;
+
+          if (this._showValidationMessage(focused))
+            break;
+          this._showAutoCompleteSuggestions(focused);
+        } else {
+          // temporarily hide the form assist popup while we're panning or zooming the page
+          this._hideFormAssistPopup();
+        }
+        break;
       case "FormAssist:AutoComplete":
         if (!this._currentInputElement)
           break;
@@ -4851,9 +4974,9 @@ var FormAssistant = {
         // only be available if an invalid form was submitted)
         if (this._showValidationMessage(currentElement))
           break;
-        this._showAutoCompleteSuggestions(currentElement);
+        if (!this._showAutoCompleteSuggestions(currentElement))
+          this._hideFormAssistPopup();
         break;
-
       case "input":
         currentElement = aEvent.target;
 
@@ -7937,9 +8060,10 @@ var MemoryObserver = {
     // If this browser is already a zombie, fallback to the session data
     let currentURL = browser.__SS_restore ? data.entries[0].url : browser.currentURI.spec;
     let sibling = browser.nextSibling;
+    let isPrivate = PrivateBrowsingUtils.isWindowPrivate(browser.contentWindow);
 
     tab.destroy();
-    tab.create(currentURL, { sibling: sibling, zombifying: true, delayLoad: true });
+    tab.create(currentURL, { sibling: sibling, zombifying: true, delayLoad: true, isPrivate: isPrivate });
 
     // Reattach session store data and flag this browser so it is restored on select
     browser = tab.browser;
@@ -8024,6 +8148,112 @@ var Distribution = {
     defaults.setCharPref("distribution.version", aData.version);
   }
 };
+
+#ifdef MOZ_WEBRTC
+var WebrtcUI = {
+  init: function () {
+    Services.obs.addObserver(this, "getUserMedia:request", false);
+  },
+
+  uninit: function () {
+    Services.obs.removeObserver(this, "getUserMedia:request");
+  },
+
+  observe: function(aSubject, aTopic, aData) {
+    if (aTopic == "getUserMedia:request") {
+      this.handleRequest(aSubject, aTopic, aData);
+    }
+  },
+
+  handleRequest: function handleRequest(aSubject, aTopic, aData) {
+    let { windowID: windowID, callID: callID } = JSON.parse(aData);
+
+    let someWindow = Services.wm.getMostRecentWindow("navigator:browser");
+    if (someWindow != window)
+      return;
+
+    let contentWindow = someWindow.QueryInterface(Ci.nsIInterfaceRequestor)
+          .getInterface(Ci.nsIDOMWindowUtils).getOuterWindowWithId(windowID);
+    let browser = BrowserApp.getBrowserForWindow(contentWindow);
+    let params = aSubject.QueryInterface(Ci.nsIMediaStreamOptions);
+
+    browser.ownerDocument.defaultView.navigator.mozGetUserMediaDevices(
+      function (devices) {
+        WebrtcUI.prompt(browser, callID, params.audio, params.video, devices);
+      },
+      function (error) {
+        Cu.reportError(error);
+      }
+    );
+  },
+
+  getDeviceButtons: function(aDevices, aCallID, stringBundle) {
+    let buttons = [{
+      label: stringBundle.GetStringFromName("getUserMedia.denyRequest.label"),
+      callback: function() {
+        Services.obs.notifyObservers(null, "getUserMedia:response:deny", aCallID);
+      }
+    }];
+    for (let device of aDevices) {
+      let button = {
+        label: stringBundle.GetStringFromName("getUserMedia.shareRequest.label"),
+        callback: function() {
+          let allowedDevices = Cc["@mozilla.org/supports-array;1"].createInstance(Ci.nsISupportsArray);
+          allowedDevices.AppendElement(device);
+          Services.obs.notifyObservers(allowedDevices, "getUserMedia:response:allow", aCallID);
+          // Show browser-specific indicator for the active camera/mic access.
+          // XXX: Mobile?
+        }
+      };
+      buttons.push(button);
+    }
+
+    return buttons;
+  },
+
+  prompt: function prompt(aBrowser, aCallID, aAudioRequested, aVideoRequested, aDevices) {
+    let audioDevices = [];
+    let videoDevices = [];
+    for (let device of aDevices) {
+      device = device.QueryInterface(Ci.nsIMediaDevice);
+      switch (device.type) {
+      case "audio":
+        if (aAudioRequested)
+          audioDevices.push(device);
+        break;
+      case "video":
+        if (aVideoRequested)
+          videoDevices.push(device);
+        break;
+      }
+    }
+
+    let requestType;
+    if (audioDevices.length && videoDevices.length)
+      requestType = "CameraAndMicrophone";
+    else if (audioDevices.length)
+      requestType = "Microphone";
+    else if (videoDevices.length)
+      requestType = "Camera";
+    else
+      return;
+
+    let host = aBrowser.contentDocument.documentURIObject.asciiHost;
+    let stringBundle = Services.strings.createBundle("chrome://browser/locale/browser.properties");
+    let message = stringBundle.formatStringFromName("getUserMedia.share" + requestType + ".message", [ host ], 1);
+
+    if (audioDevices.length) {
+      let buttons = this.getDeviceButtons(audioDevices, aCallID, stringBundle);
+      NativeWindow.doorhanger.show(message, "webrtc-request-audio", buttons, BrowserApp.selectedTab.id);
+    }
+
+    if (videoDevices.length) {
+      let buttons = this.getDeviceButtons(videoDevices, aCallID, stringBundle);
+      NativeWindow.doorhanger.show(message, "webrtc-request-video", buttons, BrowserApp.selectedTab.id);
+    }
+  }
+}
+#endif
 
 var Tabs = {
   // This object provides functions to manage a most-recently-used list

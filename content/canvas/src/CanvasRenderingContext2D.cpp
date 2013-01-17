@@ -16,7 +16,7 @@
 #include "nsContentUtils.h"
 
 #include "nsIDocument.h"
-#include "nsHTMLCanvasElement.h"
+#include "mozilla/dom/HTMLCanvasElement.h"
 #include "nsSVGEffects.h"
 #include "nsPresContext.h"
 #include "nsIPresShell.h"
@@ -130,7 +130,6 @@ static NS_NAMED_LITERAL_STRING(kDefaultFontStyle, "10px sans-serif");
 const Float SIGMA_MAX = 100;
 
 /* Memory reporter stuff */
-static nsIMemoryReporter *gCanvasAzureMemoryReporter = nullptr;
 static int64_t gCanvasAzureMemoryUsed = 0;
 
 static int64_t GetCanvasAzureMemoryUsed() {
@@ -303,10 +302,10 @@ public:
 
     // We need to enlarge and possibly offset our temporary surface
     // so that things outside of the canvas may cast shadows.
-    mTempRect.Inflate(Margin(blurRadius + NS_MAX<Float>(state.shadowOffset.x, 0),
-                             blurRadius + NS_MAX<Float>(state.shadowOffset.y, 0),
-                             blurRadius + NS_MAX<Float>(-state.shadowOffset.x, 0),
-                             blurRadius + NS_MAX<Float>(-state.shadowOffset.y, 0)));
+    mTempRect.Inflate(Margin(blurRadius + std::max<Float>(state.shadowOffset.x, 0),
+                             blurRadius + std::max<Float>(state.shadowOffset.y, 0),
+                             blurRadius + std::max<Float>(-state.shadowOffset.x, 0),
+                             blurRadius + std::max<Float>(-state.shadowOffset.y, 0)));
 
     if (aBounds) {
       // We actually include the bounds of the shadow blur, this makes it
@@ -621,7 +620,7 @@ CanvasRenderingContext2D::Reset()
 }
 
 static void
-WarnAboutUnexpectedStyle(nsHTMLCanvasElement* canvasElement)
+WarnAboutUnexpectedStyle(HTMLCanvasElement* canvasElement)
 {
   nsContentUtils::ReportToConsole(
     nsIScriptError::warningFlag,
@@ -792,9 +791,10 @@ CanvasRenderingContext2D::EnsureTarget()
   }
 
   if (mTarget) {
-    if (gCanvasAzureMemoryReporter == nullptr) {
-        gCanvasAzureMemoryReporter = new NS_MEMORY_REPORTER_NAME(CanvasAzureMemory);
-      NS_RegisterMemoryReporter(gCanvasAzureMemoryReporter);
+    static bool registered = false;
+    if (!registered) {
+      registered = true;
+      NS_RegisterMemoryReporter(new NS_MEMORY_REPORTER_NAME(CanvasAzureMemory));
     }
 
     gCanvasAzureMemoryUsed += mWidth * mHeight * 4;
@@ -1400,7 +1400,7 @@ CanvasRenderingContext2D::CreatePattern(const HTMLImageOrCanvasOrVideoElement& e
 
   Element* htmlElement;
   if (element.IsHTMLCanvasElement()) {
-    nsHTMLCanvasElement* canvas = element.GetAsHTMLCanvasElement();
+    HTMLCanvasElement* canvas = element.GetAsHTMLCanvasElement();
     htmlElement = canvas;
 
     nsIntSize size = canvas->GetSize();
@@ -2913,7 +2913,7 @@ CanvasRenderingContext2D::DrawImage(const HTMLImageOrCanvasOrVideoElement& image
 
   EnsureTarget();
   if (image.IsHTMLCanvasElement()) {
-    nsHTMLCanvasElement* canvas = image.GetAsHTMLCanvasElement();
+    HTMLCanvasElement* canvas = image.GetAsHTMLCanvasElement();
     element = canvas;
     nsIntSize size = canvas->GetSize();
     if (size.width == 0 || size.height == 0) {

@@ -35,6 +35,7 @@ IonBuilder::IonBuilder(JSContext *cx, TempAllocator *temp, MIRGraph *graph,
     backgroundCodegen_(NULL),
     recompileInfo(cx->compartment->types.compiledInfo),
     cx(cx),
+    abortReason_(AbortReason_Disable),
     loopDepth_(loopDepth),
     callerResumePoint_(NULL),
     callerBuilder_(NULL),
@@ -137,11 +138,10 @@ IonBuilder::CFGState::TableSwitch(jsbytecode *exitpc, MTableSwitch *ins)
 }
 
 JSFunction *
-IonBuilder::getSingleCallTarget(uint32_t argc, jsbytecode *pc)
+IonBuilder::getSingleCallTarget(types::StackTypeSet *calleeTypes)
 {
     AutoAssertNoGC nogc;
 
-    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
     if (!calleeTypes)
         return NULL;
 
@@ -153,10 +153,9 @@ IonBuilder::getSingleCallTarget(uint32_t argc, jsbytecode *pc)
 }
 
 uint32_t
-IonBuilder::getPolyCallTargets(uint32_t argc, jsbytecode *pc,
+IonBuilder::getPolyCallTargets(types::StackTypeSet *calleeTypes,
                                AutoObjectVector &targets, uint32_t maxTargets)
 {
-    types::TypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
     if (!calleeTypes)
         return 0;
 
@@ -346,6 +345,7 @@ IonBuilder::build()
         return false;
 
     JS_ASSERT(loopDepth_ == 0);
+    abortReason_ = AbortReason_NoAbort;
     return true;
 }
 
@@ -851,7 +851,7 @@ IonBuilder::inspectOpcode(JSOp op)
         return pushConstant(UndefinedValue());
 
       case JSOP_HOLE:
-        return pushConstant(MagicValue(JS_ARRAY_HOLE));
+        return pushConstant(MagicValue(JS_ELEMENTS_HOLE));
 
       case JSOP_FALSE:
         return pushConstant(BooleanValue(false));
@@ -2376,6 +2376,8 @@ IonBuilder::processCondSwitchCase(CFGState &state)
         MDefinition *caseOperand = current->pop();
         MDefinition *switchOperand = current->peek(-1);
         MCompare *cmpResult = MCompare::New(switchOperand, caseOperand, JSOP_STRICTEQ);
+        TypeOracle::BinaryTypes b = oracle->binaryTypes(script(), pc);
+        cmpResult->infer(b, cx);
         JS_ASSERT(!cmpResult->isEffectful());
         current->add(cmpResult);
         current->end(MTest::New(cmpResult, bodyBlock, caseBlock));
@@ -2908,8 +2910,16 @@ IonBuilder::jsop_call_inline(HandleFunction callee, uint32_t argc, bool construc
     }
 
     // Build the graph.
-    if (!inlineBuilder.buildInline(this, inlineResumePoint, thisDefn, argv))
+    if (!inlineBuilder.buildInline(this, inlineResumePoint, thisDefn, argv)) {
+        JS_ASSERT(calleeScript->hasAnalysis());
+
+        // Inlining the callee failed. Disable inlining the function
+        if (inlineBuilder.abortReason_ == AbortReason_Disable)
+            calleeScript->analysis()->setIonUninlineable();
+
+        abortReason_ = AbortReason_Inlining;
         return false;
+    }
 
     MIRGraphExits &exits = *inlineBuilder.graph().exitAccumulator();
 
@@ -3097,8 +3107,7 @@ IonBuilder::checkInlineableGetPropertyCache(uint32_t argc)
 }
 
 MPolyInlineDispatch *
-IonBuilder::makePolyInlineDispatch(JSContext *cx, AutoObjectVector &targets, int argc,
-                                   MGetPropertyCache *getPropCache,
+IonBuilder::makePolyInlineDispatch(JSContext *cx, int argc, MGetPropertyCache *getPropCache,
                                    types::StackTypeSet *types, types::StackTypeSet *barrier,
                                    MBasicBlock *bottom,
                                    Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns)
@@ -3195,7 +3204,8 @@ IonBuilder::makePolyInlineDispatch(JSContext *cx, AutoObjectVector &targets, int
     fallbackBlock->end(MGoto::New(fallbackEndBlock));
 
     // Create Call
-    MCall *call = MCall::New(NULL, argc + 1, argc, false);
+    MCall *call = MCall::New(NULL, argc + 1, argc, false,
+                             oracle->getCallTarget(script(), argc, pc));
     if (!call)
         return NULL;
 
@@ -3237,7 +3247,8 @@ IonBuilder::makePolyInlineDispatch(JSContext *cx, AutoObjectVector &targets, int
 }
 
 bool
-IonBuilder::inlineScriptedCall(AutoObjectVector &targets, uint32_t argc, bool constructing,
+IonBuilder::inlineScriptedCall(AutoObjectVector &targets, AutoObjectVector &originals,
+                               uint32_t argc, bool constructing,
                                types::StackTypeSet *types, types::StackTypeSet *barrier)
 {
 #ifdef DEBUG
@@ -3277,7 +3288,7 @@ IonBuilder::inlineScriptedCall(AutoObjectVector &targets, uint32_t argc, bool co
             int numCases = inlinePropTable->numEntries();
             IonSpew(IonSpew_Inlining, "Got inlineable property cache with %d cases", numCases);
 
-            inlinePropTable->trimToTargets(targets);
+            inlinePropTable->trimToAndMaybePatchTargets(targets, originals);
 
             // Trim the cases based on those that match the targets at this call site.
             IonSpew(IonSpew_Inlining, "%d inlineable cases left after trimming to %d targets",
@@ -3327,14 +3338,18 @@ IonBuilder::inlineScriptedCall(AutoObjectVector &targets, uint32_t argc, bool co
         // In the polymorphic case, we end the current block with a MPolyInlineDispatch instruction.
 
         // Create a PolyInlineDispatch instruction for this call site
-        MPolyInlineDispatch *disp = makePolyInlineDispatch(cx, targets, argc, getPropCache,
-                                                           types, barrier, bottom, retvalDefns);
+        MPolyInlineDispatch *disp = makePolyInlineDispatch(cx, argc, getPropCache, types, barrier,
+                                                           bottom, retvalDefns);
         if (!disp)
             return false;
+
+        // It's guaranteed that targets.length() == originals.length()
         for (size_t i = 0; i < targets.length(); i++) {
-            // Create an MConstant for the function
-            JSFunction *func = targets[i]->toFunction();
-            RootedFunction target(cx, func);
+            // Create an MConstant for the function. Note that we guard on the
+            // original function pointer, even if we have a clone, as we only
+            // clone at the callsite, so guarding on the clone would be
+            // guaranteed to fail.
+            JSFunction *func = originals[i]->toFunction();
             MConstant *constFun = MConstant::New(ObjectValue(*func));
 
             // Create new entry block for the inlined callee graph.
@@ -3575,15 +3590,6 @@ IonBuilder::createCallObject(MDefinition *callee, MDefinition *scope)
 }
 
 MDefinition *
-IonBuilder::createThisNative()
-{
-    // Native constructors build the new Object themselves.
-    MConstant *magic = MConstant::New(MagicValue(JS_IS_CONSTRUCTING));
-    current->add(magic);
-    return magic;
-}
-
-MDefinition *
 IonBuilder::createThisScripted(MDefinition *callee)
 {
     // Get callee.prototype.
@@ -3610,7 +3616,7 @@ IonBuilder::createThisScripted(MDefinition *callee)
     current->add(getProto);
 
     // Create this from prototype
-    MCreateThis *createThis = MCreateThis::New(callee, getProto);
+    MCreateThisWithProto *createThis = MCreateThisWithProto::New(callee, getProto);
     current->add(createThis);
 
     return createThis;
@@ -3633,8 +3639,13 @@ IonBuilder::getSingletonPrototype(JSFunction *target)
 }
 
 MDefinition *
-IonBuilder::createThisScriptedSingleton(HandleFunction target, HandleObject proto, MDefinition *callee)
+IonBuilder::createThisScriptedSingleton(HandleFunction target, MDefinition *callee)
 {
+    // Get the singleton prototype (if exists)
+    RootedObject proto(cx, getSingletonPrototype(target));
+    if (!proto)
+        return NULL;
+
     // Generate an inline path to create a new |this| object with
     // the given singleton prototype.
     types::TypeObject *type = proto->getNewType(cx, target);
@@ -3661,36 +3672,43 @@ MDefinition *
 IonBuilder::createThis(HandleFunction target, MDefinition *callee)
 {
     // Create this for unknown target
-    if (!target)
-        return createThisScripted(callee);
+    if (!target) {
+        MCreateThis *createThis = MCreateThis::New(callee);
+        current->add(createThis);
+        return createThis;
+    }
 
-    // Create this for native function
+    // Native constructors build the new Object themselves.
     if (target->isNative()) {
         if (!target->isNativeConstructor())
             return NULL;
-        return createThisNative();
-    }
 
-    // Create this with known prototype.
-    RootedObject proto(cx, getSingletonPrototype(target));
+        MConstant *magic = MConstant::New(MagicValue(JS_IS_CONSTRUCTING));
+        current->add(magic);
+        return magic;
+    }
 
     // Try baking in the prototype.
-    if (proto) {
-        MDefinition *createThis = createThisScriptedSingleton(target, proto, callee);
-        if (createThis)
-            return createThis;
+    MDefinition *createThis = createThisScriptedSingleton(target, callee);
+    if (createThis)
+        return createThis;
+
+    return createThisScripted(callee);
+}
+
+bool
+IonBuilder::anyFunctionIsCloneAtCallsite(types::StackTypeSet *funTypes)
+{
+    uint32_t count = funTypes->getObjectCount();
+    if (count < 1)
+        return false;
+
+    for (uint32_t i = 0; i < count; i++) {
+        JSObject *obj = funTypes->getSingleObject(i);
+        if (obj->isFunction() && obj->toFunction()->isCloneAtCallsite())
+            return true;
     }
-
-    MDefinition *createThis = createThisScripted(callee);
-    if (!createThis)
-        return NULL;
-
-    // The native function case is already handled upfront.
-    // Here we can safely remove the native check for MCreateThis.
-    JS_ASSERT(createThis->isCreateThis());
-    createThis->toCreateThis()->removeNativeCheck();
-
-    return createThis;
+    return false;
 }
 
 bool
@@ -3704,9 +3722,10 @@ IonBuilder::jsop_funcall(uint32_t argc)
     // argc+2: The native 'call' function.
 
     // If |Function.prototype.call| may be overridden, don't optimize callsite.
-    RootedFunction native(cx, getSingleCallTarget(argc, pc));
+    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
+    RootedFunction native(cx, getSingleCallTarget(calleeTypes));
     if (!native || !native->isNative() || native->native() != &js_fun_call)
-        return makeCall(native, argc, false);
+        return makeCall(native, calleeTypes, argc, false, false);
 
     // Extract call target.
     types::StackTypeSet *funTypes = oracle->getCallArg(script(), argc, 0, pc);
@@ -3739,15 +3758,16 @@ IonBuilder::jsop_funcall(uint32_t argc)
     }
 
     // Call without inlining.
-    return makeCall(target, argc, false);
+    return makeCall(target, funTypes, argc, false, false);
 }
 
 bool
 IonBuilder::jsop_funapply(uint32_t argc)
 {
-    RootedFunction native(cx, getSingleCallTarget(argc, pc));
+    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
+    RootedFunction native(cx, getSingleCallTarget(calleeTypes));
     if (argc != 2)
-        return makeCall(native, argc, false);
+        return makeCall(native, calleeTypes, argc, false, false);
 
     // Disable compilation if the second argument to |apply| cannot be guaranteed
     // to be either definitely |arguments| or definitely not |arguments|.
@@ -3758,7 +3778,7 @@ IonBuilder::jsop_funapply(uint32_t argc)
 
     // Fallback to regular call if arg 2 is not definitely |arguments|.
     if (isArgObj != DefinitelyArguments)
-        return makeCall(native, argc, false);
+        return makeCall(native, calleeTypes, argc, false, false);
 
     if (!native ||
         !native->isNative() ||
@@ -3847,7 +3867,7 @@ IonBuilder::jsop_funapplyarguments(uint32_t argc)
     // Pop apply function.
     current->pop();
 
-    return makeCall(target, false, argFunc, thisArg, args);
+    return makeCall(target, funTypes, false, false, argFunc, thisArg, args);
 }
 
 bool
@@ -3856,10 +3876,29 @@ IonBuilder::jsop_call(uint32_t argc, bool constructing)
     AssertCanGC();
 
     // Acquire known call target if existent.
-    AutoObjectVector targets(cx);
-    uint32_t numTargets = getPolyCallTargets(argc, pc, targets, 4);
+    AutoObjectVector originals(cx);
+    types::StackTypeSet *calleeTypes = oracle->getCallTarget(script(), argc, pc);
+    uint32_t numTargets = calleeTypes ? getPolyCallTargets(calleeTypes, originals, 4) : 0;
     types::StackTypeSet *barrier;
     types::StackTypeSet *types = oracle->returnTypeSet(script(), pc, &barrier);
+
+    // If any call targets need to be cloned, clone them. Keep track of the
+    // originals as we need to case on them for poly inline.
+    bool hasClones = false;
+    AutoObjectVector targets(cx);
+    RootedFunction fun(cx);
+    RootedScript scriptRoot(cx, script());
+    for (uint32_t i = 0; i < numTargets; i++) {
+        fun = originals[i]->toFunction();
+        if (fun->isCloneAtCallsite()) {
+            fun = CloneFunctionAtCallsite(cx, fun, scriptRoot, pc);
+            if (!fun)
+                return false;
+            hasClones = true;
+        }
+        if (!targets.append(fun))
+            return false;
+    }
 
     // Attempt to inline native and scripted functions.
     if (inliningEnabled()) {
@@ -3877,14 +3916,34 @@ IonBuilder::jsop_call(uint32_t argc, bool constructing)
         }
 
         if (numTargets > 0 && makeInliningDecision(targets, argc))
-            return inlineScriptedCall(targets, argc, constructing, types, barrier);
+            return inlineScriptedCall(targets, originals, argc, constructing, types, barrier);
     }
 
     RootedFunction target(cx, NULL);
     if (numTargets == 1)
         target = targets[0]->toFunction();
 
-    return makeCallBarrier(target, argc, constructing, types, barrier);
+    return makeCallBarrier(target, calleeTypes, argc, constructing, hasClones, types, barrier);
+}
+
+MDefinition *
+IonBuilder::makeCallsiteClone(HandleFunction target, MDefinition *fun)
+{
+    // Bake in the clone eagerly if we have a known target. We have arrived here
+    // because TI told us that the known target is a should-clone-at-callsite
+    // function, which means that target already is the clone.
+    if (target) {
+        MConstant *constant = MConstant::New(ObjectValue(*target));
+        current->add(constant);
+        return constant;
+    }
+
+    // Add a callsite clone IC if we have multiple targets. Note that we
+    // should have checked already that at least some targets are marked as
+    // should-clone-at-callsite.
+    MCallsiteCloneCache *clone = MCallsiteCloneCache::New(fun, pc);
+    current->add(clone);
+    return clone;
 }
 
 static bool
@@ -4002,18 +4061,20 @@ IonBuilder::popFormals(uint32_t argc, MDefinition **fun, MPassArg **thisArg,
 }
 
 MCall *
-IonBuilder::makeCallHelper(HandleFunction target, uint32_t argc, bool constructing)
+IonBuilder::makeCallHelper(HandleFunction target, types::StackTypeSet *calleeTypes,
+                           uint32_t argc, bool constructing, bool cloneAtCallsite)
 {
     Vector<MPassArg *> args(cx);
     MPassArg *thisArg;
     MDefinition *fun;
 
     popFormals(argc, &fun, &thisArg, &args);
-    return makeCallHelper(target, constructing, fun, thisArg, args);
+    return makeCallHelper(target, calleeTypes, constructing, cloneAtCallsite, fun, thisArg, args);
 }
 
 MCall *
-IonBuilder::makeCallHelper(HandleFunction target, bool constructing,
+IonBuilder::makeCallHelper(HandleFunction target, types::StackTypeSet *calleeTypes,
+                           bool constructing, bool cloneAtCallsite,
                            MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args)
 {
     // This function may be called with mutated stack.
@@ -4027,7 +4088,7 @@ IonBuilder::makeCallHelper(HandleFunction target, bool constructing,
     if (target && !target->isNative())
         targetArgs = Max<uint32_t>(target->nargs, argc);
 
-    MCall *call = MCall::New(target, targetArgs + 1, argc, constructing);
+    MCall *call = MCall::New(target, targetArgs + 1, argc, constructing, calleeTypes);
     if (!call)
         return NULL;
 
@@ -4071,6 +4132,11 @@ IonBuilder::makeCallHelper(HandleFunction target, bool constructing,
     // Pass |this| and function.
     call->addArg(0, thisArg);
 
+    // Add a callsite clone IC for multiple targets which all should be
+    // callsite cloned, or bake in the clone for a single target.
+    if (cloneAtCallsite)
+        fun = makeCallsiteClone(target, fun);
+
     if (target && JSOp(*pc) == JSOP_CALL) {
         // We know we have a single call target.  Check whether the "this" types
         // are DOM types and our function a DOM function, and if so flag the
@@ -4084,6 +4150,7 @@ IonBuilder::makeCallHelper(HandleFunction target, bool constructing,
             call->setDOMFunction();
         }
     }
+
     call->initFunction(fun);
 
     current->add(call);
@@ -4112,8 +4179,8 @@ AdjustTypeBarrierForDOMCall(const JSJitInfo* jitinfo, types::StackTypeSet *types
 }
 
 bool
-IonBuilder::makeCallBarrier(HandleFunction target, uint32_t argc,
-                            bool constructing,
+IonBuilder::makeCallBarrier(HandleFunction target, types::StackTypeSet *calleeTypes,
+                            uint32_t argc, bool constructing, bool cloneAtCallsite,
                             types::StackTypeSet *types,
                             types::StackTypeSet *barrier)
 {
@@ -4122,17 +4189,20 @@ IonBuilder::makeCallBarrier(HandleFunction target, uint32_t argc,
     MDefinition *fun;
 
     popFormals(argc, &fun, &thisArg, &args);
-    return makeCallBarrier(target, constructing, fun, thisArg, args, types, barrier);
+    return makeCallBarrier(target, calleeTypes, constructing, cloneAtCallsite,
+                           fun, thisArg, args, types, barrier);
 }
 
 bool
-IonBuilder::makeCallBarrier(HandleFunction target, bool constructing,
+IonBuilder::makeCallBarrier(HandleFunction target, types::StackTypeSet *calleeTypes,
+                            bool constructing, bool cloneAtCallsite,
                             MDefinition *fun, MPassArg *thisArg,
                             Vector<MPassArg *> &args,
                             types::StackTypeSet *types,
                             types::StackTypeSet *barrier)
 {
-    MCall *call = makeCallHelper(target, constructing, fun, thisArg, args);
+    MCall *call = makeCallHelper(target, calleeTypes, constructing, cloneAtCallsite,
+                                 fun, thisArg, args);
     if (!call)
         return false;
 
@@ -4150,24 +4220,27 @@ IonBuilder::makeCallBarrier(HandleFunction target, bool constructing,
 }
 
 bool
-IonBuilder::makeCall(HandleFunction target, uint32_t argc, bool constructing)
+IonBuilder::makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
+                     uint32_t argc, bool constructing, bool cloneAtCallsite)
 {
     Vector<MPassArg *> args(cx);
     MPassArg *thisArg;
     MDefinition *fun;
 
     popFormals(argc, &fun, &thisArg, &args);
-    return makeCall(target, constructing, fun, thisArg, args);
+    return makeCall(target, calleeTypes, constructing, cloneAtCallsite, fun, thisArg, args);
 }
 
 bool
-IonBuilder::makeCall(HandleFunction target, bool constructing,
+IonBuilder::makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
+                     bool constructing, bool cloneAtCallsite,
                      MDefinition *fun, MPassArg *thisArg,
                      Vector<MPassArg*> &args)
 {
     types::StackTypeSet *barrier;
     types::StackTypeSet *types = oracle->returnTypeSet(script(), pc, &barrier);
-    return makeCallBarrier(target, constructing, fun, thisArg, args, types, barrier);
+    return makeCallBarrier(target, calleeTypes, constructing, cloneAtCallsite,
+                           fun, thisArg, args, types, barrier);
 }
 
 bool
@@ -6270,6 +6343,13 @@ IonBuilder::getPropTryCommonGetter(bool *emitted, HandleId id, types::StackTypeS
         return true;
     }
 
+    // Don't call the getter with a primitive value.
+    if (unaryTypes.inTypes->getKnownTypeTag() != JSVAL_TYPE_OBJECT) {
+        MGuardObject *guardObj = MGuardObject::New(obj);
+        current->add(guardObj);
+        obj = guardObj;
+    }
+
     // Spoof stack to expected state for call.
     pushConstant(ObjectValue(*commonGetter));
 
@@ -6277,7 +6357,7 @@ IonBuilder::getPropTryCommonGetter(bool *emitted, HandleId id, types::StackTypeS
     current->add(wrapper);
     current->push(wrapper);
 
-    if (!makeCallBarrier(getter, 0, false, types, barrier))
+    if (!makeCallBarrier(getter, unaryTypes.inTypes, 0, false, false, types, barrier))
         return false;
 
     *emitted = true;
@@ -6423,6 +6503,13 @@ IonBuilder::jsop_setprop(HandlePropertyName name)
             return resumeAfter(set);
         }
 
+        // Don't call the setter with a primitive value.
+        if (types->getKnownTypeTag() != JSVAL_TYPE_OBJECT) {
+            MGuardObject *guardObj = MGuardObject::New(obj);
+            current->add(guardObj);
+            obj = guardObj;
+        }
+
         // Dummy up the stack, as in getprop
         pushConstant(ObjectValue(*setter));
 
@@ -6436,7 +6523,7 @@ IonBuilder::jsop_setprop(HandlePropertyName name)
 
         // Call the setter. Note that we have to push the original value, not
         // the setter's return value.
-        MCall *call = makeCallHelper(setter, 1, false);
+        MCall *call = makeCallHelper(setter, types, 1, false, false);
         if (!call)
             return false;
 
@@ -6696,7 +6783,7 @@ IonBuilder::jsop_getaliasedvar(ScopeCoordinate sc)
 
     MDefinition *obj = walkScopeChain(sc.hops);
 
-    RootedShape shape(cx, ScopeCoordinateToStaticScope(script(), pc).scopeShape());
+    RootedShape shape(cx, ScopeCoordinateToStaticScopeShape(cx, script(), pc));
 
     MInstruction *load;
     if (shape->numFixedSlots() <= sc.slot) {
@@ -6730,7 +6817,7 @@ IonBuilder::jsop_setaliasedvar(ScopeCoordinate sc)
     MDefinition *rval = current->peek(-1);
     MDefinition *obj = walkScopeChain(sc.hops);
 
-    RootedShape shape(cx, ScopeCoordinateToStaticScope(script(), pc).scopeShape());
+    RootedShape shape(cx, ScopeCoordinateToStaticScopeShape(cx, script(), pc));
 
     MInstruction *store;
     if (shape->numFixedSlots() <= sc.slot) {

@@ -33,6 +33,7 @@
 #include "prlog.h"
 
 #include "mozilla/Likely.h"
+#include <algorithm>
 
 MOZ_STATIC_ASSERT((((1 << nsStyleStructID_Length) - 1) &
                    ~(NS_STYLE_INHERIT_MASK)) == 0,
@@ -322,7 +323,7 @@ void nsStylePadding::RecalcData()
     NS_FOR_CSS_SIDES(side) {
       // Clamp negative calc() to 0.
       mCachedPadding.Side(side) =
-        NS_MAX(CalcCoord(mPadding.Get(side), nullptr, 0), 0);
+        std::max(CalcCoord(mPadding.Get(side), nullptr, 0), 0);
     }
     mHasCachedPadding = true;
   }
@@ -623,7 +624,7 @@ nsStyleOutline::RecalcData(nsPresContext* aContext)
   } else if (IsFixedUnit(mOutlineWidth, true)) {
     // Clamp negative calc() to 0.
     mCachedOutlineWidth =
-      NS_MAX(CalcCoord(mOutlineWidth, aContext->GetBorderWidthTable(), 3), 0);
+      std::max(CalcCoord(mOutlineWidth, aContext->GetBorderWidthTable(), 3), 0);
     mCachedOutlineWidth =
       NS_ROUND_BORDER_TO_PIXELS(mCachedOutlineWidth, mTwipsPerPixel);
     mHasCachedOutline = true;
@@ -813,6 +814,7 @@ nsStyleSVG::nsStyleSVG()
     mColorInterpolationFilters = NS_STYLE_COLOR_INTERPOLATION_LINEARRGB;
     mFillRule                = NS_STYLE_FILL_RULE_NONZERO;
     mImageRendering          = NS_STYLE_IMAGE_RENDERING_AUTO;
+    mPaintOrder              = NS_STYLE_PAINT_ORDER_NORMAL;
     mShapeRendering          = NS_STYLE_SHAPE_RENDERING_AUTO;
     mStrokeLinecap           = NS_STYLE_STROKE_LINECAP_BUTT;
     mStrokeLinejoin          = NS_STYLE_STROKE_LINEJOIN_MITER;
@@ -866,6 +868,7 @@ nsStyleSVG::nsStyleSVG(const nsStyleSVG& aSource)
   mColorInterpolationFilters = aSource.mColorInterpolationFilters;
   mFillRule = aSource.mFillRule;
   mImageRendering = aSource.mImageRendering;
+  mPaintOrder = aSource.mPaintOrder;
   mShapeRendering = aSource.mShapeRendering;
   mStrokeLinecap = aSource.mStrokeLinecap;
   mStrokeLinejoin = aSource.mStrokeLinejoin;
@@ -930,6 +933,7 @@ nsChangeHint nsStyleSVG::CalcDifference(const nsStyleSVG& aOther) const
        mColorInterpolationFilters != aOther.mColorInterpolationFilters ||
        mFillRule              != aOther.mFillRule              ||
        mImageRendering        != aOther.mImageRendering        ||
+       mPaintOrder            != aOther.mPaintOrder            ||
        mShapeRendering        != aOther.mShapeRendering        ||
        mStrokeDasharrayLength != aOther.mStrokeDasharrayLength ||
        mStrokeLinecap         != aOther.mStrokeLinecap         ||
@@ -1577,7 +1581,7 @@ ConvertToPixelCoord(const nsStyleCoord& aCoord, int32_t aPercentScale)
       return 0;
   }
   NS_ABORT_IF_FALSE(pixelValue >= 0, "we ensured non-negative while parsing");
-  pixelValue = NS_MIN(pixelValue, double(INT32_MAX)); // avoid overflow
+  pixelValue = std::min(pixelValue, double(INT32_MAX)); // avoid overflow
   return NS_lround(pixelValue);
 }
 
@@ -1746,13 +1750,13 @@ nsStyleBackground::nsStyleBackground(const nsStyleBackground& aSource)
   uint32_t count = mLayers.Length();
   if (count != aSource.mLayers.Length()) {
     NS_WARNING("truncating counts due to out-of-memory");
-    mAttachmentCount = NS_MAX(mAttachmentCount, count);
-    mClipCount = NS_MAX(mClipCount, count);
-    mOriginCount = NS_MAX(mOriginCount, count);
-    mRepeatCount = NS_MAX(mRepeatCount, count);
-    mPositionCount = NS_MAX(mPositionCount, count);
-    mImageCount = NS_MAX(mImageCount, count);
-    mSizeCount = NS_MAX(mSizeCount, count);
+    mAttachmentCount = std::max(mAttachmentCount, count);
+    mClipCount = std::max(mClipCount, count);
+    mOriginCount = std::max(mOriginCount, count);
+    mRepeatCount = std::max(mRepeatCount, count);
+    mPositionCount = std::max(mPositionCount, count);
+    mImageCount = std::max(mImageCount, count);
+    mSizeCount = std::max(mSizeCount, count);
   }
 }
 

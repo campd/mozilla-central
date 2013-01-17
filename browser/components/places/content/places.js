@@ -79,11 +79,6 @@ var PlacesOrganizer = {
     gPrivateBrowsingListener.init();
 #endif
 
-    // Select the first item in the content area view.
-    let view = ContentArea.currentView;
-    let root = view.result ? view.result.root : null;
-    if (root && root.containerOpen && root.childCount > 0)
-      view.selectNode(root.getChild(0));
     ContentArea.focus();
   },
 
@@ -274,13 +269,8 @@ var PlacesOrganizer = {
    * Handle focus changes on the places list and the current content view.
    */
   updateDetailsPane: function PO_updateDetailsPane() {
-    let detailsDeck = document.getElementById("detailsDeck");
-    let detailsPaneDisabled = detailsDeck.hidden =
-      !ContentArea.currentViewOptions.showDetailsPane;
-    if (detailsPaneDisabled) {
+    if (!ContentArea.currentViewOptions.showDetailsPane)
       return;
-    }
-
     let view = PlacesUIUtils.getViewForNode(document.activeElement);
     if (view) {
       let selectedNodes = view.selectedNode ?
@@ -1252,7 +1242,9 @@ let ContentArea = {
 
   init: function CA_init() {
     this._deck = document.getElementById("placesViewsDeck");
+    this._toolbar = document.getElementById("placesToolbar");
     ContentTree.init();
+    this._setupView();
   },
 
   /**
@@ -1277,7 +1269,7 @@ let ContentArea = {
       }
     }
     catch(ex) {
-      Cu.reportError(ex);
+      Components.utils.reportError(ex);
     }
     return ContentTree.view;
   },
@@ -1313,9 +1305,40 @@ let ContentArea = {
 
   get currentPlace() this.currentView.place,
   set currentPlace(aQueryString) {
-    this.currentView = this.getContentViewForQueryString(aQueryString);
-    this.currentView.place = aQueryString;
+    let oldView = this.currentView;
+    let newView = this.getContentViewForQueryString(aQueryString);
+    newView.place = aQueryString;
+    if (oldView != newView) {
+      oldView.active = false;
+      this.currentView = newView;
+      this._setupView();
+      newView.active = true;
+    }
     return aQueryString;
+  },
+
+  /**
+   * Applies view options.
+   */
+  _setupView: function CA__setupView() {
+    let options = this.currentViewOptions;
+
+    // showDetailsPane.
+    let detailsDeck = document.getElementById("detailsDeck");
+    detailsDeck.hidden = !options.showDetailsPane;
+
+    // toolbarSet.
+    for (let elt of this._toolbar.childNodes) {
+      // On Windows and Linux the menu buttons are menus wrapped in a menubar.
+      if (elt.id == "placesMenu") {
+        for (let menuElt of elt.childNodes) {
+          menuElt.hidden = options.toolbarSet.indexOf(menuElt.id) == -1;
+        }
+      }
+      else {
+        elt.hidden = options.toolbarSet.indexOf(elt.id) == -1;
+      }
+    }
   },
 
   /**
@@ -1347,7 +1370,10 @@ let ContentTree = {
 
   get view() this._view,
 
-  get viewOptions() Object.seal({ showDetailsPane: true }),
+  get viewOptions() Object.seal({
+    showDetailsPane: true,
+    toolbarSet: "back-button, forward-button, organizeButton, viewMenu, maintenanceButton, libraryToolbarSpacer, searchFilter"
+  }),
 
   openSelectedNode: function CT_openSelectedNode(aEvent) {
     let view = this.view;
@@ -1355,10 +1381,6 @@ let ContentTree = {
   },
 
   onClick: function CT_onClick(aEvent) {
-    // Only handle clicks on tree children.
-    if (aEvent.target.localName != "treechildren")
-      return;
-
     let node = this.view.selectedNode;
     if (node) {
       let doubleClick = aEvent.button == 0 && aEvent.detail == 2;

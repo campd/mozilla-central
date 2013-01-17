@@ -60,6 +60,7 @@
 #include "nsEventListenerManager.h"
 
 #include "nsRuleData.h"
+#include <algorithm>
 
 // input type=radio
 #include "nsIRadioGroupContainer.h"
@@ -134,6 +135,7 @@ static const nsAttrValue::EnumTable kInputTypeTable[] = {
   { "submit", NS_FORM_INPUT_SUBMIT },
   { "tel", NS_FORM_INPUT_TEL },
   { "text", NS_FORM_INPUT_TEXT },
+  { "time", NS_FORM_INPUT_TIME },
   { "url", NS_FORM_INPUT_URL },
   { 0 }
 };
@@ -322,7 +324,7 @@ nsHTMLInputElement::nsFilePickerShownCallback::Done(int16_t aResult)
 }
 
 NS_IMPL_ISUPPORTS1(nsHTMLInputElement::nsFilePickerShownCallback,
-                   nsIFilePickerShownCallback);
+                   nsIFilePickerShownCallback)
 
 nsHTMLInputElement::AsyncClickHandler::AsyncClickHandler(nsHTMLInputElement* aInput)
   : mInput(aInput)
@@ -704,6 +706,7 @@ nsHTMLInputElement::Clone(nsINodeInfo *aNodeInfo, nsINode **aResult) const
     case NS_FORM_INPUT_URL:
     case NS_FORM_INPUT_NUMBER:
     case NS_FORM_INPUT_DATE:
+    case NS_FORM_INPUT_TIME:
       if (mValueChanged) {
         // We don't have our default value anymore.  Set our value on
         // the clone.
@@ -1076,7 +1079,7 @@ nsHTMLInputElement::ConvertStringToNumber(nsAString& aValue,
           return false;
         }
 
-        break;
+        return true;
       }
     case NS_FORM_INPUT_DATE:
       {
@@ -1086,37 +1089,45 @@ nsHTMLInputElement::ConvertStringToNumber(nsAString& aValue,
         }
 
         uint32_t year, month, day;
-        if (!GetValueAsDate(aValue, year, month, day)) {
+        if (!GetValueAsDate(aValue, &year, &month, &day)) {
           return false;
         }
 
         JSObject* date = JS_NewDateObjectMsec(ctx, 0);
+        if (!date) {
+          JS_ClearPendingException(ctx);
+          return false;
+        }
+
         jsval rval;
         jsval fullYear[3];
         fullYear[0].setInt32(year);
         fullYear[1].setInt32(month-1);
         fullYear[2].setInt32(day);
         if (!JS::Call(ctx, date, "setUTCFullYear", 3, fullYear, &rval)) {
+          JS_ClearPendingException(ctx);
           return false;
         }
 
         jsval timestamp;
         if (!JS::Call(ctx, date, "getTime", 0, nullptr, &timestamp)) {
+          JS_ClearPendingException(ctx);
           return false;
         }
 
-        if (!timestamp.isNumber()) {
+        if (!timestamp.isNumber() || MOZ_DOUBLE_IS_NaN(timestamp.toNumber())) {
           return false;
         }
 
         aResultValue = timestamp.toNumber();
+        return true;
       }
-      break;
     default:
       return false;
   }
 
-  return true;
+  MOZ_NOT_REACHED();
+  return false;
 }
 
 double
@@ -1242,6 +1253,7 @@ nsHTMLInputElement::ConvertNumberToString(double aValue,
 
         JSObject* date = JS_NewDateObjectMsec(ctx, aValue);
         if (!date) {
+          JS_ClearPendingException(ctx);
           return false;
         }
 
@@ -1249,6 +1261,14 @@ nsHTMLInputElement::ConvertNumberToString(double aValue,
         if (!JS::Call(ctx, date, "getUTCFullYear", 0, nullptr, &year) ||
             !JS::Call(ctx, date, "getUTCMonth", 0, nullptr, &month) ||
             !JS::Call(ctx, date, "getUTCDate", 0, nullptr, &day)) {
+          JS_ClearPendingException(ctx);
+          return false;
+        }
+
+        if (!year.isNumber() || !month.isNumber() || !day.isNumber() ||
+            MOZ_DOUBLE_IS_NaN(year.toNumber()) ||
+            MOZ_DOUBLE_IS_NaN(month.toNumber()) ||
+            MOZ_DOUBLE_IS_NaN(day.toNumber())) {
           return false;
         }
 
@@ -1274,18 +1294,25 @@ nsHTMLInputElement::GetValueAsDate(JSContext* aCtx, jsval* aDate)
   uint32_t year, month, day;
   nsAutoString value;
   GetValueInternal(value);
-  if (!GetValueAsDate(value, year, month, day)) {
+  if (!GetValueAsDate(value, &year, &month, &day)) {
     aDate->setNull();
     return NS_OK;
   }
 
   JSObject* date = JS_NewDateObjectMsec(aCtx, 0);
+  if (!date) {
+    JS_ClearPendingException(aCtx);
+    aDate->setNull();
+    return NS_OK;
+  }
+
   jsval rval;
   jsval fullYear[3];
   fullYear[0].setInt32(year);
   fullYear[1].setInt32(month-1);
   fullYear[2].setInt32(day);
   if(!JS::Call(aCtx, date, "setUTCFullYear", 3, fullYear, &rval)) {
+    JS_ClearPendingException(aCtx);
     aDate->setNull();
     return NS_OK;
   }
@@ -1301,15 +1328,22 @@ nsHTMLInputElement::SetValueAsDate(JSContext* aCtx, const jsval& aDate)
     return NS_ERROR_DOM_INVALID_STATE_ERR;
   }
 
+  if (aDate.isNullOrUndefined()) {
+    return SetValue(EmptyString());
+  }
+
+  // TODO: return TypeError when HTMLInputElement is converted to WebIDL, see
+  // bug 826302.
   if (!aDate.isObject() || !JS_ObjectIsDate(aCtx, &aDate.toObject())) {
     SetValue(EmptyString());
-    return NS_OK;
+    return NS_ERROR_INVALID_ARG;
   }
 
   JSObject& date = aDate.toObject();
   jsval timestamp;
-  bool ret = JS::Call(aCtx, &date, "getTime", 0, nullptr, &timestamp);
-  if (!ret || !timestamp.isNumber() || MOZ_DOUBLE_IS_NaN(timestamp.toNumber())) {
+  if (!JS::Call(aCtx, &date, "getTime", 0, nullptr, &timestamp) ||
+      !timestamp.isNumber() || MOZ_DOUBLE_IS_NaN(timestamp.toNumber())) {
+    JS_ClearPendingException(aCtx);
     SetValue(EmptyString());
     return NS_OK;
   }
@@ -1472,10 +1506,10 @@ nsHTMLInputElement::ApplyStep(int32_t aStep)
     value = max;
   // If we go down, we want to clamp on min.
   } else if (aStep < 0 && min == min) {
-    value = NS_MAX(value, min);
+    value = std::max(value, min);
   // If we go up, we want to clamp on max.
   } else if (aStep > 0 && max == max) {
-    value = NS_MIN(value, max);
+    value = std::min(value, max);
   }
 
   SetValue(value);
@@ -1566,7 +1600,8 @@ NS_IMETHODIMP
 nsHTMLInputElement::MozIsTextField(bool aExcludePassword, bool* aResult)
 {
   // TODO: temporary until bug 635240 and 773205 are fixed.
-  if (mType == NS_FORM_INPUT_NUMBER || mType == NS_FORM_INPUT_DATE) {
+  if (mType == NS_FORM_INPUT_NUMBER || mType == NS_FORM_INPUT_DATE ||
+      mType == NS_FORM_INPUT_TIME) {
     *aResult = false;
     return NS_OK;
   }
@@ -2659,6 +2694,7 @@ nsHTMLInputElement::PostHandleEvent(nsEventChainPostVisitor& aVisitor)
                keyEvent->keyCode == NS_VK_ENTER) &&
                (IsSingleLineTextControl(false, mType) ||
                 mType == NS_FORM_INPUT_NUMBER ||
+                mType == NS_FORM_INPUT_TIME ||
                 mType == NS_FORM_INPUT_DATE)) {
             FireChangeEventIfNeeded();   
             rv = MaybeSubmitForm(aVisitor.mPresContext);
@@ -2960,116 +2996,70 @@ nsHTMLInputElement::SanitizeValue(nsAString& aValue)
         }
       }
       break;
+    case NS_FORM_INPUT_TIME:
+      {
+        if (!aValue.IsEmpty() && !IsValidTime(aValue)) {
+          aValue.Truncate();
+        }
+      }
+      break;
   }
 }
 
 bool
-nsHTMLInputElement::IsValidDate(nsAString& aValue) const
+nsHTMLInputElement::IsValidDate(const nsAString& aValue) const
 {
   uint32_t year, month, day;
-  return GetValueAsDate(aValue, year, month, day);
+  return GetValueAsDate(aValue, &year, &month, &day);
 }
 
 bool
-nsHTMLInputElement::GetValueAsDate(nsAString& aValue,
-                                   uint32_t& aYear,
-                                   uint32_t& aMonth,
-                                   uint32_t& aDay) const
+nsHTMLInputElement::GetValueAsDate(const nsAString& aValue,
+                                   uint32_t* aYear,
+                                   uint32_t* aMonth,
+                                   uint32_t* aDay) const
 {
 
 /*
- * Parse the year, month, day values out a date string formatted as 'yyy-mm-dd'.
+ * Parse the year, month, day values out a date string formatted as 'yyyy-mm-dd'.
  * -The year must be 4 or more digits long, and year > 0
  * -The month must be exactly 2 digits long, and 01 <= month <= 12
  * -The day must be exactly 2 digit long, and 01 <= day <= maxday
  *  Where maxday is the number of days in the month 'month' and year 'year'
  */
 
-  if (aValue.IsEmpty()) {
+  if (aValue.Length() < 10) {
     return false;
   }
 
-  int32_t fieldMaxSize = 0;
-  int32_t fieldMinSize = 4;
-  enum {
-    YEAR, MONTH, DAY, NONE
-  } field;
-  int32_t fieldSize = 0;
-  nsresult ec;
+  uint32_t endOfYearOffset = 0;
+  for (; NS_IsAsciiDigit(aValue[endOfYearOffset]); ++endOfYearOffset);
 
-  field = YEAR;
-  for (uint32_t offset = 0; offset < aValue.Length(); ++offset) {
-    // Test if the fied size is superior to its maximum size.
-    if (fieldMaxSize && fieldSize > fieldMaxSize) {
-      return false;
-    }
-
-    // Illegal char.
-    if (aValue[offset] != '-' && !NS_IsAsciiDigit(aValue[offset])) {
-      return false;
-    }
-
-    // There are more characters in this field.
-    if (aValue[offset] != '-' && offset != aValue.Length()-1) {
-      fieldSize++;
-      continue;
-    }
-
-    // Parse the field.
-    if (fieldSize < fieldMinSize) {
-      return false;
-    }
-
-    switch(field) {
-      case YEAR:
-        aYear = PromiseFlatString(StringHead(aValue, offset)).ToInteger(&ec);
-        NS_ENSURE_SUCCESS(ec, false);
-
-        if (aYear <= 0) {
-          return false;
-        }
-
-        // The field after year is month, which have a fixed size of 2 char.
-        field = MONTH;
-        fieldMaxSize = 2;
-        fieldMinSize = 2;
-        break;
-      case MONTH:
-        aMonth = PromiseFlatString(Substring(aValue,
-                                            offset-fieldSize,
-                                            offset)).ToInteger(&ec);
-        NS_ENSURE_SUCCESS(ec, false);
-
-        if (aMonth < 1 || aMonth > 12) {
-          return false;
-        }
-
-        // The next field is the last one, we won't parse a '-',
-        // so the field size will be one char smaller.
-        field = DAY;
-        fieldMinSize = 1;
-        fieldMaxSize = 1;
-        break;
-      case DAY:
-        aDay = PromiseFlatString(Substring(aValue,
-                                          offset-fieldSize,
-                                          offset + 1)).ToInteger(&ec);
-        NS_ENSURE_SUCCESS(ec, false);
-
-        if (aDay <  1 || aDay > NumberOfDaysInMonth(aMonth, aYear)) {
-          return false;
-        }
-
-        field = NONE;
-        break;
-      default:
-        return false;
-    }
-
-    fieldSize = 0;
+  // The year must be at least 4 digits long.
+  if (aValue[endOfYearOffset] != '-' || endOfYearOffset < 4) {
+    return false;
   }
 
-  return field == NONE;
+  // Now, we know where is the next '-' and what should be the size of the
+  // string.
+  if (aValue[endOfYearOffset + 3] != '-' ||
+      aValue.Length() != 10 + (endOfYearOffset - 4)) {
+    return false;
+  }
+
+  nsresult ec;
+  *aYear = PromiseFlatString(StringHead(aValue, endOfYearOffset)).ToInteger(&ec);
+  if (NS_FAILED(ec) || *aYear == 0) {
+    return false;
+  }
+
+  if (!DigitSubStringToNumber(aValue, endOfYearOffset + 1, 2, aMonth) ||
+      *aMonth < 1 || *aMonth > 12) {
+    return false;
+  }
+
+  return DigitSubStringToNumber(aValue, endOfYearOffset + 4, 2, aDay) &&
+         *aDay > 0 && *aDay <= NumberOfDaysInMonth(*aMonth, *aYear);
 }
 
 uint32_t
@@ -3098,6 +3088,88 @@ nsHTMLInputElement::NumberOfDaysInMonth(uint32_t aMonth, uint32_t aYear) const
   return (aYear % 400 == 0 || (aYear % 100 != 0 && aYear % 4 == 0))
           ? 29 : 28;
 }
+
+/* static */ bool
+nsHTMLInputElement::DigitSubStringToNumber(const nsAString& aStr,
+                                           uint32_t aStart, uint32_t aLen,
+                                           uint32_t* aRetVal)
+{
+  MOZ_ASSERT(aStr.Length() > (aStart + aLen - 1));
+
+  for (uint32_t offset = 0; offset < aLen; ++offset) {
+    if (!NS_IsAsciiDigit(aStr[aStart + offset])) {
+      return false;
+    }
+  }
+
+  nsresult ec;
+  *aRetVal = static_cast<uint32_t>(PromiseFlatString(Substring(aStr, aStart, aLen)).ToInteger(&ec));
+
+  return NS_SUCCEEDED(ec);
+}
+
+bool
+nsHTMLInputElement::IsValidTime(const nsAString& aValue) const
+{
+  /* The string must have the following parts:
+   * - HOURS: two digits, value being in [0, 23];
+   * - Colon (:);
+   * - MINUTES: two digits, value being in [0, 59];
+   * - Optional:
+   *   - Colon (:);
+   *   - SECONDS: two digits, value being in [0, 59];
+   *   - Optional:
+   *     - DOT (.);
+   *     - FRACTIONAL SECONDS: one to three digits, no value range.
+   */
+
+  // The following format is the shorter one allowed: "HH:MM".
+  if (aValue.Length() < 5) {
+    return false;
+  }
+
+  uint32_t hours;
+  if (!DigitSubStringToNumber(aValue, 0, 2, &hours) || hours > 23) {
+    return false;
+  }
+
+  // Hours/minutes separator.
+  if (aValue[2] != ':') {
+    return false;
+  }
+
+  uint32_t minutes;
+  if (!DigitSubStringToNumber(aValue, 3, 2, &minutes) || minutes > 59) {
+    return false;
+  }
+
+  if (aValue.Length() == 5) {
+    return true;
+  }
+
+  // The following format is the next shorter one: "HH:MM:SS".
+  if (aValue.Length() < 8 || aValue[5] != ':') {
+    return false;
+  }
+
+  uint32_t seconds;
+  if (!DigitSubStringToNumber(aValue, 6, 2, &seconds) || seconds > 59) {
+    return false;
+  }
+
+  if (aValue.Length() == 8) {
+    return true;
+  }
+
+  // The string must follow this format now: "HH:MM:SS.{s,ss,sss}".
+  // There can be 1 to 3 digits for the fractions of seconds.
+  if (aValue.Length() == 9 || aValue.Length() > 12 || aValue[8] != '.') {
+    return false;
+  }
+
+  uint32_t fractionsSeconds;
+  return DigitSubStringToNumber(aValue, 9, aValue.Length() - 9, &fractionsSeconds);
+}
  
 bool
 nsHTMLInputElement::ParseAttribute(int32_t aNamespaceID,
@@ -3114,6 +3186,7 @@ nsHTMLInputElement::ParseAttribute(int32_t aNamespaceID,
       if (success) {
         newType = aResult.GetEnumValue();
         if ((newType == NS_FORM_INPUT_NUMBER ||
+             newType == NS_FORM_INPUT_TIME ||
              newType == NS_FORM_INPUT_DATE) && 
             !Preferences::GetBool("dom.experimental_forms", false)) {
           newType = kInputDefaultType->value;
@@ -3741,6 +3814,7 @@ nsHTMLInputElement::SaveState()
     case NS_FORM_INPUT_HIDDEN:
     case NS_FORM_INPUT_NUMBER:
     case NS_FORM_INPUT_DATE:
+    case NS_FORM_INPUT_TIME:
       {
         if (mValueChanged) {
           inputState = new nsHTMLInputElementState();
@@ -3926,6 +4000,7 @@ nsHTMLInputElement::RestoreState(nsPresState* aState)
       case NS_FORM_INPUT_HIDDEN:
       case NS_FORM_INPUT_NUMBER:
       case NS_FORM_INPUT_DATE:
+      case NS_FORM_INPUT_TIME:
         {
           SetValueInternal(inputState->GetValue(), false, true);
           break;
@@ -4151,6 +4226,7 @@ nsHTMLInputElement::GetValueMode() const
     case NS_FORM_INPUT_URL:
     case NS_FORM_INPUT_NUMBER:
     case NS_FORM_INPUT_DATE:
+    case NS_FORM_INPUT_TIME:
       return VALUE_MODE_VALUE;
     default:
       NS_NOTYETIMPLEMENTED("Unexpected input type in GetValueMode()");
@@ -4196,6 +4272,7 @@ nsHTMLInputElement::DoesReadOnlyApply() const
     case NS_FORM_INPUT_URL:
     case NS_FORM_INPUT_NUMBER:
     case NS_FORM_INPUT_DATE:
+    case NS_FORM_INPUT_TIME:
       return true;
     default:
       NS_NOTYETIMPLEMENTED("Unexpected input type in DoesReadOnlyApply()");
@@ -4233,6 +4310,7 @@ nsHTMLInputElement::DoesRequiredApply() const
     case NS_FORM_INPUT_URL:
     case NS_FORM_INPUT_NUMBER:
     case NS_FORM_INPUT_DATE:
+    case NS_FORM_INPUT_TIME:
       return true;
     default:
       NS_NOTYETIMPLEMENTED("Unexpected input type in DoesRequiredApply()");
@@ -4247,7 +4325,8 @@ nsHTMLInputElement::DoesRequiredApply() const
 bool
 nsHTMLInputElement::PlaceholderApplies() const
 {
-  if (mType == NS_FORM_INPUT_DATE) {
+  if (mType == NS_FORM_INPUT_DATE ||
+      mType == NS_FORM_INPUT_TIME) {
     return false;
   }
 
@@ -4257,8 +4336,9 @@ nsHTMLInputElement::PlaceholderApplies() const
 bool
 nsHTMLInputElement::DoesPatternApply() const
 {
-  // TODO: temporary until bug 635240 is fixed.
-  if (mType == NS_FORM_INPUT_NUMBER || mType == NS_FORM_INPUT_DATE) {
+  // TODO: temporary until bug 635240 and bug 773205 are fixed.
+  if (mType == NS_FORM_INPUT_NUMBER || mType == NS_FORM_INPUT_DATE ||
+      mType == NS_FORM_INPUT_TIME) {
     return false;
   }
 
@@ -4291,6 +4371,8 @@ nsHTMLInputElement::DoesMinMaxApply() const
     case NS_FORM_INPUT_TEL:
     case NS_FORM_INPUT_EMAIL:
     case NS_FORM_INPUT_URL:
+    // TODO: temp until bug 781572 is fixed.
+    case NS_FORM_INPUT_TIME:
       return false;
     default:
       NS_NOTYETIMPLEMENTED("Unexpected input type in DoesRequiredApply()");
@@ -4466,7 +4548,8 @@ nsHTMLInputElement::HasPatternMismatch() const
 bool
 nsHTMLInputElement::IsRangeOverflow() const
 {
-  if (!DoesMinMaxApply()) {
+  // Ignore type=time until bug 781572 is fixed.
+  if (!DoesMinMaxApply() || mType == NS_FORM_INPUT_TIME) {
     return false;
   }
 

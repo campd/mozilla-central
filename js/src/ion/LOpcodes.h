@@ -39,8 +39,8 @@
     _(ApplyArgsGeneric)             \
     _(StackArgT)                    \
     _(StackArgV)                    \
-    _(CreateThisV)                  \
-    _(CreateThisO)                  \
+    _(CreateThis)                   \
+    _(CreateThisWithProto)          \
     _(CreateThisWithTemplate)       \
     _(ReturnFromCtor)               \
     _(BitNotI)                      \
@@ -154,6 +154,7 @@
     _(CallGetProperty)              \
     _(GetNameCache)                 \
     _(CallGetIntrinsicValue)        \
+    _(CallsiteCloneCache)           \
     _(CallGetElement)               \
     _(CallSetElement)               \
     _(CallSetProperty)              \

@@ -37,6 +37,7 @@
 #include "nsIDocShellTreeNode.h"
 #include "nsIWebNavigation.h"
 #include "nsIContentViewer.h"
+#include <algorithm>
 #ifdef MOZ_XUL
 #include "nsXULPopupManager.h"
 #endif
@@ -1896,6 +1897,7 @@ nsEventStateManager::FireContextClick()
                              type == NS_FORM_INPUT_FILE ||
                              type == NS_FORM_INPUT_NUMBER ||
                              type == NS_FORM_INPUT_DATE ||
+                             type == NS_FORM_INPUT_TIME ||
                              type == NS_FORM_TEXTAREA);
       }
       else if (tag == nsGkAtoms::applet ||
@@ -3314,6 +3316,9 @@ nsEventStateManager::PostHandleEvent(nsPresContext* aPresContext,
       widget::WheelEvent* wheelEvent = static_cast<widget::WheelEvent*>(aEvent);
       switch (WheelPrefs::GetInstance()->ComputeActionFor(wheelEvent)) {
         case WheelPrefs::ACTION_SCROLL: {
+          if (!wheelEvent->deltaX && !wheelEvent->deltaY) {
+            break;
+          }
           // For scrolling of default action, we should honor the mouse wheel
           // transaction.
           nsIScrollableFrame* scrollTarget =
@@ -3330,15 +3335,34 @@ nsEventStateManager::PostHandleEvent(nsPresContext* aPresContext,
           }
           break;
         }
-        case WheelPrefs::ACTION_HISTORY:
-          DoScrollHistory(wheelEvent->GetPreferredIntDelta());
+        case WheelPrefs::ACTION_HISTORY: {
+          // If this event doesn't cause NS_MOUSE_SCROLL event or the direction
+          // is oblique, don't perform history back/forward.
+          int32_t intDelta = wheelEvent->GetPreferredIntDelta();
+          if (!intDelta) {
+            break;
+          }
+          DoScrollHistory(intDelta);
           break;
-
-        case WheelPrefs::ACTION_ZOOM:
-          DoScrollZoom(aTargetFrame, wheelEvent->GetPreferredIntDelta());
+        }
+        case WheelPrefs::ACTION_ZOOM: {
+          // If this event doesn't cause NS_MOUSE_SCROLL event or the direction
+          // is oblique, don't perform zoom in/out.
+          int32_t intDelta = wheelEvent->GetPreferredIntDelta();
+          if (!intDelta) {
+            break;
+          }
+          DoScrollZoom(aTargetFrame, intDelta);
           break;
-
+        }
+        case WheelPrefs::ACTION_NONE:
         default:
+          // If we don't handle the wheel event, all of the delta values must
+          // be overflown delta values.
+          wheelEvent->overflowDeltaX = wheelEvent->deltaX;
+          wheelEvent->overflowDeltaY = wheelEvent->deltaY;
+          WheelPrefs::GetInstance()->
+            CancelApplyingUserPrefsFromOverflowDelta(wheelEvent);
           break;
       }
       *aStatus = nsEventStatus_eConsumeNoDefault;
@@ -3824,7 +3848,7 @@ nsEventStateManager::SetCursor(int32_t aCursor, imgIContainer* aContainer,
       aContainer->GetWidth(&imgWidth);
       aContainer->GetHeight(&imgHeight);
 
-      // XXX NS_MAX(NS_lround(x), 0)?
+      // XXX std::max(NS_lround(x), 0)?
       hotspotX = aHotspotX > 0.0f
                    ? uint32_t(aHotspotX + 0.5f) : uint32_t(0);
       if (hotspotX >= uint32_t(imgWidth))
@@ -5529,10 +5553,6 @@ nsEventStateManager::WheelPrefs::CancelApplyingUserPrefsFromOverflowDelta(
 nsEventStateManager::WheelPrefs::Action
 nsEventStateManager::WheelPrefs::ComputeActionFor(widget::WheelEvent* aEvent)
 {
-  if (!aEvent->deltaX && !aEvent->deltaY) {
-    return ACTION_NONE;
-  }
-
   Index index = GetIndexFor(aEvent);
   Init(index);
 
@@ -5552,9 +5572,7 @@ nsEventStateManager::WheelPrefs::ComputeActionFor(widget::WheelEvent* aEvent)
                                                        ACTION_NONE;
   }
 
-  // If this event doesn't cause NS_MOUSE_SCROLL event or the direction is
-  // oblique, history and zoom shouldn't be executed.
-  return !aEvent->GetPreferredIntDelta() ? ACTION_NONE : actions[index];
+  return actions[index];
 }
 
 bool

@@ -7,6 +7,7 @@
 #include "mozilla/dom/ContentChild.h"
 #include "mozilla/dom/TabChild.h"
 #include "mozilla/Util.h"
+#include <algorithm>
 
 #ifdef MOZ_LOGGING
 // so we can get logging even in release builds (but only for some things)
@@ -66,7 +67,7 @@
 #include "nsDOMJSUtils.h"
 #include "nsIInterfaceRequestorUtils.h"
 #include "nsView.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsIScriptChannel.h"
 #include "nsIOfflineCacheUpdate.h"
 #include "nsITimedChannel.h"
@@ -193,7 +194,10 @@
 #include "mozilla/Telemetry.h"
 #include "nsISecurityUITelemetry.h"
 
-#ifndef MOZ_PER_WINDOW_PRIVATE_BROWSING
+#ifdef MOZ_PER_WINDOW_PRIVATE_BROWSING
+#include "nsIAppShellService.h"
+#include "nsAppShellCID.h"
+#else
 #include "nsIPrivateBrowsingService.h"
 #endif
 
@@ -220,9 +224,9 @@ static uint32_t gNumberOfPrivateDocShells = 0;
 
 // Global count of private docshells which will always remain open
 #ifdef MOZ_PER_WINDOW_PRIVATE_BROWSING
-static const uint32_t kNumberOfAlwaysOpenPrivateDocShells = 1; // the private hidden window
+static uint32_t gNumberOfAlwaysOpenPrivateDocShells = 0; // the private hidden window
 #else
-static const uint32_t kNumberOfAlwaysOpenPrivateDocShells = 0;
+static const uint32_t gNumberOfAlwaysOpenPrivateDocShells = 0;
 #endif
 
 // Global reference to the URI fixup service.
@@ -689,10 +693,26 @@ ConvertLoadTypeToNavigationType(uint32_t aLoadType)
 static nsISHEntry* GetRootSHEntry(nsISHEntry *entry);
 
 static void
+AdjustAlwaysOpenPrivateDocShellCount()
+{
+#ifdef MOZ_PER_WINDOW_PRIVATE_BROWSING
+    nsCOMPtr<nsIAppShellService> appShell
+      (do_GetService(NS_APPSHELLSERVICE_CONTRACTID));
+    bool hasHiddenPrivateWindow = false;
+    if (appShell) {
+      appShell->GetHasHiddenPrivateWindow(&hasHiddenPrivateWindow);
+    }
+    gNumberOfAlwaysOpenPrivateDocShells = hasHiddenPrivateWindow ? 1 : 0;
+#endif
+}
+
+static void
 IncreasePrivateDocShellCount()
 {
+    AdjustAlwaysOpenPrivateDocShellCount();
+
     gNumberOfPrivateDocShells++;
-    if (gNumberOfPrivateDocShells > kNumberOfAlwaysOpenPrivateDocShells + 1 ||
+    if (gNumberOfPrivateDocShells > gNumberOfAlwaysOpenPrivateDocShells + 1 ||
         XRE_GetProcessType() != GeckoProcessType_Content) {
         return;
     }
@@ -704,9 +724,11 @@ IncreasePrivateDocShellCount()
 static void
 DecreasePrivateDocShellCount()
 {
+    AdjustAlwaysOpenPrivateDocShellCount();
+
     MOZ_ASSERT(gNumberOfPrivateDocShells > 0);
     gNumberOfPrivateDocShells--;
-    if (gNumberOfPrivateDocShells == kNumberOfAlwaysOpenPrivateDocShells)
+    if (gNumberOfPrivateDocShells == gNumberOfAlwaysOpenPrivateDocShells)
     {
         if (XRE_GetProcessType() == GeckoProcessType_Content) {
             mozilla::dom::ContentChild* cc = mozilla::dom::ContentChild::GetSingleton();
@@ -1393,6 +1415,16 @@ nsDocShell::LoadURI(nsIURI * aURI,
                 }
             } // parent
         } //parentDS
+        else {  
+            // This is the root docshell. If we got here while  
+            // executing an onLoad Handler,this load will not go 
+            // into session history.
+            bool inOnLoadHandler=false;
+            GetIsExecutingOnLoadHandler(&inOnLoadHandler);
+            if (inOnLoadHandler) {
+                loadType = LOAD_NORMAL_REPLACE;
+            }
+        } 
     } // !shEntry
 
     if (shEntry) {
@@ -2400,8 +2432,8 @@ nsDocShell::HistoryPurged(int32_t aNumEntries)
     // eviction.  We need to adjust by the number of entries that we
     // just purged from history, so that we look at the right session history
     // entries during eviction.
-    mPreviousTransIndex = NS_MAX(-1, mPreviousTransIndex - aNumEntries);
-    mLoadedTransIndex = NS_MAX(0, mLoadedTransIndex - aNumEntries);
+    mPreviousTransIndex = std::max(-1, mPreviousTransIndex - aNumEntries);
+    mLoadedTransIndex = std::max(0, mLoadedTransIndex - aNumEntries);
 
     int32_t count = mChildList.Count();
     for (int32_t i = 0; i < count; ++i) {
@@ -3249,7 +3281,7 @@ PrintDocTree(nsIDocShellTreeItem * aParentNode, int aLevel)
   nsCOMPtr<nsIDOMWindow> domwin(doc->GetWindow());
 
   nsCOMPtr<nsIWidget> widget;
-  nsIViewManager* vm = presShell->GetViewManager();
+  nsViewManager* vm = presShell->GetViewManager();
   if (vm) {
     vm->GetWidget(getter_AddRefs(widget));
   }
@@ -5048,10 +5080,10 @@ nsDocShell::Repaint(bool aForce)
     nsCOMPtr<nsIPresShell> presShell =GetPresShell();
     NS_ENSURE_TRUE(presShell, NS_ERROR_FAILURE);
 
-    nsIViewManager* viewManager = presShell->GetViewManager();
+    nsViewManager* viewManager = presShell->GetViewManager();
     NS_ENSURE_TRUE(viewManager, NS_ERROR_FAILURE);
 
-    NS_ENSURE_SUCCESS(viewManager->InvalidateAllViews(), NS_ERROR_FAILURE);
+    viewManager->InvalidateAllViews();
     return NS_OK;
 }
 
@@ -5115,7 +5147,7 @@ nsDocShell::GetVisibility(bool * aVisibility)
         return NS_OK;
 
     // get the view manager
-    nsIViewManager* vm = presShell->GetViewManager();
+    nsViewManager* vm = presShell->GetViewManager();
     NS_ENSURE_TRUE(vm, NS_ERROR_FAILURE);
 
     // get the root view
@@ -6498,7 +6530,7 @@ nsDocShell::EndPageLoad(nsIWebProgress * aProgress,
     nsCOMPtr<nsIDocShell> kungFuDeathGrip(this);
 
     // Notify the ContentViewer that the Document has finished loading.  This
-    // will cause any OnLoad(...) handlers to fire.
+    // will cause any OnLoad(...) and PopState(...) handlers to fire.
     if (!mEODForCurrentDocument && mContentViewer) {
         mIsExecutingOnLoadHandler = true;
         mContentViewer->LoadComplete(aStatus);
@@ -7388,7 +7420,7 @@ nsDocShell::RestoreFromHistory()
 
     nsCOMPtr<nsIPresShell> oldPresShell = GetPresShell();
     if (oldPresShell) {
-        nsIViewManager *vm = oldPresShell->GetViewManager();
+        nsViewManager *vm = oldPresShell->GetViewManager();
         if (vm) {
             nsView *oldRootView = vm->GetRootView();
 
@@ -7609,7 +7641,7 @@ nsDocShell::RestoreFromHistory()
 
     nsCOMPtr<nsIPresShell> shell = GetPresShell();
 
-    nsIViewManager *newVM = shell ? shell->GetViewManager() : nullptr;
+    nsViewManager *newVM = shell ? shell->GetViewManager() : nullptr;
     nsView *newRootView = newVM ? newVM->GetRootView() : nullptr;
 
     // Insert the new root view at the correct location in the view tree.
@@ -7625,7 +7657,7 @@ nsDocShell::RestoreFromHistory()
         rootViewSibling = nullptr;
     }
     if (rootViewParent && newRootView && newRootView->GetParent() != rootViewParent) {
-        nsIViewManager *parentVM = rootViewParent->GetViewManager();
+        nsViewManager *parentVM = rootViewParent->GetViewManager();
         if (parentVM) {
             // InsertChild(parent, child, sib, true) inserts the child after
             // sib in content order, which is before sib in view order. BUT
@@ -8650,6 +8682,8 @@ nsDocShell::InternalLoad(nsIURI * aURI,
     if (mIsBeingDestroyed) {
         return NS_ERROR_FAILURE;
     }
+
+    NS_ENSURE_STATE(!HasUnloadedParent());
 
     rv = CheckLoadingPermissions();
     if (NS_FAILED(rv)) {
@@ -10469,13 +10503,11 @@ nsDocShell::AddToSessionHistory(nsIURI * aURI, nsIChannel * aChannel,
             NS_ASSERTION(entry == newEntry, "The new session history should be in the new entry");
         }
 
-        int32_t index = 0;   
-        mSessionHistory->GetIndex(&index);
-
         // This is the root docshell
-        if (-1 != index &&
-            LOAD_TYPE_HAS_FLAGS(mLoadType, LOAD_FLAGS_REPLACE_HISTORY)) {            
+        if (LOAD_TYPE_HAS_FLAGS(mLoadType, LOAD_FLAGS_REPLACE_HISTORY)) {            
             // Replace current entry in session history.
+            int32_t  index = 0;   
+            mSessionHistory->GetIndex(&index);
             nsCOMPtr<nsISHistoryInternal>   shPrivate(do_QueryInterface(mSessionHistory));
             // Replace the current entry with the new entry
             if (shPrivate)
@@ -10486,7 +10518,7 @@ nsDocShell::AddToSessionHistory(nsIURI * aURI, nsIChannel * aChannel,
             nsCOMPtr<nsISHistoryInternal>
                 shPrivate(do_QueryInterface(mSessionHistory));
             NS_ENSURE_TRUE(shPrivate, NS_ERROR_FAILURE);
-            mPreviousTransIndex = index;
+            mSessionHistory->GetIndex(&mPreviousTransIndex);
             rv = shPrivate->AddEntry(entry, shouldPersist);
             mSessionHistory->GetIndex(&mLoadedTransIndex);
 #ifdef DEBUG_PAGE_CACHE
@@ -12439,4 +12471,24 @@ nsDocShell::GetAsyncPanZoomEnabled(bool* aOut)
     }
     *aOut = false;
     return NS_OK;
+}
+
+bool
+nsDocShell::HasUnloadedParent()
+{
+    nsCOMPtr<nsIDocShellTreeItem> currentTreeItem = this;
+    while (currentTreeItem) {
+        nsCOMPtr<nsIDocShellTreeItem> parentTreeItem;
+        currentTreeItem->GetParent(getter_AddRefs(parentTreeItem));
+        nsCOMPtr<nsIDocShell> parent = do_QueryInterface(parentTreeItem);
+        if (parent) {
+            bool inUnload = false;
+            parent->GetIsInUnload(&inUnload);
+            if (inUnload) {
+                return true;
+            }
+        }
+        currentTreeItem.swap(parentTreeItem);
+    }
+    return false;
 }

@@ -12,7 +12,7 @@
 #include "nsStyleContext.h"
 #include "nsCSSRendering.h"
 #include "nsINameSpaceManager.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsWidgetsCID.h"
 #include "nsMenuFrame.h"
 #include "nsMenuBarFrame.h"
@@ -49,6 +49,7 @@
 #include "nsDisplayList.h"
 #include "mozilla/Preferences.h"
 #include "mozilla/LookAndFeel.h"
+#include <algorithm>
 
 using namespace mozilla;
 
@@ -125,7 +126,7 @@ nsMenuPopupFrame::Init(nsIContent*      aContent,
   // so we use the nsView::SetFloating() to tell the view manager
   // about that constraint.
   nsView* ourView = GetView();
-  nsIViewManager* viewManager = ourView->GetViewManager();
+  nsViewManager* viewManager = ourView->GetViewManager();
   viewManager->SetViewFloating(ourView, true);
 
   mPopupType = ePopupTypePanel;
@@ -459,7 +460,7 @@ nsMenuPopupFrame::LayoutPopup(nsBoxLayoutState& aState, nsIFrame* aParentMenu, b
   }
 
   if (isOpen) {
-    nsIViewManager* viewManager = view->GetViewManager();
+    nsViewManager* viewManager = view->GetViewManager();
     nsRect rect = GetRect();
     rect.x = rect.y = 0;
     viewManager->ResizeView(view, rect);
@@ -794,7 +795,7 @@ nsMenuPopupFrame::HidePopup(bool aDeselectMenu, nsPopupState aNewState)
   mHFlip = mVFlip = false;
 
   nsView* view = GetView();
-  nsIViewManager* viewManager = view->GetViewManager();
+  nsViewManager* viewManager = view->GetViewManager();
   viewManager->SetViewVisibility(view, nsViewVisibility_kHide);
 
   FireDOMEvent(NS_LITERAL_STRING("DOMMenuInactive"), mContent);
@@ -1068,7 +1069,7 @@ nsMenuPopupFrame::FlipOrResize(nscoord& aScreenPoint, nscoord aSize,
   if (popupSize <= 0 || aSize < popupSize) {
     popupSize = aSize;
   }
-  return NS_MIN(popupSize, aScreenEnd - aScreenPoint);
+  return std::min(popupSize, aScreenEnd - aScreenPoint);
 }
 
 nsresult
@@ -1325,8 +1326,8 @@ nsMenuPopupFrame::GetConstraintRect(const nsRect& aAnchorRect,
     // anchor is located.
     nsRect rect = mInContentShell ? aRootScreenRect : aAnchorRect;
     // nsIScreenManager::ScreenForRect wants the coordinates in CSS pixels
-    int32_t width = NS_MAX(1, nsPresContext::AppUnitsToIntCSSPixels(rect.width));
-    int32_t height = NS_MAX(1, nsPresContext::AppUnitsToIntCSSPixels(rect.height));
+    int32_t width = std::max(1, nsPresContext::AppUnitsToIntCSSPixels(rect.width));
+    int32_t height = std::max(1, nsPresContext::AppUnitsToIntCSSPixels(rect.height));
     sm->ScreenForRect(nsPresContext::AppUnitsToIntCSSPixels(rect.x),
                       nsPresContext::AppUnitsToIntCSSPixels(rect.y),
                       width, height, getter_AddRefs(screen));
@@ -1919,7 +1920,7 @@ nsMenuPopupFrame::CreatePopupView()
     return NS_OK;
   }
 
-  nsIViewManager* viewManager = PresContext()->GetPresShell()->GetViewManager();
+  nsViewManager* viewManager = PresContext()->GetPresShell()->GetViewManager();
   NS_ASSERTION(nullptr != viewManager, "null view manager");
 
   // Create a view

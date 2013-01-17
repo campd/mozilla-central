@@ -57,6 +57,7 @@
 #include "nsIEditor.h"
 #include "nsIEditorDocShell.h"
 #include "nsIMozBrowserFrame.h"
+#include "nsIPermissionManager.h"
 
 #include "nsLayoutUtils.h"
 #include "nsView.h"
@@ -76,7 +77,7 @@
 
 #include "Layers.h"
 
-#include "AppProcessPermissions.h"
+#include "AppProcessChecker.h"
 #include "ContentParent.h"
 #include "TabParent.h"
 #include "mozilla/GuardObjects.h"
@@ -282,6 +283,7 @@ NS_INTERFACE_MAP_END
 
 nsFrameLoader::nsFrameLoader(Element* aOwner, bool aNetworkCreated)
   : mOwnerContent(aOwner)
+  , mAppIdSentToPermissionManager(nsIScriptSecurityManager::NO_APP_ID)
   , mDetachedSubdocViews(nullptr)
   , mDepthTooGreat(false)
   , mIsTopLevelContent(false)
@@ -303,6 +305,7 @@ nsFrameLoader::nsFrameLoader(Element* aOwner, bool aNetworkCreated)
   , mRenderMode(RENDER_MODE_DEFAULT)
   , mEventMode(EVENT_MODE_NORMAL_DISPATCH)
 {
+  ResetPermissionManagerStatus();
 }
 
 nsFrameLoader*
@@ -814,26 +817,17 @@ nsFrameLoader::Show(int32_t marginWidth, int32_t marginHeight,
     }
   }
 
+  nsIntSize size = frame->GetSubdocumentSize();
+  if (mRemoteFrame) {
+    return ShowRemoteFrame(size, frame);
+  }
+
   nsView* view = frame->EnsureInnerView();
   if (!view)
     return false;
 
-  if (mRemoteFrame) {
-    return ShowRemoteFrame(GetSubDocumentSize(frame));
-  }
-
   nsCOMPtr<nsIBaseWindow> baseWindow = do_QueryInterface(mDocShell);
   NS_ASSERTION(baseWindow, "Found a nsIDocShell that isn't a nsIBaseWindow.");
-  nsIntSize size;
-  if (!(frame->GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
-    // We have a useful size already; use it, since we might get no
-    // more size updates.
-    size = GetSubDocumentSize(frame);
-  } else {
-    // Pick some default size for now.  Using 10x10 because that's what the
-    // code here used to do.
-    size.SizeTo(10, 10);
-  }
   baseWindow->InitWindow(nullptr, view->GetWidget(), 0, 0,
                          size.width, size.height);
   // This is kinda whacky, this "Create()" call doesn't really
@@ -918,7 +912,8 @@ nsFrameLoader::MarginsChanged(uint32_t aMarginWidth,
 }
 
 bool
-nsFrameLoader::ShowRemoteFrame(const nsIntSize& size)
+nsFrameLoader::ShowRemoteFrame(const nsIntSize& size,
+                               nsSubDocumentFrame *aFrame)
 {
   NS_ASSERTION(mRemoteFrame, "ShowRemote only makes sense on remote frames.");
 
@@ -961,7 +956,11 @@ nsFrameLoader::ShowRemoteFrame(const nsIntSize& size)
   } else {
     nsRect dimensions;
     NS_ENSURE_SUCCESS(GetWindowDimensions(dimensions), false);
-    mRemoteBrowser->UpdateDimensions(dimensions, size);
+
+    // Don't show remote iframe if we are waiting for the completion of reflow.
+    if (!aFrame || !(aFrame->GetStateBits() & NS_FRAME_FIRST_REFLOW)) {
+      mRemoteBrowser->UpdateDimensions(dimensions, size);
+    }
   }
 
   return true;
@@ -1404,6 +1403,8 @@ nsFrameLoader::SetOwnerContent(Element* aContent)
   if (RenderFrameParent* rfp = GetCurrentRemoteFrame()) {
     rfp->OwnerContentChanged(aContent);
   }
+
+  ResetPermissionManagerStatus();
 }
 
 bool
@@ -1831,11 +1832,11 @@ nsFrameLoader::GetWindowDimensions(nsRect& aRect)
 }
 
 NS_IMETHODIMP
-nsFrameLoader::UpdatePositionAndSize(nsIFrame *aIFrame)
+nsFrameLoader::UpdatePositionAndSize(nsSubDocumentFrame *aIFrame)
 {
   if (mRemoteFrame) {
     if (mRemoteBrowser) {
-      nsIntSize size = GetSubDocumentSize(aIFrame);
+      nsIntSize size = aIFrame->GetSubdocumentSize();
       nsRect dimensions;
       NS_ENSURE_SUCCESS(GetWindowDimensions(dimensions), NS_ERROR_FAILURE);
       mRemoteBrowser->UpdateDimensions(dimensions, size);
@@ -1846,7 +1847,7 @@ nsFrameLoader::UpdatePositionAndSize(nsIFrame *aIFrame)
 }
 
 nsresult
-nsFrameLoader::UpdateBaseWindowPositionAndSize(nsIFrame *aIFrame)
+nsFrameLoader::UpdateBaseWindowPositionAndSize(nsSubDocumentFrame *aIFrame)
 {
   nsCOMPtr<nsIDocShell> docShell;
   GetDocShell(getter_AddRefs(docShell));
@@ -1866,7 +1867,7 @@ nsFrameLoader::UpdateBaseWindowPositionAndSize(nsIFrame *aIFrame)
       return NS_OK;
     }
 
-    nsIntSize size = GetSubDocumentSize(aIFrame);
+    nsIntSize size = aIFrame->GetSubdocumentSize();
 
     baseWindow->SetPositionAndSize(x, y, size.width, size.height, false);
   }
@@ -1968,22 +1969,6 @@ nsFrameLoader::SetClampScrollPosition(bool aClamp)
     }
   }
   return NS_OK;
-}
-
-nsIntSize
-nsFrameLoader::GetSubDocumentSize(const nsIFrame *aIFrame)
-{
-  nsSize docSizeAppUnits;
-  nsPresContext* presContext = aIFrame->PresContext();
-  nsCOMPtr<nsIDOMHTMLFrameElement> frameElem = 
-    do_QueryInterface(aIFrame->GetContent());
-  if (frameElem) {
-    docSizeAppUnits = aIFrame->GetSize();
-  } else {
-    docSizeAppUnits = aIFrame->GetContentRect().Size();
-  }
-  return nsIntSize(presContext->AppUnitsToDevPixels(docSizeAppUnits.width),
-                   presContext->AppUnitsToDevPixels(docSizeAppUnits.height));
 }
 
 bool
@@ -2309,6 +2294,20 @@ nsFrameLoader::CheckPermission(const nsAString& aPermission)
                                     NS_ConvertUTF16toUTF8(aPermission).get());
 }
 
+bool
+nsFrameLoader::CheckManifestURL(const nsAString& aManifestURL)
+{
+  return AssertAppProcessManifestURL(GetRemoteBrowser(),
+                                     NS_ConvertUTF16toUTF8(aManifestURL).get());
+}
+
+bool
+nsFrameLoader::CheckAppHasPermission(const nsAString& aPermission)
+{
+  return AssertAppHasPermission(GetRemoteBrowser(),
+                                NS_ConvertUTF16toUTF8(aPermission).get());
+}
+
 NS_IMETHODIMP
 nsFrameLoader::GetMessageManager(nsIMessageSender** aManager)
 {
@@ -2541,3 +2540,65 @@ nsFrameLoader::AttributeChanged(nsIDocument* aDocument,
                                        is_targetable, value);
   }
 }
+
+void
+nsFrameLoader::ResetPermissionManagerStatus()
+{
+  // The resetting of the permissions status can run only
+  // in the main process.
+  if (XRE_GetProcessType() == GeckoProcessType_Content) {
+    return;
+  }
+
+  // Finding the new app Id:
+  // . first we check if the owner is an app frame
+  // . second, we check if the owner is a browser frame
+  // in both cases we populate the appId variable.
+  uint32_t appId = nsIScriptSecurityManager::NO_APP_ID;
+  if (OwnerIsAppFrame()) {
+    // You can't be both an app and a browser frame.
+    MOZ_ASSERT(!OwnerIsBrowserFrame());
+
+    nsCOMPtr<mozIApplication> ownApp = GetOwnApp();
+    MOZ_ASSERT(ownApp);
+    uint32_t ownAppId = nsIScriptSecurityManager::NO_APP_ID;
+    if (ownApp && NS_SUCCEEDED(ownApp->GetLocalId(&ownAppId))) {
+      appId = ownAppId;
+    }
+  }
+
+  if (OwnerIsBrowserFrame()) {
+    // You can't be both a browser and an app frame.
+    MOZ_ASSERT(!OwnerIsAppFrame());
+
+    nsCOMPtr<mozIApplication> containingApp = GetContainingApp();
+    uint32_t containingAppId = nsIScriptSecurityManager::NO_APP_ID;
+    if (containingApp && NS_SUCCEEDED(containingApp->GetLocalId(&containingAppId))) {
+      appId = containingAppId;
+    }
+  }
+
+  // Nothing changed.
+  if (appId == mAppIdSentToPermissionManager) {
+    return;
+  }
+
+  nsCOMPtr<nsIPermissionManager> permMgr = do_GetService(NS_PERMISSIONMANAGER_CONTRACTID);
+  if (!permMgr) {
+    NS_ERROR("No PermissionManager available!");
+    return;
+  }
+
+  // If previously we registered an appId, we have to unregister it.
+  if (mAppIdSentToPermissionManager != nsIScriptSecurityManager::NO_APP_ID) {
+    permMgr->ReleaseAppId(mAppIdSentToPermissionManager);
+    mAppIdSentToPermissionManager = nsIScriptSecurityManager::NO_APP_ID;
+  }
+
+  // Register the new AppId.
+  if (appId != nsIScriptSecurityManager::NO_APP_ID) {
+    mAppIdSentToPermissionManager = appId;
+    permMgr->AddrefAppId(mAppIdSentToPermissionManager);
+  }
+}
+

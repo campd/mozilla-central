@@ -350,6 +350,14 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
     js::types::TypeObject *getLazyType(JSContext *cx, js::Handle<js::TaggedProto> proto);
 
     /*
+     * Hash table of all manually call site-cloned functions from within
+     * self-hosted code. Cloning according to call site provides extra
+     * sensitivity for type specialization and inlining.
+     */
+    js::CallsiteCloneTable callsiteClones;
+    void sweepCallsiteClones();
+
+    /*
      * Keeps track of the total number of malloc bytes connected to a
      * compartment's GC things. This counter should be used in preference to
      * gcMallocBytes. These counters affect collection in the same way as
@@ -378,12 +386,6 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
 
     /* This compartment's gray roots. */
     js::Vector<js::GrayRoot, 0, js::SystemAllocPolicy> gcGrayRoots;
-
-    /*
-     * Whether type objects have been marked by markTypes().  This is used to
-     * determine whether they need to be swept.
-     */
-    bool                         gcTypesMarked;
 
   private:
     /*
@@ -470,6 +472,9 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
 
     js::DtoaCache dtoaCache;
 
+    /* Random number generator state, used by jsmath.cpp. */
+    uint64_t rngState;
+
   private:
     /*
      * Weak reference to each global in this compartment that is a debuggee.
@@ -500,7 +505,12 @@ struct JSCompartment : private JS::shadow::Compartment, public js::gc::GraphNode
   public:
     js::GlobalObjectSet &getDebuggees() { return debuggees; }
     bool addDebuggee(JSContext *cx, js::GlobalObject *global);
+    bool addDebuggee(JSContext *cx, js::GlobalObject *global,
+                     js::AutoDebugModeGC &dmgc);
     void removeDebuggee(js::FreeOp *fop, js::GlobalObject *global,
+                        js::GlobalObjectSet::Enum *debuggeesEnum = NULL);
+    void removeDebuggee(js::FreeOp *fop, js::GlobalObject *global,
+                        js::AutoDebugModeGC &dmgc,
                         js::GlobalObjectSet::Enum *debuggeesEnum = NULL);
     bool setDebugModeFromC(JSContext *cx, bool b, js::AutoDebugModeGC &dmgc);
 

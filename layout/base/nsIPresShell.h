@@ -44,7 +44,7 @@ class nsIDocument;
 class nsIFrame;
 class nsPresContext;
 class nsStyleSet;
-class nsIViewManager;
+class nsViewManager;
 class nsView;
 class nsRenderingContext;
 class nsIPageSequenceFrame;
@@ -89,6 +89,8 @@ typedef short SelectionType;
 typedef uint64_t nsFrameState;
 
 namespace mozilla {
+class Selection;
+
 namespace dom {
 class Element;
 } // namespace dom
@@ -120,8 +122,8 @@ typedef struct CapturingContentInfo {
 
 // a43e26cd-9573-44c7-8fe5-859549eff814
 #define NS_IPRESSHELL_IID \
-{ 0x13b031cb, 0x738a, 0x4e97, \
-  { 0xb0, 0xca, 0x8b, 0x4b, 0x6c, 0xbb, 0xea, 0xa9 } }
+  {0xb0f585b5, 0x199b, 0x4cd7, \
+    {0x9c, 0xee, 0xea, 0xfd, 0x40, 0xc4, 0x88, 0x6f}}
 
 // debug VerifyReflow flags
 #define VERIFY_REFLOW_ON                    0x01
@@ -176,7 +178,7 @@ protected:
 public:
   virtual NS_HIDDEN_(nsresult) Init(nsIDocument* aDocument,
                                    nsPresContext* aPresContext,
-                                   nsIViewManager* aViewManager,
+                                   nsViewManager* aViewManager,
                                    nsStyleSet* aStyleSet,
                                    nsCompatibility aCompatMode) = 0;
 
@@ -272,7 +274,7 @@ public:
 
   nsPresContext* GetPresContext() const { return mPresContext; }
 
-  nsIViewManager* GetViewManager() const { return mViewManager; }
+  nsViewManager* GetViewManager() const { return mViewManager; }
 
 #ifdef ACCESSIBILITY
   /**
@@ -749,7 +751,7 @@ public:
     */
   int16_t GetSelectionFlags() const { return mSelectionFlags; }
 
-  virtual nsISelection* GetCurrentSelection(SelectionType aType) = 0;
+  virtual mozilla::Selection* GetCurrentSelection(SelectionType aType) = 0;
 
   /**
     * Interface to dispatch events via the presshell
@@ -1381,7 +1383,7 @@ protected:
   nsPresContext*            mPresContext;   // [STRONG]
   nsStyleSet*               mStyleSet;      // [OWNS]
   nsCSSFrameConstructor*    mFrameConstructor; // [OWNS]
-  nsIViewManager*           mViewManager;   // [WEAK] docViewer owns it so I don't have to
+  nsViewManager*           mViewManager;   // [WEAK] docViewer owns it so I don't have to
   nsPresArena               mFrameArena;
   nsFrameSelection*         mSelection;
   // Pointer into mFrameConstructor - this is purely so that FrameManager() and
@@ -1424,6 +1426,9 @@ protected:
   // re-use old pixels.
   RenderFlags               mRenderFlags;
 
+  // Indicates that the whole document must be restyled.  Changes to scoped
+  // style sheets are recorded in mChangedScopeStyleRoots rather than here
+  // in mStylesHaveChanged.
   bool                      mStylesHaveChanged : 1;
   bool                      mDidInitialize : 1;
   bool                      mIsDestroying : 1;
@@ -1446,6 +1451,15 @@ protected:
 
   bool                      mSuppressInterruptibleReflows : 1;
   bool                      mScrollPositionClampingScrollPortSizeSet : 1;
+
+  // List of subtrees rooted at style scope roots that need to be restyled.
+  // When a change to a scoped style sheet is made, we add the style scope
+  // root to this array rather than setting mStylesHaveChanged = true, since
+  // we know we don't need to restyle the whole document.  However, if in the
+  // same update block we have already had other changes that require
+  // the whole document to be restyled (i.e., mStylesHaveChanged is already
+  // true), then we don't bother adding the scope root here.
+  nsAutoTArray<nsRefPtr<mozilla::dom::Element>,1> mChangedScopeStyleRoots;
 
   static nsIContent*        gKeyDownTarget;
 

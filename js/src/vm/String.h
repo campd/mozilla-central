@@ -11,6 +11,8 @@
 #include "mozilla/Attributes.h"
 #include "mozilla/GuardObjects.h"
 
+#include "js/CharacterEncoding.h"
+
 #include "jsapi.h"
 #include "jsatom.h"
 #include "jsfriendapi.h"
@@ -18,17 +20,19 @@
 
 #include "gc/Barrier.h"
 #include "gc/Heap.h"
+#include "gc/Root.h"
 
-class JSString;
+ForwardDeclareJS(String);
 class JSDependentString;
 class JSUndependedString;
 class JSExtensibleString;
 class JSExternalString;
-class JSLinearString;
+ForwardDeclareJS(LinearString);
 class JSStableString;
 class JSInlineString;
 class JSRope;
-class JSAtom;
+ForwardDeclareJS(FlatString);
+ForwardDeclareJS(Atom);
 
 namespace js {
 
@@ -474,6 +478,11 @@ class JSLinearString : public JSString
     const jschar *chars() const {
         JS_ASSERT(JSString::isLinear());
         return d.u1.chars;
+    }
+
+    JS::TwoByteChars range() const {
+        JS_ASSERT(JSString::isLinear());
+        return JS::TwoByteChars(d.u1.chars, length());
     }
 };
 

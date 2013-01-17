@@ -11,7 +11,7 @@
 #include "mozilla/dom/ipc/Blob.h"
 #include "ContentParent.h"
 #include "nsProxyRelease.h"
-#include "AppProcessPermissions.h"
+#include "AppProcessChecker.h"
 #include "mozilla/Preferences.h"
 
 namespace mozilla {
@@ -218,8 +218,8 @@ DeviceStorageRequestParent::~DeviceStorageRequestParent()
   MOZ_COUNT_DTOR(DeviceStorageRequestParent);
 }
 
-NS_IMPL_THREADSAFE_ADDREF(DeviceStorageRequestParent);
-NS_IMPL_THREADSAFE_RELEASE(DeviceStorageRequestParent);
+NS_IMPL_THREADSAFE_ADDREF(DeviceStorageRequestParent)
+NS_IMPL_THREADSAFE_RELEASE(DeviceStorageRequestParent)
 
 void
 DeviceStorageRequestParent::ActorDestroy(ActorDestroyReason)

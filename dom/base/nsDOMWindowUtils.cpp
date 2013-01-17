@@ -33,7 +33,7 @@
 #include "nsJSEnvironment.h"
 #include "nsJSUtils.h"
 
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 
 #include "nsIDOMHTMLCanvasElement.h"
 #include "gfxContext.h"
@@ -50,6 +50,7 @@
 #include "nsIContentViewer.h"
 #include "nsIMarkupDocumentViewer.h"
 #include "nsClientRect.h"
+#include <algorithm>
 
 #if defined(MOZ_X11) && defined(MOZ_WIDGET_GTK)
 #include <gdk/gdk.h>
@@ -661,7 +662,7 @@ nsDOMWindowUtils::SendMouseEventCommon(const nsAString& aType,
     nsCOMPtr<nsIPresShell> presShell = presContext->PresShell();
     if (!presShell)
       return NS_ERROR_FAILURE;
-    nsIViewManager* viewManager = presShell->GetViewManager();
+    nsViewManager* viewManager = presShell->GetViewManager();
     if (!viewManager)
       return NS_ERROR_FAILURE;
     nsView* view = viewManager->GetRootView();
@@ -1311,10 +1312,10 @@ nsDOMWindowUtils::CompareCanvases(nsIDOMHTMLCanvasElement *aCanvas1,
 
           different++;
 
-          dc = NS_MAX((uint32_t)abs(p1[0] - p2[0]), dc);
-          dc = NS_MAX((uint32_t)abs(p1[1] - p2[1]), dc);
-          dc = NS_MAX((uint32_t)abs(p1[2] - p2[2]), dc);
-          dc = NS_MAX((uint32_t)abs(p1[3] - p2[3]), dc);
+          dc = std::max((uint32_t)abs(p1[0] - p2[0]), dc);
+          dc = std::max((uint32_t)abs(p1[1] - p2[1]), dc);
+          dc = std::max((uint32_t)abs(p1[2] - p2[2]), dc);
+          dc = std::max((uint32_t)abs(p1[3] - p2[3]), dc);
         }
 
         p1 += 4;
@@ -3119,5 +3120,20 @@ nsDOMWindowUtils::IsNodeDisabledForEvents(nsIDOMNode* aNode, bool* aRetVal)
     node = node->GetParentNode();
   }
 
+  return NS_OK;
+}
+
+NS_IMETHODIMP
+nsDOMWindowUtils::DispatchEventToChromeOnly(nsIDOMEventTarget* aTarget,
+                                            nsIDOMEvent* aEvent,
+                                            bool* aRetVal)
+{
+  *aRetVal = false;
+  if (!nsContentUtils::IsCallerChrome()) {
+    return NS_ERROR_DOM_SECURITY_ERR;
+  }
+  NS_ENSURE_STATE(aTarget && aEvent);
+  aEvent->GetInternalNSEvent()->mFlags.mOnlyChromeDispatch = true;
+  aTarget->DispatchEvent(aEvent, aRetVal);
   return NS_OK;
 }

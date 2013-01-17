@@ -18,10 +18,16 @@ let log =
   function log_dump(msg) { dump("UpdatePrompt: "+ msg +"\n"); } :
   function log_noop(msg) { };
 
-const PREF_APPLY_PROMPT_TIMEOUT = "b2g.update.apply-prompt-timeout";
-const PREF_APPLY_IDLE_TIMEOUT   = "b2g.update.apply-idle-timeout";
+const PREF_APPLY_PROMPT_TIMEOUT          = "b2g.update.apply-prompt-timeout";
+const PREF_APPLY_IDLE_TIMEOUT            = "b2g.update.apply-idle-timeout";
+const PREF_DOWNLOAD_WATCHDOG_TIMEOUT     = "b2g.update.download-watchdog-timeout";
+const PREF_DOWNLOAD_WATCHDOG_MAX_RETRIES = "b2g.update.download-watchdog-max-retries";
 
 const NETWORK_ERROR_OFFLINE = 111;
+const FILE_ERROR_TOO_BIG    = 112;
+const HTTP_ERROR_OFFSET     = 1000;
+
+const STATE_DOWNLOADING = 'downloading';
 
 XPCOMUtils.defineLazyServiceGetter(Services, "aus",
                                    "@mozilla.org/updates/update-service;1",
@@ -69,8 +75,18 @@ UpdateCheckListener.prototype = {
   },
 
   onError: function UCL_onError(request, update) {
-    if (update.errorCode == NETWORK_ERROR_OFFLINE) {
+    // nsIUpdate uses a signed integer for errorCode while any platform errors
+    // require all 32 bits.
+    let errorCode = update.errorCode >>> 0;
+    let isNSError = (errorCode >>> 31) == 1;
+
+    if (errorCode == NETWORK_ERROR_OFFLINE) {
       this._updatePrompt.setUpdateStatus("retry-when-online");
+    } else if (isNSError) {
+      this._updatePrompt.setUpdateStatus("check-error-" + errorCode);
+    } else if (errorCode > HTTP_ERROR_OFFSET) {
+      let httpErrorCode = errorCode - HTTP_ERROR_OFFSET;
+      this._updatePrompt.setUpdateStatus("check-error-http-" + httpErrorCode);
     }
 
     Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
@@ -102,6 +118,7 @@ UpdatePrompt.prototype = {
   _applyPromptTimer: null,
   _waitingForIdle: false,
   _updateCheckListner: null,
+  _pendingEvents: [],
 
   get applyPromptTimeout() {
     return Services.prefs.getIntPref(PREF_APPLY_PROMPT_TIMEOUT);
@@ -109,6 +126,16 @@ UpdatePrompt.prototype = {
 
   get applyIdleTimeout() {
     return Services.prefs.getIntPref(PREF_APPLY_IDLE_TIMEOUT);
+  },
+
+  handleContentStart: function UP_handleContentStart(shell) {
+    let content = shell.contentBrowser.contentWindow;
+    content.addEventListener("mozContentEvent", this);
+
+    for (let i = 0; i < this._pendingEvents.length; i++) {
+      shell.sendChromeEvent(this._pendingEvents[i]);
+    }
+    this._pendingEvents.length = 0;
   },
 
   // nsIUpdatePrompt
@@ -221,15 +248,16 @@ UpdatePrompt.prototype = {
   },
 
   sendChromeEvent: function UP_sendChromeEvent(aType, aDetail) {
-    let browser = Services.wm.getMostRecentWindow("navigator:browser");
-    if (!browser) {
-      log("Warning: Couldn't send update event " + aType +
-          ": no content browser");
-      return false;
-    }
-
     let detail = aDetail || {};
     detail.type = aType;
+
+    let browser = Services.wm.getMostRecentWindow("navigator:browser");
+    if (!browser) {
+      this._pendingEvents.push(detail);
+      log("Warning: Couldn't send update event " + aType +
+          ": no content browser. Will send again when content becomes available.");
+      return false;
+    }
 
     browser.shell.sendChromeEvent(detail);
     return true;
@@ -272,8 +300,17 @@ UpdatePrompt.prototype = {
       }
     }
 
-    Services.aus.downloadUpdate(aUpdate, true);
-    Services.aus.addDownloadListener(this);
+    let status = Services.aus.downloadUpdate(aUpdate, true);
+    if (status == STATE_DOWNLOADING) {
+      Services.aus.addDownloadListener(this);
+      return;
+    }
+
+    log("Error downloading update " + aUpdate.name + ": " + aUpdate.errorCode);
+    if (aUpdate.errorCode == FILE_ERROR_TOO_BIG) {
+      aUpdate.statusText = "file-too-big";
+    }
+    this.showUpdateError(aUpdate);
   },
 
   handleDownloadCancel: function UP_handleDownloadCancel() {
@@ -384,6 +421,7 @@ UpdatePrompt.prototype = {
   // Trigger apps update check and wait for all to be done before
   // notifying gaia.
   onUpdateCheckStart: function UP_onUpdateCheckStart() {
+    log("onUpdateCheckStart (" + this._checkingApps + ")");
     // Don't start twice.
     if (this._checkingApps) {
       return;
@@ -403,8 +441,11 @@ UpdatePrompt.prototype = {
       this.result.forEach(function updateApp(aApp) {
         let update = aApp.checkForUpdate();
         update.onsuccess = function() {
+          if (aApp.downloadAvailable) {
+            appsToUpdate.push(aApp.manifestURL);
+          }
+
           appsChecked += 1;
-          appsToUpdate.push(aApp.manifestURL);
           if (appsChecked == appsCount) {
             self.appsUpdated(appsToUpdate);
           }
@@ -460,19 +501,102 @@ UpdatePrompt.prototype = {
 
   // nsIRequestObserver
 
+  _startedSent: false,
+
+  _watchdogTimer: null,
+  _watchdogTimeout: 0,
+
+  _autoRestartDownload: false,
+  _autoRestartCount: 0,
+
+  watchdogTimerFired: function UP_watchdogTimerFired() {
+    log("Download watchdog fired");
+    this._autoRestartDownload = true;
+    Services.aus.pauseDownload();
+  },
+
+  startWatchdogTimer: function UP_startWatchdogTimer() {
+    if (this._watchdogTimer) {
+      this._watchdogTimer.cancel();
+    } else {
+      this._watchdogTimer = Cc["@mozilla.org/timer;1"].createInstance(Ci.nsITimer);
+      this._watchdogTimeout = Services.prefs.getIntPref(PREF_DOWNLOAD_WATCHDOG_TIMEOUT);
+    }
+    this._watchdogTimer.initWithCallback(this.watchdogTimerFired.bind(this),
+                                         this._watchdogTimeout,
+                                         Ci.nsITimer.TYPE_ONE_SHOT);
+  },
+
+  stopWatchdogTimer: function UP_stopWatchdogTimer() {
+    if (this._watchdogTimer) {
+      this._watchdogTimer.cancel();
+      this._watchdogTimer = null;
+    }
+  },
+
+  touchWatchdogTimer: function UP_touchWatchdogTimer() {
+    this.startWatchdogTimer();
+  },
+
   onStartRequest: function UP_onStartRequest(aRequest, aContext) {
-    this.sendChromeEvent("update-downloading");
+    // Wait until onProgress to send the update-download-started event, in case
+    // this request turns out to fail for some reason
+    this._startedSent = false;
+    this.startWatchdogTimer();
   },
 
   onStopRequest: function UP_onStopRequest(aRequest, aContext, aStatusCode) {
+    this.stopWatchdogTimer();
     Services.aus.removeDownloadListener(this);
+    let paused = !Components.isSuccessCode(aStatusCode);
+    if (!paused) {
+      // The download was successful, no need to restart
+      this._autoRestartDownload = false;
+    }
+    if (this._autoRestartDownload) {
+      this._autoRestartDownload = false;
+      let watchdogMaxRetries = Services.prefs.getIntPref(PREF_DOWNLOAD_WATCHDOG_MAX_RETRIES);
+      this._autoRestartCount++;
+      if (this._autoRestartCount > watchdogMaxRetries) {
+        log("Download - retry count exceeded - error");
+        // We exceeded the max retries. Treat the download like an error,
+        // which will give the user a chance to restart manually later.
+        this._autoRestartCount = 0;
+        if (Services.um.activeUpdate) {
+          this.showUpdateError(Services.um.activeUpdate);
+        }
+        return;
+      }
+      log("Download - restarting download - attempt " + this._autoRestartCount);
+      this.downloadUpdate(null);
+      return;
+    }
+    this._autoRestartCount = 0;
+    this.sendChromeEvent("update-download-stopped", {
+      paused: paused
+    });
   },
 
   // nsIProgressEventSink
 
   onProgress: function UP_onProgress(aRequest, aContext, aProgress,
                                      aProgressMax) {
-    this.sendChromeEvent("update-progress", {
+    if (aProgress == aProgressMax) {
+      // The update.mar validation done by onStopRequest may take
+      // a while before the onStopRequest callback is made, so stop
+      // the timer now.
+      this.stopWatchdogTimer();
+    } else {
+      this.touchWatchdogTimer();
+    }
+    if (!this._startedSent) {
+      this.sendChromeEvent("update-download-started", {
+        total: aProgressMax
+      });
+      this._startedSent = true;
+    }
+
+    this.sendChromeEvent("update-download-progress", {
       progress: aProgress,
       total: aProgressMax
     });

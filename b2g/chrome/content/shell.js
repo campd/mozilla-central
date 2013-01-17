@@ -81,8 +81,12 @@ var shell = {
 
   get CrashSubmit() {
     delete this.CrashSubmit;
+#ifdef MOZ_CRASHREPORTER
     Cu.import("resource://gre/modules/CrashSubmit.jsm", this);
     return this.CrashSubmit;
+#else
+    return this.CrashSubmit = null;
+#endif
   },
 
   onlineForCrashReport: function shell_onlineForCrashReport() {
@@ -103,7 +107,7 @@ var shell = {
     } catch(e) { }
 
     // Bail if there isn't a valid crashID.
-    if (!crashID && !this.CrashSubmit.pendingIDs().length) {
+    if (!this.CrashSubmit || !crashID && !this.CrashSubmit.pendingIDs().length) {
       return;
     }
 
@@ -117,12 +121,16 @@ var shell = {
       }
     } catch (e) { }
 
-    // Let Gaia notify the user of the crash.
-    this.sendChromeEvent({
-      type: "handle-crash",
-      crashID: crashID,
-      chrome: isChrome
-    });
+    // We can get here if we're just submitting old pending crashes.
+    // Check that there's a valid crashID so that we only notify the
+    // user if a crash just happened and not when we OOM. Bug 829477
+    if (crashID) {
+      this.sendChromeEvent({
+        type: "handle-crash",
+        crashID: crashID,
+        chrome: isChrome
+      });
+    }
   },
 
   // this function submit the pending crashes.
@@ -217,8 +225,18 @@ var shell = {
       let androidVersion = libcutils.property_get("ro.build.version.sdk") +
                            "(" + libcutils.property_get("ro.build.version.codename") + ")";
       cr.annotateCrashReport("Android_Version", androidVersion);
+
+      SettingsListener.observe("deviceinfo.os", "", function(value) {
+        try {
+          let cr = Cc["@mozilla.org/xre/app-info;1"]
+                     .getService(Ci.nsICrashReporter);
+          cr.annotateCrashReport("B2G_OS_Version", value);
+        } catch(e) { }
+      });
 #endif
-    } catch(e) { }
+    } catch(e) {
+      dump("exception: " + e);
+    }
 
     let homeURL = this.homeURL;
     if (!homeURL) {
@@ -265,6 +283,7 @@ var shell = {
     WebappsHelper.init();
     AccessFu.attach(window);
     UserAgentOverrides.init();
+    IndexedDBPromptHelper.init();
 
     // XXX could factor out into a settings->pref map.  Not worth it yet.
     SettingsListener.observe("debug.fps.enabled", false, function(value) {
@@ -302,6 +321,7 @@ var shell = {
     delete Services.audioManager;
 #endif
     UserAgentOverrides.uninit();
+    IndexedDBPromptHelper.uninit();
   },
 
   // If this key event actually represents a hardware button, filter it here
@@ -621,6 +641,9 @@ var CustomEventManager = {
       case 'system-message-listener-ready':
         Services.obs.notifyObservers(null, 'system-message-listener-ready', null);
         break;
+      case 'remote-debugger-prompt':
+        RemoteDebugger.handleEvent(detail);
+        break;
     }
   }
 }
@@ -746,7 +769,7 @@ var AlertsHelper = {
   },
 
   receiveMessage: function alert_receiveMessage(aMessage) {
-    if (!aMessage.target.assertPermission("desktop-notification")) {
+    if (!aMessage.target.assertAppHasPermission("desktop-notification")) {
       Cu.reportError("Desktop-notification message " + aMessage.name +
                      " from a content process with no desktop-notification privileges.");
       return null;
@@ -829,32 +852,88 @@ var WebappsHelper = {
   }
 }
 
-// Start the debugger server.
-function startDebugger() {
-  if (!DebuggerServer.initialized) {
-    // Allow remote connections.
-    DebuggerServer.init(function () { return true; });
-    DebuggerServer.addBrowserActors();
-    DebuggerServer.addActors('chrome://browser/content/dbg-browser-actors.js');
-  }
+let IndexedDBPromptHelper = {
+  _quotaPrompt: "indexedDB-quota-prompt",
+  _quotaResponse: "indexedDB-quota-response",
 
-  let port = Services.prefs.getIntPref('devtools.debugger.remote-port') || 6000;
-  try {
-    DebuggerServer.openListener(port);
-  } catch (e) {
-    dump('Unable to start debugger server: ' + e + '\n');
+  init:
+  function IndexedDBPromptHelper_init() {
+    Services.obs.addObserver(this, this._quotaPrompt, false);
+  },
+
+  uninit:
+  function IndexedDBPromptHelper_uninit() {
+    Services.obs.removeObserver(this, this._quotaPrompt, false);
+  },
+
+  observe:
+  function IndexedDBPromptHelper_observe(subject, topic, data) {
+    if (topic != this._quotaPrompt) {
+      throw new Error("Unexpected topic!");
+    }
+
+    let observer = subject.QueryInterface(Ci.nsIInterfaceRequestor)
+                          .getInterface(Ci.nsIObserver);
+    let responseTopic = this._quotaResponse;
+
+    setTimeout(function() {
+      observer.observe(null, responseTopic,
+                       Ci.nsIPermissionManager.DENY_ACTION);
+    }, 0);
   }
 }
 
-function stopDebugger() {
-  if (!DebuggerServer.initialized) {
-    return;
-  }
+let RemoteDebugger = {
+  _promptDone: false,
+  _promptAnswer: false,
 
-  try {
-    DebuggerServer.closeListener();
-  } catch (e) {
-    dump('Unable to stop debugger server: ' + e + '\n');
+  prompt: function debugger_prompt() {
+    this._promptDone = false;
+
+    shell.sendChromeEvent({
+      "type": "remote-debugger-prompt"
+    });
+
+    while(!this._promptDone) {
+      Services.tm.currentThread.processNextEvent(true);
+    }
+
+    return this._promptAnswer;
+  },
+
+  handleEvent: function debugger_handleEvent(detail) {
+    this._promptAnswer = detail.value;
+    this._promptDone = true;
+  },
+
+  // Start the debugger server.
+  start: function debugger_start() {
+    if (!DebuggerServer.initialized) {
+      // Ask for remote connections.
+      DebuggerServer.init(this.prompt.bind(this));
+      DebuggerServer.addBrowserActors();
+      DebuggerServer.addActors('chrome://browser/content/dbg-browser-actors.js');
+      DebuggerServer.addActors('chrome://browser/content/dbg-webapps-actors.js');
+    }
+
+    let port = Services.prefs.getIntPref('devtools.debugger.remote-port') || 6000;
+    try {
+      DebuggerServer.openListener(port);
+    } catch (e) {
+      dump('Unable to start debugger server: ' + e + '\n');
+    }
+  },
+
+  stop: function debugger_stop() {
+    if (!DebuggerServer.initialized) {
+      return;
+    }
+
+    try {
+      DebuggerServer.closeListener();
+    } catch (e) {
+      dump('Unable to stop debugger server: ' + e + '\n');
+    }
   }
 }
 
@@ -926,9 +1005,11 @@ window.addEventListener('ContentStart', function cr_onContentStart() {
 window.addEventListener('ContentStart', function update_onContentStart() {
   let updatePrompt = Cc["@mozilla.org/updates/update-prompt;1"]
                        .createInstance(Ci.nsIUpdatePrompt);
+  if (!updatePrompt) {
+    return;
+  }
 
-  let content = shell.contentBrowser.contentWindow;
-  content.addEventListener("mozContentEvent", updatePrompt.wrappedJSObject);
+  updatePrompt.wrappedJSObject.handleContentStart(shell);
 });
 
 (function geolocationStatusTracker() {
@@ -959,15 +1040,6 @@ window.addEventListener('ContentStart', function update_onContentStart() {
       state: aData
     });
 }, "headphones-status-changed", false);
-})();
-
-(function audioChannelChangedTracker() {
-  Services.obs.addObserver(function(aSubject, aTopic, aData) {
-    shell.sendChromeEvent({
-      type: 'audio-channel-changed',
-      channel: aData
-    });
-}, "audio-channel-changed", false);
 })();
 
 (function audioChannelChangedTracker() {

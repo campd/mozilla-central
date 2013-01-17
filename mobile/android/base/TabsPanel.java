@@ -5,15 +5,11 @@
 
 package org.mozilla.gecko;
 
-import org.mozilla.gecko.sync.setup.SyncAccounts;
-
 import android.content.Context;
-import android.content.res.Resources;
 import android.content.res.TypedArray;
 import android.graphics.Color;
 import android.graphics.Rect;
 import android.graphics.drawable.ColorDrawable;
-import android.graphics.drawable.LayerDrawable;
 import android.util.AttributeSet;
 import android.view.LayoutInflater;
 import android.view.Menu;
@@ -27,7 +23,6 @@ import android.widget.LinearLayout;
 import android.widget.TabHost;
 import android.widget.TabHost.TabSpec;
 import android.widget.TabWidget;
-import android.widget.TextView;
 
 public class TabsPanel extends TabHost
                        implements GeckoPopupMenu.OnMenuItemClickListener,
@@ -72,9 +67,6 @@ public class TabsPanel extends TabHost
 
     private GeckoPopupMenu mTabsPopupMenu;
     private Menu mTabsMenu;
-
-    private static final int REMOTE_TABS_HIDDEN = 1;
-    private static final int REMOTE_TABS_SHOWN = 2;
 
     public TabsPanel(Context context, AttributeSet attrs) {
         super(context, attrs);
@@ -203,26 +195,6 @@ public class TabsPanel extends TabHost
             mMenu.findItem(R.id.close_all_tabs).setEnabled(true); 
 
         mPopupMenu.show();
-
-        final Context context = mContext;
-        new SyncAccounts.AccountsExistTask() {
-            @Override
-            protected void onPostExecute(Boolean result) {
-                if (!result.booleanValue()) {
-                    return;
-                }
-                TabsAccessor.areClientsAvailable(context, new TabsAccessor.OnClientsAvailableListener() {
-                    @Override
-                    public void areAvailable(boolean available) {
-                        TabsPanel.this.enableRemoteTabs(available);
-                    }
-                });
-            }
-        }.execute(context);
-    }
-
-    public void enableRemoteTabs(boolean enable) {
-        mMenu.findItem(R.id.synced_tabs).setEnabled(enable);
     }
 
     public void openTabsSwitcherMenu() {
@@ -244,10 +216,6 @@ public class TabsPanel extends TabHost
 
             case R.id.tabs_synced:
                 mTabsMenuButton.setText(R.string.tabs_synced);
-                show(Panel.REMOTE_TABS);
-                return true;
-
-            case R.id.synced_tabs:
                 show(Panel.REMOTE_TABS);
                 return true;
 
@@ -404,10 +372,14 @@ public class TabsPanel extends TabHost
         mPanel = (PanelView) getTabContentView().getChildAt(index);
         mPanel.show();
 
-        if (mCurrentPanel == Panel.REMOTE_TABS)
+        if (mCurrentPanel == Panel.REMOTE_TABS) {
             mAddTab.setVisibility(View.INVISIBLE);
-        else
+            mMenuButton.setVisibility(View.INVISIBLE);
+        } else {
             mAddTab.setVisibility(View.VISIBLE);
+            mAddTab.setImageLevel(index);
+            mMenuButton.setVisibility(View.VISIBLE);
+        }
 
         if (isSideBar()) {
             if (showAnimation)

@@ -14,7 +14,7 @@
 #include "nsIPresShell.h"
 #include "nsWidgetsCID.h"
 #include "nsView.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsIDOMEventListener.h"
 #include "nsIDOMDragEvent.h"
 #include "nsPluginHost.h"
@@ -68,6 +68,7 @@
 #include "nsIScrollableFrame.h"
 #include "mozilla/Preferences.h"
 #include "sampler.h"
+#include <algorithm>
 
 // headers for plugin scriptability
 #include "nsIScriptGlobalObject.h"
@@ -329,7 +330,7 @@ nsObjectFrame::DidSetStyleContext(nsStyleContext* aOldStyleContext)
 {
   if (HasView()) {
     nsView* view = GetView();
-    nsIViewManager* vm = view->GetViewManager();
+    nsViewManager* vm = view->GetViewManager();
     if (vm) {
       nsViewVisibility visibility = 
         IsHidden() ? nsViewVisibility_kHide : nsViewVisibility_kShow;
@@ -365,7 +366,7 @@ nsObjectFrame::PrepForDrawing(nsIWidget *aWidget)
     return NS_ERROR_FAILURE;
   }
 
-  nsIViewManager* viewMan = view->GetViewManager();
+  nsViewManager* viewMan = view->GetViewManager();
   // mark the view as hidden since we don't know the (x,y) until Paint
   // XXX is the above comment correct?
   viewMan->SetViewVisibility(view, nsViewVisibility_kHide);
@@ -530,8 +531,8 @@ nsObjectFrame::GetDesiredSize(nsPresContext* aPresContext,
     // exceed the maximum size of X coordinates.  See bug #225357 for
     // more information.  In theory Gtk2 can handle large coordinates,
     // but underlying plugins can't.
-    aMetrics.height = NS_MIN(aPresContext->DevPixelsToAppUnits(INT16_MAX), aMetrics.height);
-    aMetrics.width = NS_MIN(aPresContext->DevPixelsToAppUnits(INT16_MAX), aMetrics.width);
+    aMetrics.height = std::min(aPresContext->DevPixelsToAppUnits(INT16_MAX), aMetrics.height);
+    aMetrics.width = std::min(aPresContext->DevPixelsToAppUnits(INT16_MAX), aMetrics.width);
 #endif
   }
 
@@ -593,7 +594,7 @@ nsObjectFrame::Reflow(nsPresContext*           aPresContext,
   r.Deflate(aReflowState.mComputedBorderPadding);
 
   if (mInnerView) {
-    nsIViewManager* vm = mInnerView->GetViewManager();
+    nsViewManager* vm = mInnerView->GetViewManager();
     vm->MoveViewTo(mInnerView, r.x, r.y);
     vm->ResizeView(mInnerView, nsRect(nsPoint(0, 0), r.Size()), true);
   }
@@ -884,7 +885,7 @@ nsObjectFrame::DidReflow(nsPresContext*            aPresContext,
 
   if (HasView()) {
     nsView* view = GetView();
-    nsIViewManager* vm = view->GetViewManager();
+    nsViewManager* vm = view->GetViewManager();
     if (vm)
       vm->SetViewVisibility(view, IsHidden() ? nsViewVisibility_kHide : nsViewVisibility_kShow);
   }
@@ -1984,8 +1985,8 @@ nsObjectFrame::PaintPlugin(nsDisplayListBuilder* aBuilder,
         return;
       }
 
-      origin.x = NSToIntRound(float(ctxMatrix.GetTranslation().x));
-      origin.y = NSToIntRound(float(ctxMatrix.GetTranslation().y));
+      origin.x = NSToIntRound(ctxMatrix.GetTranslation().x);
+      origin.y = NSToIntRound(ctxMatrix.GetTranslation().y);
 
       /* Need to force the clip to be set */
       ctx->UpdateSurfaceClip();

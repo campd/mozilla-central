@@ -73,7 +73,7 @@ GCONF_VERSION=1.2.1
 GIO_VERSION=2.20
 STARTUP_NOTIFICATION_VERSION=0.8
 DBUS_VERSION=0.60
-SQLITE_VERSION=3.7.15.1
+SQLITE_VERSION=3.7.15.2
 
 MSMANIFEST_TOOL=
 
@@ -147,29 +147,7 @@ else
   touch $_objdir/CLOBBER
 fi
 
-MOZ_PATH_PROGS(PYTHON, $PYTHON python2.7 python2.6 python2.5 python)
-if test -z "$PYTHON"; then
-    AC_MSG_ERROR([python was not found in \$PATH])
-fi
-
-AC_MSG_RESULT([Creating Python environment])
-dnl This verifies our Python version is sane and ensures the Python
-dnl virtualenv is present and up to date. It sanitizes the environment
-dnl for us, so we don't need to clean anything out.
-$PYTHON $_topsrcdir/build/virtualenv/populate_virtualenv.py \
-    $_topsrcdir $MOZ_BUILD_ROOT/_virtualenv || exit 1
-
-dnl Create a virtualenv where we can install local Python packages
-case "$host_os" in
-mingw*)
-    PYTHON=`cd $MOZ_BUILD_ROOT && pwd -W`/_virtualenv/Scripts/python.exe
-    ;;
-*)
-    PYTHON=$MOZ_BUILD_ROOT/_virtualenv/bin/python
-    ;;
-esac
-
-AC_SUBST(PYTHON)
+MOZ_PYTHON
 
 MOZ_DEFAULT_COMPILER
 
@@ -2204,7 +2182,10 @@ ia64*-hpux*)
         # because this also forces narrowing to a single byte, which can be a
         # perf hit.  But this matters so little in practice (and often we want
         # that behavior) that it's better to turn it off.
-        CXXFLAGS="$CXXFLAGS -wd4345 -wd4351 -wd4800"
+        # MSVC warning C4819 warns some UTF-8 characters (e.g. copyright sign)
+        # on non-Western system locales even if it is in a comment.
+        CFLAGS="$CFLAGS -wd4819"
+        CXXFLAGS="$CXXFLAGS -wd4345 -wd4351 -wd4800 -wd4819"
         # make 'foo == bar;' error out
         CFLAGS="$CFLAGS -we4553"
         CXXFLAGS="$CXXFLAGS -we4553"
@@ -4565,6 +4546,7 @@ cairo-qt)
     TK_LIBS='$(MOZ_QT_LIBS)'
     AC_DEFINE(MOZ_WIDGET_QT)
     MOZ_PDF_PRINTING=1
+    AC_DEFINE(QT_NO_KEYWORDS)
     ;;
 
 cairo-os2)
@@ -5229,6 +5211,14 @@ if test "$ACCESSIBILITY"; then
         fi
     esac
     AC_DEFINE(ACCESSIBILITY)
+fi
+
+dnl ========================================================
+dnl Accessibility is required for the linuxgl widget
+dnl backend
+dnl ========================================================
+if test "${MOZ_WIDGET_TOOLKIT}" = "linuxgl" -a "$ACCESSIBILITY" != "1"; then
+    AC_MSG_ERROR(["Accessibility is required for the linuxgl widget backend"])
 fi
 
 dnl ========================================================
@@ -5980,8 +5970,6 @@ if test -n "$MOZ_CRASHREPORTER"; then
     PKG_CHECK_MODULES(MOZ_GTHREAD, gthread-2.0)
     AC_SUBST(MOZ_GTHREAD_CFLAGS)
     AC_SUBST(MOZ_GTHREAD_LIBS)
-
-    MOZ_CHECK_HEADERS([curl/curl.h], [], [AC_MSG_ERROR([Couldn't find curl/curl.h which is required for the crash reporter.  Use --disable-crashreporter to disable the crash reporter.])])
   fi
 
   if test "$OS_ARCH" != "$HOST_OS_ARCH"; then
@@ -6224,8 +6212,8 @@ dnl (unless in case of cross compiling, for which Unicode
 dnl is not yet sufficient).
 if test "$OS_ARCH" = "WINNT"; then
     REQ_NSIS_MAJOR_VER=2
-    MIN_NSIS_MINOR_VER=33
-    MOZ_PATH_PROGS(MAKENSISU, $MAKENSISU makensisu-2.46 makensisu makensis)
+    MIN_NSIS_MINOR_VER=46
+    MOZ_PATH_PROGS(MAKENSISU, $MAKENSISU makensisu-2.46 makensis)
     if test -n "$MAKENSISU" -a "$MAKENSISU" != ":"; then
       AC_MSG_RESULT([yes])
       changequote(,)
@@ -7285,7 +7273,7 @@ dnl our own linker.
 if test "$OS_TARGET" = Android; then
     WRAP_LDFLAGS="${WRAP_LDFLAGS} -L$_objdir/dist/lib -lmozglue"
     WRAP_LDFLAGS="${WRAP_LDFLAGS} -Wl,--wrap=getaddrinfo,--wrap=freeaddrinfo,--wrap=gai_strerror"
-    WRAP_LDFLAGS="${WRAP_LDFLAGS} -Wl--wrap=PR_GetEnv,--wrap=PR_SetEnv"
+    WRAP_LDFLAGS="${WRAP_LDFLAGS} -Wl,--wrap=PR_GetEnv,--wrap=PR_SetEnv"
     if test -z "$gonkdir"; then
         WRAP_LDFLAGS="${WRAP_LDFLAGS} -Wl,--wrap=fork,--wrap=pthread_atfork,--wrap=raise"
         WRAP_LDFLAGS="${WRAP_LDFLAGS} -Wl,--wrap=memccpy,--wrap=memchr,--wrap=memrchr,--wrap=memcmp,--wrap=memcpy,--wrap=memmove,--wrap=memset,--wrap=memmem,--wrap=memswap,--wrap=index,--wrap=strchr,--wrap=strrchr,--wrap=strlen,--wrap=strcmp,--wrap=strcpy,--wrap=strcat,--wrap=strcasecmp,--wrap=strncasecmp,--wrap=strstr,--wrap=strcasestr,--wrap=strtok,--wrap=strtok_r,--wrap=strerror,--wrap=strerror_r,--wrap=strnlen,--wrap=strncat,--wrap=strncmp,--wrap=strncpy,--wrap=strlcat,--wrap=strlcpy,--wrap=strcspn,--wrap=strpbrk,--wrap=strsep,--wrap=strspn,--wrap=strcoll,--wrap=strxfrm"
@@ -8708,6 +8696,15 @@ if test "$MOZ_TELEMETRY_REPORTING"; then
     fi
 fi
 
+dnl If we have any service that uploads data (and requires data submission
+dnl policy alert), set MOZ_DATA_REPORTING.
+dnl We need SUBST for build system and DEFINE for xul preprocessor.
+if test -n "$MOZ_TELEMETRY_REPORTING" || test -n "$MOZ_SERVICES_HEALTHREPORT" || test -n "MOZ_CRASHREPORTER"; then
+  MOZ_DATA_REPORTING=1
+  AC_DEFINE(MOZ_DATA_REPORTING)
+  AC_SUBST(MOZ_DATA_REPORTING)
+fi
+
 dnl win32 options
 AC_SUBST(MOZ_MAPINFO)
 AC_SUBST(MOZ_BROWSE_INFO)
@@ -9328,6 +9325,9 @@ export MOZ_NATIVE_ZLIB
 export MOZ_ZLIB_CFLAGS
 export MOZ_ZLIB_LIBS
 export MOZ_APP_NAME
+export DONT_POPULATE_VIRTUALENV=1
+export PYTHON
+export MOZILLA_CENTRAL_PATH=$_topsrcdir
 export STLPORT_CPPFLAGS
 export STLPORT_LDFLAGS
 export STLPORT_LIBS

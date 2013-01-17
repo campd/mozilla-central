@@ -1,4 +1,3 @@
-#filter substitution
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -24,13 +23,9 @@ const MAX_BAR_HEIGHT = 18;
 const PREF_TELEMETRY_SERVER_OWNER = "toolkit.telemetry.server_owner";
 #ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabledPreRelease";
-const PREF_TELEMETRY_DISPLAYED = "toolkit.telemetry.notifiedOptOut";
 #else
 const PREF_TELEMETRY_ENABLED = "toolkit.telemetry.enabled";
-const PREF_TELEMETRY_DISPLAYED = "toolkit.telemetry.prompted";
 #endif
-const PREF_TELEMETRY_REJECTED  = "toolkit.telemetry.rejected";
-const TELEMETRY_DISPLAY_REV = @MOZ_TELEMETRY_DISPLAY_REV@;
 const PREF_DEBUG_SLOW_SQL = "toolkit.telemetry.debugSlowSql";
 const PREF_SYMBOL_SERVER_URI = "profiler.symbolicationUrl";
 const DEFAULT_SYMBOL_SERVER_URI = "http://symbolapi.mozilla.org";
@@ -84,10 +79,6 @@ let observer = {
   observe: function observe(aSubject, aTopic, aData) {
     if (aData == PREF_TELEMETRY_ENABLED) {
       this.updatePrefStatus();
-      Services.prefs.setBoolPref(PREF_TELEMETRY_REJECTED,
-                                 !getPref(PREF_TELEMETRY_ENABLED, false));
-      Services.prefs.setIntPref(PREF_TELEMETRY_DISPLAYED,
-                                TELEMETRY_DISPLAY_REV);
     }
   },
 
@@ -333,7 +324,7 @@ let ChromeHangs = {
     let memoryMap = hangs.memoryMap;
     let stacks = hangs.stacks;
     let request = {"memoryMap" : memoryMap, "stacks" : stacks,
-                   "version" : 2};
+                   "version" : 3};
     let requestJSON = JSON.stringify(request);
 
     this.symbolRequest = XMLHttpRequest();
@@ -686,20 +677,6 @@ function onLoad() {
   // Set up event listeners
   setupListeners();
 
-#ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
-  /**
-   * When telemetry is opt-out, verify if the user explicitly rejected the
-   * telemetry prompt, and if so reflect his choice in the current preference
-   * value. This doesn't cover the case where the user refused telemetry in the
-   * prompt but later enabled it in preferences in builds before the fix for
-   * bug 737600.
-   */
-  if (getPref(PREF_TELEMETRY_ENABLED, false) &&
-      getPref(PREF_TELEMETRY_REJECTED, false)) {
-    Services.prefs.setBoolPref(PREF_TELEMETRY_ENABLED, false);
-  }
-#endif
-
   // Show slow SQL stats
   SlowSQL.render();
 
@@ -734,17 +711,86 @@ function onLoad() {
 
   // Get the Telemetry Ping payload
   Telemetry.asyncFetchTelemetryData(displayPingData);
+};
+
+let LateWritesSingleton = {
+  renderLateWrites: function LateWritesSingleton_renderLateWrites(lateWrites) {
+    let writesDiv = document.getElementById("late-writes-data");
+    clearDivData(writesDiv);
+    // FIXME: Add symbolication support. Refactor with the chrome hang one.
+
+    let stacks = lateWrites.stacks;
+    if (stacks.length == 0) {
+      showEmptySectionMessage("late-writes-section");
+      return;
+    }
+
+    let memoryMap = lateWrites.memoryMap;
+    StackRenderer.renderMemoryMap(writesDiv, memoryMap);
+
+    for (let i = 0; i < stacks.length; ++i) {
+      let stack = stacks[i];
+      StackRenderer.renderStack(writesDiv, stack);
+    }
+  }
+};
+
+/**
+ * Helper function for sorting the startup milestones in the Simple Measurements
+ * section into temporal order.
+ *
+ * @param aSimpleMeasurements Telemetry ping's "Simple Measurements" data
+ * @return Sorted measurements
+ */
+function sortStartupMilestones(aSimpleMeasurements) {
+  // List of startup milestones
+  const startupMilestones =
+    ["start", "main", "startupCrashDetectionBegin", "createTopLevelWindow",
+     "firstPaint", "delayedStartupStarted", "firstLoadURI",
+     "sessionRestoreInitialized", "sessionRestoreRestoring", "sessionRestored",
+     "delayedStartupFinished", "startupCrashDetectionEnd"];
+
+  let sortedKeys = Object.keys(aSimpleMeasurements);
+
+  // Sort the measurements, with startup milestones at the front + ordered by time
+  sortedKeys.sort(function keyCompare(keyA, keyB) {
+    let isKeyAMilestone = (startupMilestones.indexOf(keyA) > -1);
+    let isKeyBMilestone = (startupMilestones.indexOf(keyB) > -1);
+
+    // First order by startup vs non-startup measurement
+    if (isKeyAMilestone && !isKeyBMilestone)
+      return -1;
+    if (!isKeyAMilestone && isKeyBMilestone)
+      return 1;
+    // Don't change order of non-startup measurements
+    if (!isKeyAMilestone && !isKeyBMilestone)
+      return 0;
+
+    // If both keys are startup measurements, order them by value
+    return aSimpleMeasurements[keyA] - aSimpleMeasurements[keyB];
+  });
+
+  // Insert measurements into a result object in sort-order
+  let result = {};
+  for (let key of sortedKeys) {
+    result[key] = aSimpleMeasurements[key];
+  }
+
+  return result;
 }
 
 function displayPingData() {
   let ping = TelemetryPing.getPayload();
 
   // Show simple measurements
-  if (Object.keys(ping.simpleMeasurements).length) {
-    KeyValueTable.render("simple-measurements-table", ping.simpleMeasurements);
+  let simpleMeasurements = sortStartupMilestones(ping.simpleMeasurements);
+  if (Object.keys(simpleMeasurements).length) {
+    KeyValueTable.render("simple-measurements-table", simpleMeasurements);
   } else {
     showEmptySectionMessage("simple-measurements-section");
   }
+
+  LateWritesSingleton.renderLateWrites(ping.lateWrites);
 
   // Show basic system info gathered
   if (Object.keys(ping.info).length) {

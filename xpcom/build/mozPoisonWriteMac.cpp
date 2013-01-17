@@ -96,7 +96,8 @@ bool ValidWriteAssert(bool ok)
     // concurrently from many writes, so we use multiple temporary files.
     std::vector<uintptr_t> rawStack;
 
-    NS_StackWalk(RecordStackWalker, 0, reinterpret_cast<void*>(&rawStack), 0, nullptr);
+    NS_StackWalk(RecordStackWalker, /* skipFrames */ 0, /* maxFrames */ 0,
+                 reinterpret_cast<void*>(&rawStack), 0, nullptr);
     Telemetry::ProcessedStack stack = Telemetry::GetStackAndModules(rawStack);
 
     nsPrintfCString nameAux("%s%s", sProfileDirectory,
@@ -114,7 +115,8 @@ bool ValidWriteAssert(bool ok)
     sha1Stream.Printf("%u\n", (unsigned)numModules);
     for (int i = 0; i < numModules; ++i) {
         Telemetry::ProcessedStack::Module module = stack.GetModule(i);
-        sha1Stream.Printf("%s\n", module.mName.c_str());
+        sha1Stream.Printf("%s %s\n", module.mBreakpadId.c_str(),
+                          module.mName.c_str());
     }
 
     size_t numFrames = stack.GetStackSize();

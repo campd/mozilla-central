@@ -8,7 +8,7 @@
 #include "nsSVGLength2.h"
 #include "prdtoa.h"
 #include "nsTextFormatter.h"
-#include "nsSVGSVGElement.h"
+#include "mozilla/dom/SVGSVGElement.h"
 #include "nsIFrame.h"
 #include "nsSVGIntegrationUtils.h"
 #include "nsSVGAttrTearoffTable.h"
@@ -18,6 +18,7 @@
 #include "nsAttrValueInlines.h"
 
 using namespace mozilla;
+using namespace mozilla::dom;
 
 NS_SVG_VAL_IMPL_CYCLE_COLLECTION(nsSVGLength2::DOMBaseVal, mSVGElement)
 
@@ -169,7 +170,7 @@ FixAxisLength(float aLength)
 }
 
 float
-nsSVGLength2::GetAxisLength(nsSVGSVGElement *aCtx) const
+nsSVGLength2::GetAxisLength(SVGSVGElement *aCtx) const
 {
   if (!aCtx)
     return 1;
@@ -219,7 +220,7 @@ nsSVGLength2::GetUnitScaleFactor(nsSVGElement *aSVGElement,
 }
 
 float
-nsSVGLength2::GetUnitScaleFactor(nsSVGSVGElement *aCtx, uint8_t aUnitType) const
+nsSVGLength2::GetUnitScaleFactor(SVGSVGElement *aCtx, uint8_t aUnitType) const
 {
   switch (aUnitType) {
   case nsIDOMSVGLength::SVG_LENGTHTYPE_NUMBER:
@@ -486,6 +487,13 @@ nsresult
 nsSVGLength2::ToDOMAnimatedLength(nsIDOMSVGAnimatedLength **aResult,
                                   nsSVGElement *aSVGElement)
 {
+  *aResult = ToDOMAnimatedLength(aSVGElement).get();
+  return NS_OK;
+}
+
+already_AddRefed<nsIDOMSVGAnimatedLength>
+nsSVGLength2::ToDOMAnimatedLength(nsSVGElement* aSVGElement)
+{
   nsRefPtr<DOMAnimatedLength> domAnimatedLength =
     sSVGAnimatedLengthTearoffTable.GetTearoff(this);
   if (!domAnimatedLength) {
@@ -493,8 +501,7 @@ nsSVGLength2::ToDOMAnimatedLength(nsIDOMSVGAnimatedLength **aResult,
     sSVGAnimatedLengthTearoffTable.AddTearoff(this, domAnimatedLength);
   }
 
-  domAnimatedLength.forget(aResult);
-  return NS_OK;
+  return domAnimatedLength.forget();
 }
 
 nsSVGLength2::DOMAnimatedLength::~DOMAnimatedLength()

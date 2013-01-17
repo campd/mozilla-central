@@ -480,6 +480,10 @@ class CGHeaders(CGWrapper):
         # Grab all the implementation declaration files we need.
         implementationIncludes = set(d.headerFile for d in descriptors)
 
+        # Grab the includes for the things that involve hasInstanceInterface
+        hasInstanceIncludes = set(d.hasInstanceInterface + ".h" for d
+                                  in descriptors if d.hasInstanceInterface)
+
         # Now find all the things we'll need as arguments because we
         # need to wrap or unwrap them.
         bindingHeaders = set()
@@ -541,6 +545,7 @@ class CGHeaders(CGWrapper):
                            definePre=_includeString(sorted(set(defineIncludes) |
                                                            bindingIncludes |
                                                            bindingHeaders |
+                                                           hasInstanceIncludes |
                                                            implementationIncludes)))
     @staticmethod
     def getDeclarationFilename(decl):
@@ -832,7 +837,7 @@ class CGDeferredFinalize(CGAbstractStaticMethod):
         return """  MOZ_ASSERT(slice > 0, "nonsensical/useless call with slice == 0");
   nsTArray<%(smartPtr)s >* pointers = static_cast<nsTArray<%(smartPtr)s >*>(data);
   uint32_t oldLen = pointers->Length();
-  slice = NS_MIN(oldLen, slice);
+  slice = std::min(oldLen, slice);
   uint32_t newLen = oldLen - slice;
   pointers->RemoveElementsAt(newLen, slice);
   if (newLen == 0) {
@@ -1782,6 +1787,16 @@ class CGWrapWithCacheMethod(CGAbstractMethod):
   JSObject* parent = WrapNativeParent(aCx, aScope, aObject->GetParentObject());
   if (!parent) {
     return NULL;
+  }
+
+  // That might have ended up wrapping us already, due to the wonders
+  // of XBL.  Check for that, and bail out as needed.  Scope so we don't
+  // collide with the "obj" we declare in CreateBindingJSObject.
+  {
+    JSObject* obj = aCache->GetWrapper();
+    if (obj) {
+      return obj;
+    }
   }
 
   JSAutoCompartment ac(aCx, parent);
@@ -4112,7 +4127,7 @@ class CGMethodCall(CGThing):
 
         overloadCGThings = []
         overloadCGThings.append(
-            CGGeneric("unsigned argcount = NS_MIN(argc, %du);" %
+            CGGeneric("unsigned argcount = std::min(argc, %du);" %
                       maxArgCount))
         overloadCGThings.append(
             CGSwitch("argcount",
@@ -5594,13 +5609,13 @@ class CGResolveOwnProperty(CGAbstractMethod):
     def __init__(self, descriptor):
         args = [Argument('JSContext*', 'cx'), Argument('JSObject*', 'wrapper'),
                 Argument('JSObject*', 'obj'), Argument('jsid', 'id'),
-                Argument('bool', 'set'),
-                Argument('JSPropertyDescriptor*', 'desc')]
+                Argument('JSPropertyDescriptor*', 'desc'), Argument('unsigned', 'flags'),
+                ]
         CGAbstractMethod.__init__(self, descriptor, "ResolveOwnProperty", "bool", args)
     def definition_body(self):
         return """  // We rely on getOwnPropertyDescriptor not shadowing prototype properties by named
   // properties. If that changes we'll need to filter here.
-  return js::GetProxyHandler(obj)->getOwnPropertyDescriptor(cx, wrapper, id, set, desc);
+  return js::GetProxyHandler(obj)->getOwnPropertyDescriptor(cx, wrapper, id, desc, flags);
 """
 
 class CGEnumerateOwnProperties(CGAbstractMethod):
@@ -5857,8 +5872,8 @@ class CGDOMJSProxyHandler_CGDOMJSProxyHandler(ClassConstructor):
 class CGDOMJSProxyHandler_getOwnPropertyDescriptor(ClassMethod):
     def __init__(self, descriptor):
         args = [Argument('JSContext*', 'cx'), Argument('JSObject*', 'proxy'),
-                Argument('jsid', 'id'), Argument('bool', 'set'),
-                Argument('JSPropertyDescriptor*', 'desc')]
+                Argument('jsid', 'id'),
+                Argument('JSPropertyDescriptor*', 'desc'), Argument('unsigned', 'flags')]
         ClassMethod.__init__(self, "getOwnPropertyDescriptor", "bool", args)
         self.descriptor = descriptor
     def getBody(self):
@@ -5877,7 +5892,7 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(ClassMethod):
                    "}\n") % (self.descriptor.nativeType)
 
         if indexedSetter or self.descriptor.operations['NamedSetter']:
-            setOrIndexedGet += "if (set) {\n"
+            setOrIndexedGet += "if (flags & JSRESOLVE_ASSIGNING) {\n"
             if indexedSetter:
                 setOrIndexedGet += ("  if (IsArrayIndex(index)) {\n")
                 if not 'IndexedCreator' in self.descriptor.operations:
@@ -5907,7 +5922,7 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(ClassMethod):
                                     "}")
             setOrIndexedGet += "\n\n"
         elif indexedGetter:
-            setOrIndexedGet += ("if (!set) {\n" +
+            setOrIndexedGet += ("if (!(flags & JSRESOLVE_ASSIGNING)) {\n" +
                                 CGIndenter(CGGeneric(get)).define() +
                                 "}\n\n")
 
@@ -5919,7 +5934,7 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(ClassMethod):
             # Once we start supporting OverrideBuiltins we need to make
             # ResolveOwnProperty or EnumerateOwnProperties filter out named
             # properties that shadow prototype properties.
-            condition = "!set && !HasPropertyOnPrototype(cx, proxy, this, id)"
+            condition = "!(flags & JSRESOLVE_ASSIGNING) && !HasPropertyOnPrototype(cx, proxy, this, id)"
             if self.descriptor.supportsIndexedProperties():
                 condition = "!IsArrayIndex(index) && " + condition
             namedGet = ("\n" +
@@ -5931,7 +5946,6 @@ class CGDOMJSProxyHandler_getOwnPropertyDescriptor(ClassMethod):
 
         return setOrIndexedGet + """JSObject* expando;
 if (!xpc::WrapperFactory::IsXrayWrapper(proxy) && (expando = GetExpandoObject(proxy))) {
-  unsigned flags = (set ? JSRESOLVE_ASSIGNING : 0);
   if (!JS_GetPropertyDescriptorById(cx, expando, id, flags, desc)) {
     return false;
   }
@@ -6644,8 +6658,8 @@ class CGDictionary(CGThing):
              "  }\n" if self.needToInitIds else "") +
             "${initParent}" +
             ("  JSBool found;\n"
-             "  JS::Value temp;\n" if len(memberInits) > 0 else "") +
-            "  bool isNull = val.isNullOrUndefined();\n"
+             "  JS::Value temp;\n"
+             "  bool isNull = val.isNullOrUndefined();\n" if len(memberInits) > 0 else "") +
             "  if (!IsConvertibleToDictionary(cx, val)) {\n"
             "    return ThrowErrorMessage(cx, MSG_NOT_DICTIONARY);\n"
             "  }\n"

@@ -1239,6 +1239,17 @@ class AutoArrayRooter : private AutoGCRooter {
 
     Value *array;
 
+    MutableHandleValue handleAt(size_t i)
+    {
+        JS_ASSERT(i < size_t(tag));
+        return MutableHandleValue::fromMarkedLocation(&array[i]);
+    }
+    HandleValue handleAt(size_t i) const
+    {
+        JS_ASSERT(i < size_t(tag));
+        return HandleValue::fromMarkedLocation(&array[i]);
+    }
+
     friend void AutoGCRooter::trace(JSTracer *trc);
 
   private:
@@ -5543,7 +5554,7 @@ JS_GetStringEncodingLength(JSContext *cx, JSString *str);
  * written into the buffer.
  */
 JS_PUBLIC_API(size_t)
-JS_EncodeStringToBuffer(JSString *str, char *buffer, size_t length);
+JS_EncodeStringToBuffer(JSContext *cx, JSString *str, char *buffer, size_t length);
 
 class JSAutoByteString
 {

@@ -18,7 +18,6 @@ class nsDisplayItem;
 class nsFontMetrics;
 class nsClientRectList;
 class nsFontFaceList;
-class nsHTMLCanvasElement;
 class nsHTMLVideoElement;
 class nsIImageLoadingContent;
 
@@ -39,6 +38,7 @@ class nsIImageLoadingContent;
 #include "FrameMetrics.h"
 
 #include <limits>
+#include <algorithm>
 
 class nsBlockFrame;
 class gfxDrawable;
@@ -47,6 +47,7 @@ namespace mozilla {
 namespace dom {
 class Element;
 class HTMLImageElement;
+class HTMLCanvasElement;
 } // namespace dom
 } // namespace mozilla
 
@@ -967,7 +968,7 @@ public:
     nscoord result =
       nsRuleNode::ComputeCoordPercentCalc(aCoord, aContainingBlockHeight);
     // Clamp calc(), and the subtraction for box-sizing.
-    return NS_MAX(0, result - aContentEdgeToBoxSizingBoxEdge);
+    return std::max(0, result - aContentEdgeToBoxSizingBoxEdge);
   }
 
   static bool IsAutoHeight(const nsStyleCoord &aCoord, nscoord aCBHeight)
@@ -1476,7 +1477,7 @@ public:
   // for HTMLImageElement.
   static SurfaceFromElementResult SurfaceFromElement(mozilla::dom::HTMLImageElement *aElement,
                                                      uint32_t aSurfaceFlags = 0);
-  static SurfaceFromElementResult SurfaceFromElement(nsHTMLCanvasElement *aElement,
+  static SurfaceFromElementResult SurfaceFromElement(mozilla::dom::HTMLCanvasElement *aElement,
                                                      uint32_t aSurfaceFlags = 0);
   static SurfaceFromElementResult SurfaceFromElement(nsHTMLVideoElement *aElement,
                                                      uint32_t aSurfaceFlags = 0);
@@ -1962,7 +1963,7 @@ nsLayoutUtils::PointIsCloserToRect(PointType aPoint, const RectType& aRect,
   if (fromLeft >= 0 && fromRight <= 0) {
     xDistance = 0;
   } else {
-    xDistance = NS_MIN(abs(fromLeft), abs(fromRight));
+    xDistance = std::min(abs(fromLeft), abs(fromRight));
   }
 
   if (xDistance <= aClosestXDistance) {
@@ -1977,7 +1978,7 @@ nsLayoutUtils::PointIsCloserToRect(PointType aPoint, const RectType& aRect,
     if (fromTop >= 0 && fromBottom <= 0) {
       yDistance = 0;
     } else {
-      yDistance = NS_MIN(abs(fromTop), abs(fromBottom));
+      yDistance = std::min(abs(fromTop), abs(fromBottom));
     }
 
     if (yDistance < aClosestYDistance) {

@@ -179,6 +179,7 @@ const UnsolicitedNotifications = {
   "tabDetached": "tabDetached",
   "tabNavigated": "tabNavigated",
   "pageError": "pageError",
+  "webappsEvent": "webappsEvent",
   "mutations": "mutations",
 };
 

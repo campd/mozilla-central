@@ -65,7 +65,7 @@ js::CreateRegExpMatchResult(JSContext *cx, JSString *input_, StableCharPtr chars
      *  input:          input string
      *  index:          start index for the match
      */
-    RootedObject array(cx, NewSlowEmptyArray(cx));
+    RootedObject array(cx, NewDenseEmptyArray(cx));
     if (!array)
         return false;
 
@@ -114,7 +114,7 @@ js::CreateRegExpMatchResult(JSContext *cx, HandleString string, MatchPairs &matc
 }
 
 RegExpRunStatus
-ExecuteRegExpImpl(JSContext *cx, RegExpStatics *res, RegExpShared &re, RegExpObject &regexp,
+ExecuteRegExpImpl(JSContext *cx, RegExpStatics *res, RegExpShared &re,
                   JSLinearString *input, StableCharPtr chars, size_t length,
                   size_t *lastIndex, MatchConduit &matches)
 {
@@ -126,7 +126,7 @@ ExecuteRegExpImpl(JSContext *cx, RegExpStatics *res, RegExpShared &re, RegExpObj
         /* Only one MatchPair slot provided: execute short-circuiting regexp. */
         status = re.executeMatchOnly(cx, chars, length, lastIndex, *matches.u.pair);
         if (status == RegExpRunStatus_Success && res)
-            res->updateLazily(cx, input, &regexp, lastIndex_orig);
+            res->updateLazily(cx, input, &re, lastIndex_orig);
     } else {
         /* Vector of MatchPairs provided: execute full regexp. */
         status = re.execute(cx, chars, length, lastIndex, *matches.u.pairs);
@@ -143,7 +143,7 @@ js::ExecuteRegExpLegacy(JSContext *cx, RegExpStatics *res, RegExpObject &reobj,
                         Handle<JSStableString*> input, StableCharPtr chars, size_t length,
                         size_t *lastIndex, JSBool test, jsval *rval)
 {
-    RegExpGuard shared;
+    RegExpGuard shared(cx);
     if (!reobj.getShared(cx, &shared))
         return false;
 
@@ -151,7 +151,7 @@ js::ExecuteRegExpLegacy(JSContext *cx, RegExpStatics *res, RegExpObject &reobj,
     MatchConduit conduit(&matches);
 
     RegExpRunStatus status =
-        ExecuteRegExpImpl(cx, res, *shared, reobj, input, chars, length, lastIndex, conduit);
+        ExecuteRegExpImpl(cx, res, *shared, input, chars, length, lastIndex, conduit);
 
     if (status == RegExpRunStatus_Error)
         return false;
@@ -200,7 +200,7 @@ EscapeNakedForwardSlashes(JSContext *cx, JSAtom *unescaped)
             return NULL;
     }
 
-    return sb.empty() ? unescaped : sb.finishAtom();
+    return sb.empty() ? UnrootedAtom(unescaped) : sb.finishAtom();
 }
 
 /*
@@ -252,7 +252,7 @@ CompileRegExpObject(JSContext *cx, RegExpObjectBuilder &builder, CallArgs args)
          */
         RegExpFlag flags;
         {
-            RegExpGuard g;
+            RegExpGuard g(cx);
             if (!RegExpToShared(cx, *sourceObj, &g))
                 return false;
 
@@ -533,17 +533,6 @@ js_InitRegExpClass(JSContext *cx, HandleObject obj)
     if (!JS_DefineProperties(cx, ctor, regexp_static_props))
         return NULL;
 
-    /* Capture normal data properties pregenerated for RegExp objects. */
-    TypeObject *type = proto->getNewType(cx);
-    if (!type)
-        return NULL;
-    AddTypeProperty(cx, type, "source", Type::StringType());
-    AddTypeProperty(cx, type, "global", Type::BooleanType());
-    AddTypeProperty(cx, type, "ignoreCase", Type::BooleanType());
-    AddTypeProperty(cx, type, "multiline", Type::BooleanType());
-    AddTypeProperty(cx, type, "sticky", Type::BooleanType());
-    AddTypeProperty(cx, type, "lastIndex", Type::Int32Type());
-
     if (!DefineConstructorAndPrototype(cx, global, JSProto_RegExp, ctor, proto))
         return NULL;
 
@@ -556,7 +545,7 @@ js::ExecuteRegExp(JSContext *cx, HandleObject regexp, HandleString string, Match
     /* Step 1 (b) was performed by CallNonGenericMethod. */
     Rooted<RegExpObject*> reobj(cx, &regexp->asRegExp());
 
-    RegExpGuard re;
+    RegExpGuard re(cx);
     if (!reobj->getShared(cx, &re))
         return RegExpRunStatus_Error;
 
@@ -591,7 +580,7 @@ js::ExecuteRegExp(JSContext *cx, HandleObject regexp, HandleString string, Match
     /* Steps 8-21. */
     size_t lastIndexInt(i);
     RegExpRunStatus status =
-        ExecuteRegExpImpl(cx, res, *re, *reobj, stableInput, chars, length, &lastIndexInt, matches);
+        ExecuteRegExpImpl(cx, res, *re, stableInput, chars, length, &lastIndexInt, matches);
 
     if (status == RegExpRunStatus_Error)
         return RegExpRunStatus_Error;

@@ -187,8 +187,8 @@ class IonBuilder : public MIRGenerator
         return js_IonOptions.inlining;
     }
 
-    JSFunction *getSingleCallTarget(uint32_t argc, jsbytecode *pc);
-    unsigned getPolyCallTargets(uint32_t argc, jsbytecode *pc,
+    JSFunction *getSingleCallTarget(types::StackTypeSet *calleeTypes);
+    unsigned getPolyCallTargets(types::StackTypeSet *calleeTypes,
                                 AutoObjectVector &targets, uint32_t maxTargets);
     bool canInlineTarget(JSFunction *target);
 
@@ -275,9 +275,8 @@ class IonBuilder : public MIRGenerator
 
     JSObject *getSingletonPrototype(JSFunction *target);
 
-    MDefinition *createThisNative();
     MDefinition *createThisScripted(MDefinition *callee);
-    MDefinition *createThisScriptedSingleton(HandleFunction target, HandleObject proto, MDefinition *callee);
+    MDefinition *createThisScriptedSingleton(HandleFunction target, MDefinition *callee);
     MDefinition *createThis(HandleFunction target, MDefinition *callee);
     MInstruction *createDeclEnvObject(MDefinition *callee, MDefinition *scopeObj);
     MInstruction *createCallObject(MDefinition *callee, MDefinition *scopeObj);
@@ -420,22 +419,31 @@ class IonBuilder : public MIRGenerator
     bool jsop_call_inline(HandleFunction callee, uint32_t argc, bool constructing,
                           MConstant *constFun, MBasicBlock *bottom,
                           Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns);
-    bool inlineScriptedCall(AutoObjectVector &targets, uint32_t argc, bool constructing,
+    bool inlineScriptedCall(AutoObjectVector &targets, AutoObjectVector &originals,
+                            uint32_t argc, bool constructing,
                             types::StackTypeSet *types, types::StackTypeSet *barrier);
     bool makeInliningDecision(AutoObjectVector &targets, uint32_t argc);
 
+    bool anyFunctionIsCloneAtCallsite(types::StackTypeSet *funTypes);
+    MDefinition *makeCallsiteClone(HandleFunction target, MDefinition *fun);
     void popFormals(uint32_t argc, MDefinition **fun, MPassArg **thisArg,
                     Vector<MPassArg *> *args);
-    MCall *makeCallHelper(HandleFunction target, bool constructing,
+    MCall *makeCallHelper(HandleFunction target,  types::StackTypeSet *calleeTypes,
+                          bool constructing, bool cloneAtCallsite,
                           MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args);
-    MCall *makeCallHelper(HandleFunction target, uint32_t argc, bool constructing);
-    bool makeCallBarrier(HandleFunction target, uint32_t argc, bool constructing,
+    MCall *makeCallHelper(HandleFunction target,  types::StackTypeSet *calleeTypes,
+                          uint32_t argc, bool constructing, bool cloneAtCallsite);
+    bool makeCallBarrier(HandleFunction target,  types::StackTypeSet *calleeTypes,
+                         uint32_t argc, bool constructing, bool cloneAtCallsite,
                          types::StackTypeSet *types, types::StackTypeSet *barrier);
-    bool makeCallBarrier(HandleFunction target, bool constructing,
+    bool makeCallBarrier(HandleFunction target, types::StackTypeSet *calleeTypes,
+                         bool constructing, bool cloneAtCallsite,
                          MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args,
                          types::StackTypeSet *types, types::StackTypeSet *barrier);
-    bool makeCall(HandleFunction target, uint32_t argc, bool constructing);
-    bool makeCall(HandleFunction target, bool constructing,
+    bool makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
+                  uint32_t argc, bool constructing, bool cloneAtCallsite);
+    bool makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
+                  bool constructing, bool cloneAtCallsite,
                   MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args);
 
     inline bool TestCommonPropFunc(JSContext *cx, types::StackTypeSet *types,
@@ -449,7 +457,7 @@ class IonBuilder : public MIRGenerator
     MGetPropertyCache *checkInlineableGetPropertyCache(uint32_t argc);
 
     MPolyInlineDispatch *
-    makePolyInlineDispatch(JSContext *cx, AutoObjectVector &targets, int argc,
+    makePolyInlineDispatch(JSContext *cx, int argc,
                            MGetPropertyCache *getPropCache,
                            types::StackTypeSet *types, types::StackTypeSet *barrier,
                            MBasicBlock *bottom,
@@ -476,8 +484,11 @@ class IonBuilder : public MIRGenerator
     CodeGenerator *backgroundCodegen() const { return backgroundCodegen_; }
     void setBackgroundCodegen(CodeGenerator *codegen) { backgroundCodegen_ = codegen; }
 
+    AbortReason abortReason() { return abortReason_; }
+
   private:
     JSContext *cx;
+    AbortReason abortReason_;
 
     jsbytecode *pc;
     MBasicBlock *current;

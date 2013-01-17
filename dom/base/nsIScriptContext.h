@@ -45,8 +45,8 @@ NS_DEFINE_STATIC_IID_ACCESSOR(nsIScriptContextPrincipal,
                               NS_ISCRIPTCONTEXTPRINCIPAL_IID)
 
 #define NS_ISCRIPTCONTEXT_IID \
-{ 0xa786f089, 0xafda, 0x4442, \
- { 0xb9, 0xe3, 0x06, 0xc3, 0xb3, 0xf0, 0xda, 0x22 } }
+{ 0xa842337f, 0x4332, 0x4221, \
+  { 0xa3, 0x8f, 0xca, 0x47, 0x0b, 0x78, 0xd0, 0x6d } }
 
 /* This MUST match JSVERSION_DEFAULT.  This version stuff if we don't
    know what language we have is a little silly... */
@@ -184,6 +184,22 @@ public:
                                        nsScriptObjectHolder<JSObject>& aHandler) = 0;
 
   /**
+   * Call the function object with given args and return its boolean result,
+   * or true if the result isn't boolean.
+   *
+   * @param aTarget the event target
+   * @param aScript an object telling the scope in which to call the compiled
+   *        event handler function.
+   * @param aHandler function object (function and static scope) to invoke.
+   * @param argv array of arguments.  Note each element is assumed to
+   *        be an nsIVariant.
+   * @param rval out parameter returning result
+   **/
+  virtual nsresult CallEventHandler(nsISupports* aTarget,
+                                    JSObject* aScope, JSObject* aHandler,
+                                    nsIArray *argv, nsIVariant **rval) = 0;
+
+  /**
    * Bind an already-compiled event handler function to the given
    * target.  Scripting languages with static scoping must re-bind the
    * scope chain for aHandler to begin (after the activation scope for
@@ -312,6 +328,12 @@ public:
   // SetProperty is suspect and jst believes should not be needed.  Currenly
   // used only for "arguments".
   virtual nsresult SetProperty(JSObject* aTarget, const char* aPropName, nsISupports* aVal) = 0;
+  /** 
+   * Called to set/get information if the script context is
+   * currently processing a script tag
+   */
+  virtual bool GetProcessingScriptTag() = 0;
+  virtual void SetProcessingScriptTag(bool aResult) = 0;
 
   /**
    * Called to find out if this script context might be executing script.

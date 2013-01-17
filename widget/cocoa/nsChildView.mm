@@ -23,7 +23,7 @@
 
 #include "nsFontMetrics.h"
 #include "nsIRollupListener.h"
-#include "nsIViewManager.h"
+#include "nsViewManager.h"
 #include "nsIInterfaceRequestor.h"
 #include "nsIFile.h"
 #include "nsILocalFileMac.h"
@@ -742,6 +742,18 @@ NS_IMETHODIMP nsChildView::GetBounds(nsIntRect &aRect)
   return NS_OK;
 }
 
+NS_IMETHODIMP nsChildView::GetClientBounds(nsIntRect &aRect)
+{
+  GetBounds(aRect);
+  if (!mParentWidget) {
+    // For top level widgets we want the position on screen, not the position
+    // of this view inside the window.
+    MOZ_ASSERT(mWindowType != eWindowType_plugin, "plugin widgets should have parents");
+    aRect.MoveTo(WidgetToScreenOffset());
+  }
+  return NS_OK;
+}
+
 double
 nsChildView::GetDefaultScaleInternal()
 {
@@ -927,6 +939,8 @@ bool nsChildView::ShowsResizeIndicator(nsIntRect* aResizerRect)
 // specific code to work around this bug, which breaks when we fix it (see bmo
 // bug 477077).  So we'll need to coordinate releasing a fix for this bug with
 // Adobe and other major plugin vendors that support the CoreGraphics mode.
+//
+// outClipRect and outOrigin are in display pixels, not device pixels.
 NS_IMETHODIMP nsChildView::GetPluginClipRect(nsIntRect& outClipRect, nsIntPoint& outOrigin, bool& outWidgetVisible)
 {
   NS_OBJC_BEGIN_TRY_ABORT_BLOCK_NSRESULT;
@@ -964,7 +978,11 @@ NS_IMETHODIMP nsChildView::GetPluginClipRect(nsIntRect& outClipRect, nsIntPoint&
     if (mClipRects) {
       nsIntRect clipBounds;
       for (uint32_t i = 0; i < mClipRectCount; ++i) {
-        clipBounds.UnionRect(clipBounds, mClipRects[i]);
+        NSRect cocoaPoints = DevPixelsToCocoaPoints(mClipRects[i]);
+        clipBounds.UnionRect(clipBounds, nsIntRect(NSToIntRound(cocoaPoints.origin.x),
+                                                   NSToIntRound(cocoaPoints.origin.y),
+                                                   NSToIntRound(cocoaPoints.size.width),
+                                                   NSToIntRound(cocoaPoints.size.height)));
       }
       outClipRect.IntersectRect(outClipRect, clipBounds - outOrigin);
     }

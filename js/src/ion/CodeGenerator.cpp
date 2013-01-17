@@ -970,7 +970,7 @@ CodeGenerator::visitCallGetIntrinsicValue(LCallGetIntrinsicValue *lir)
     return callVM(GetIntrinsicValueInfo, lir);
 }
 
-typedef bool (*InvokeFunctionFn)(JSContext *, JSFunction *, uint32_t, Value *, Value *);
+typedef bool (*InvokeFunctionFn)(JSContext *, HandleFunction, uint32_t, Value *, Value *);
 static const VMFunction InvokeFunctionInfo = FunctionInfo<InvokeFunctionFn>(InvokeFunction);
 
 bool
@@ -1106,7 +1106,7 @@ CodeGenerator::visitCallKnown(LCallKnown *call)
     Register calleereg = ToRegister(call->getFunction());
     Register objreg    = ToRegister(call->getTempObject());
     uint32_t unusedStack = StackOffsetOfPassedArg(call->argslot());
-    JSFunction *target = call->getSingleTarget();
+    RootedFunction target(cx, call->getSingleTarget());
     Label end, invoke;
 
     // Native single targets are handled by LCallNative.
@@ -1117,7 +1117,7 @@ CodeGenerator::visitCallKnown(LCallKnown *call)
     masm.checkStackAlignment();
 
     // Make sure the function has a JSScript
-    if (target->isInterpretedLazy() && !target->getOrCreateScript(cx))
+    if (target->isInterpretedLazy() && !JSFunction::getOrCreateScript(cx, target))
         return false;
 
     // If the function is known to be uncompilable, only emit the call to InvokeFunction.
@@ -2010,6 +2010,46 @@ CodeGenerator::visitInitProp(LInitProp *lir)
     return callVM(InitPropInfo, lir);
 }
 
+typedef bool (*CreateThisFn)(JSContext *cx, HandleObject callee, MutableHandleValue rval);
+static const VMFunction CreateThisInfo =
+FunctionInfo<CreateThisFn>(CreateThis);
+
+bool
+CodeGenerator::visitCreateThis(LCreateThis *lir)
+{
+    const LAllocation *callee = lir->getCallee();
+
+    if (callee->isConstant())
+        pushArg(ImmGCPtr(&callee->toConstant()->toObject()));
+    else
+        pushArg(ToRegister(callee));
+
+    return callVM(CreateThisInfo, lir);
+}
+
+typedef JSObject *(*CreateThisWithProtoFn)(JSContext *cx, HandleObject callee, JSObject *proto);
+static const VMFunction CreateThisWithProtoInfo =
+FunctionInfo<CreateThisWithProtoFn>(js_CreateThisForFunctionWithProto);
+
+bool
+CodeGenerator::visitCreateThisWithProto(LCreateThisWithProto *lir)
+{
+    const LAllocation *callee = lir->getCallee();
+    const LAllocation *proto = lir->getPrototype();
+
+    if (proto->isConstant())
+        pushArg(ImmGCPtr(&proto->toConstant()->toObject()));
+    else
+        pushArg(ToRegister(proto));
+
+    if (callee->isConstant())
+        pushArg(ImmGCPtr(&callee->toConstant()->toObject()));
+    else
+        pushArg(ToRegister(callee));
+
+    return callVM(CreateThisWithProtoInfo, lir);
+}
+
 typedef JSObject *(*NewGCThingFn)(JSContext *cx, gc::AllocKind allocKind, size_t thingSize);
 static const VMFunction NewGCThingInfo =
     FunctionInfo<NewGCThingFn>(js::ion::NewGCThing);
@@ -2036,59 +2076,6 @@ CodeGenerator::visitCreateThisWithTemplate(LCreateThisWithTemplate *lir)
     masm.initGCThing(objReg, templateObject);
 
     return true;
-}
-
-typedef JSObject *(*CreateThisFn)(JSContext *cx, HandleObject callee, JSObject *proto);
-static const VMFunction CreateThisInfo =
-    FunctionInfo<CreateThisFn>(js_CreateThisForFunctionWithProto);
-
-bool
-CodeGenerator::emitCreateThisVM(LInstruction *lir,
-                                const LAllocation *proto,
-                                const LAllocation *callee)
-{
-    if (proto->isConstant())
-        pushArg(ImmGCPtr(&proto->toConstant()->toObject()));
-    else
-        pushArg(ToRegister(proto));
-
-    if (callee->isConstant())
-        pushArg(ImmGCPtr(&callee->toConstant()->toObject()));
-    else
-        pushArg(ToRegister(callee));
-
-    return callVM(CreateThisInfo, lir);
-}
-
-bool
-CodeGenerator::visitCreateThisV(LCreateThisV *lir)
-{
-    Label done, vm;
-
-    const LAllocation *proto = lir->getPrototype();
-    const LAllocation *callee = lir->getCallee();
-
-    // When callee could be a native, put MagicValue in return operand.
-    // Use the VMCall when callee turns out to not be a native.
-    masm.branchIfInterpreted(ToRegister(callee), &vm);
-    masm.moveValue(MagicValue(JS_IS_CONSTRUCTING), GetValueOutput(lir));
-    masm.jump(&done);
-
-    masm.bind(&vm);
-    if (!emitCreateThisVM(lir, proto, callee))
-        return false;
-
-    masm.tagValue(JSVAL_TYPE_OBJECT, ReturnReg, GetValueOutput(lir));
-
-    masm.bind(&done);
-
-    return true;
-}
-
-bool
-CodeGenerator::visitCreateThisO(LCreateThisO *lir)
-{
-    return emitCreateThisVM(lir, lir->getPrototype(), lir->getCallee());
 }
 
 bool
@@ -3376,6 +3363,13 @@ CodeGenerator::visitIteratorStart(LIteratorStart *lir)
     masm.loadObjProto(temp1, temp1);
     masm.branchTestPtr(Assembler::NonZero, temp1, temp1, ool->entry());
 
+    // Ensure the object does not have any elements. The presence of dense
+    // elements is not captured by the shape tests above.
+    masm.branchPtr(Assembler::NotEqual,
+                   Address(obj, JSObject::offsetOfElements()),
+                   ImmWord(js::emptyObjectElements),
+                   ool->entry());
+
     // Write barrier for stores to the iterator. We only need to take a write
     // barrier if NativeIterator::obj is actually going to change.
     {
@@ -3602,8 +3596,8 @@ CodeGenerator::link()
       IonScript::New(cx, graph.totalSlotCount(), scriptFrameSize, snapshots_.size(),
                      bailouts_.length(), graph.numConstants(),
                      safepointIndices_.length(), osiIndices_.length(),
-                     cacheList_.length(), barrierOffsets_.length(),
-                     safepoints_.size(), graph.mir().numScripts());
+                     cacheList_.length(), safepoints_.size(),
+                     graph.mir().numScripts());
     SetIonScript(script, executionMode, ionScript);
 
     if (!ionScript)
@@ -3636,8 +3630,6 @@ CodeGenerator::link()
         ionScript->copyOsiIndices(&osiIndices_[0], masm);
     if (cacheList_.length())
         ionScript->copyCacheEntries(&cacheList_[0], masm);
-    if (barrierOffsets_.length())
-        ionScript->copyPrebarrierEntries(&barrierOffsets_[0], masm);
     if (safepoints_.size())
         ionScript->copySafepoints(&safepoints_);
 
@@ -3852,6 +3844,8 @@ class OutOfLineCache : public OutOfLineCodeBase<CodeGenerator>
             return codegen->visitOutOfLineBindNameCache(this);
           case LInstruction::LOp_GetNameCache:
             return codegen->visitOutOfLineGetNameCache(this);
+          case LInstruction::LOp_CallsiteCloneCache:
+            return codegen->visitOutOfLineCallsiteCloneCache(this);
           default:
             JS_NOT_REACHED("Bad instruction");
             return false;
@@ -3888,6 +3882,41 @@ CodeGenerator::visitCache(LInstruction *ins)
     masm.bind(ool->rejoin());
 
     ool->setInlineJump(jump, label);
+    return true;
+}
+
+typedef JSObject *(*CallsiteCloneCacheFn)(JSContext *, size_t, HandleObject);
+static const VMFunction CallsiteCloneCacheInfo =
+    FunctionInfo<CallsiteCloneCacheFn>(CallsiteCloneCache);
+
+bool
+CodeGenerator::visitOutOfLineCallsiteCloneCache(OutOfLineCache *ool)
+{
+    LCallsiteCloneCache *lir = ool->cache()->toCallsiteCloneCache();
+    const MCallsiteCloneCache *mir = lir->mir();
+    Register callee = ToRegister(lir->callee());
+    RegisterSet liveRegs = lir->safepoint()->liveRegs();
+    Register output = ToRegister(lir->output());
+
+    IonCacheCallsiteClone cache(ool->getInlineJump(), ool->getInlineLabel(),
+                                masm.labelForPatch(), liveRegs,
+                                callee, mir->block()->info().script(), mir->callPc(), output);
+
+    JS_ASSERT(!mir->resumePoint());
+
+    size_t cacheIndex = allocateCache(cache);
+
+    saveLive(lir);
+
+    pushArg(callee);
+    pushArg(Imm32(cacheIndex));
+    if (!callVM(CallsiteCloneCacheInfo, lir))
+        return false;
+
+    masm.storeCallResult(output);
+    restoreLive(lir);
+
+    masm.jump(ool->rejoin());
     return true;
 }
 
