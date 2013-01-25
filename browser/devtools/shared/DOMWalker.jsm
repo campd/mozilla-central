@@ -60,13 +60,13 @@ domParams.WalkerString = function(path) {
   return new params.LongStringReturn(path, "writeString");
 };
 
-domParams.LongNodeListOptions = params.Complex([
+domParams.LongNodeListOptions = params.Options([
   params.Simple("maxNodes"),
   params.Simple("whatToShow"),
   domParams.Node("include")
 ]);
 
-domParams.LongNodeList = params.Complex([
+domParams.LongNodeList = params.Options([
   params.Simple("hasFirst"),
   params.Simple("hasLast"),
   domParams.Nodes("nodes")
@@ -424,7 +424,7 @@ DOMWalker.prototype = {
     params: [
       domParams.Node("node"),
       params.Simple("pseudo"),
-      params.Complex([
+      params.Options([
         params.Simple("parents")
       ])
     ],
@@ -464,7 +464,7 @@ DOMWalker.prototype = {
     params: [
       domParams.Node("node"),
       params.Simple("pseudo"),
-      params.Complex([
+      params.Options([
         params.Simple("parents")
       ])
     ],
@@ -492,7 +492,7 @@ DOMWalker.prototype = {
   }, {
     params: [
       domParams.Node("node"),
-      params.Complex([
+      params.Options([
         params.Simple("all")
       ])
     ],

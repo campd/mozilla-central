@@ -108,18 +108,17 @@ Remotable.params.Simple = function(path) {
 },
 
 /**
- * A Complex param allows the user to specify a set of subparameters
- * that will be added ... blah I can't explain this right now.
- * XXX: This needs a better name.
+ * An options param allows the user to specify a set of parameters
+ * to be uplifted from an object into the packet.
  */
-Remotable.params.Complex = function(subParams) {
+Remotable.params.Options = function(subParams) {
   // XXX: allow this as a constructor too...
-  let ret = Object.create(Remotable.params.Complex.prototype);
+  let ret = Object.create(Remotable.params.Options.prototype);
   ret.subParams = subParams;
   return ret;
 }
 
-Remotable.params.Complex.prototype = {
+Remotable.params.Options.prototype = {
   write: function(packet, value, context) {
     for (let param of this.subParams) {
       if (param.path in value) {
