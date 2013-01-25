@@ -411,7 +411,7 @@ Remotable.LongStringActor.prototype = {
 
 /**
  * An actor pool that dynamically creates actor objects as needed
- * based on the underlying actor.
+ * based on the underlying implementation.
  */
 Remotable.WrapperPool = function(conn, prefix, factory)
 {
@@ -428,6 +428,12 @@ Remotable.WrapperPool.prototype = {
     }
     this.map.set(obj.__actorID, obj);
     return this.factory(this, obj.__actorID, obj);
+  },
+  actorID: function(obj) {
+    if (!obj.__actorID) {
+      this.add(obj);
+    }
+    return obj.__actorID;
   },
   remove: function(actorID) {
     this.map.delete(actorID);

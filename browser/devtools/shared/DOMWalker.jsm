@@ -805,7 +805,7 @@ DOMWalkerActor.prototype = {
   },
 
   writePseudoModification: function(node) {
-    let actor = this._nodePool.nodeActor(node);
+    let actor = this._nodePool.actorID(node);
     return {
       actor: actor,
       pseudoClassLocks: node.pseudoClassLocks
