@@ -7,9 +7,10 @@ this.EXPORTED_SYMBOLS = ["Remotable"];
 
 this.Remotable = {};
 
-Remotable.types = {}
+let types = {}
+Remotable.types = types;
 
-Remotable.types.Simple = {
+types.Simple = {
   write: function(value) value,
   read: function(value) value
 };
@@ -26,12 +27,15 @@ Remotable.types.Simple = {
  *        Will be called on the context object when receiving objects
  *        from the protocol.
  */
-Remotable.types.Context = function(writeMethod, readMethod) {
-  this.writeMethod = writeMethod;
-  this.readMethod = readMethod;
+types.Context = function(writeMethod, readMethod) {
+  let self = this instanceof types.Context ?
+    this : Object.create(types.Context.prototype);
+  self.writeMethod = writeMethod;
+  self.readMethod = readMethod;
+  return self;
 };
 
-Remotable.types.Context.prototype = {
+types.Context.prototype = {
   write: function(value, context) context[this.writeMethod].call(context, value),
   read: function(value, context) context[this.readMethod].call(context, value)
 };
@@ -41,10 +45,13 @@ Remotable.types.Context.prototype = {
  *
  * @param Type subtype
  */
-Remotable.types.Array = function(subtype) {
-  this.subtype = subtype;
+types.Array = function(subtype) {
+  let self = this instanceof types.Array ? this : Object.create(types.Array.prototype)
+  self.subtype = subtype;
+  return self;
 };
-Remotable.types.Array.prototype = {
+
+types.Array.prototype = {
   write: function(value, context) {
     return [this.subtype.write(item, context) for (item of value)];
   },
@@ -53,13 +60,16 @@ Remotable.types.Array.prototype = {
   }
 };
 
-Remotable.types.SimpleArray = new Remotable.types.Array(Remotable.types.Simple);
+types.SimpleArray = types.Array(types.Simple);
 
-Remotable.types.LongString = function(writeMethod) {
-  this.writeMethod = writeMethod;
+types.LongString = function(writeMethod) {
+  let self = this instanceof types.LongString ?
+    this : Object.create(types.LongString.prototype);
+  self.writeMethod = writeMethod;
+  return self;
 }
 
-Remotable.types.LongString.prototype = {
+types.LongString.prototype = {
   write: function(value, context) {
     return context[this.writeMethod].call(context, value);
   },
@@ -77,8 +87,11 @@ Remotable.types.LongString.prototype = {
  *        A type object used to convert the object for the protocol.
  */
 Remotable.Param = function(path, type) {
-  this.path = path;
-  this.type = type;
+  let self = this instanceof Remotable.Param ?
+    this : Object.create(Remotable.Param.prototype);
+  self.path = path;
+  self.type = type;
+  return self;
 }
 Remotable.Param.prototype = {
   write: function(packet, value, context) {
@@ -89,9 +102,10 @@ Remotable.Param.prototype = {
   }
 };
 
-Remotable.params = {};
+let params = {};
+Remotable.params = params;
 
-Remotable.params.Void = function() {
+params.Void = function() {
   return {
     write: function() {},
     read: function() {
@@ -103,22 +117,21 @@ Remotable.params.Void = function() {
 /**
  * Simply copies an object into the packet, good for fundamental types.
  */
-Remotable.params.Simple = function(path) {
-  return new Remotable.Param(path, Remotable.types.Simple);
+params.Simple = function(path) {
+  return Remotable.Param(path, types.Simple);
 },
 
 /**
  * An options param allows the user to specify a set of parameters
  * to be uplifted from an object into the packet.
  */
-Remotable.params.Options = function(subParams) {
-  // XXX: allow this as a constructor too...
-  let ret = Object.create(Remotable.params.Options.prototype);
+params.Options = function(subParams) {
+  let ret = Object.create(params.Options.prototype);
   ret.subParams = subParams;
   return ret;
 }
 
-Remotable.params.Options.prototype = {
+params.Options.prototype = {
   write: function(packet, value, context) {
     for (let param of this.subParams) {
       if (param.path in value) {
@@ -135,9 +148,9 @@ Remotable.params.Options.prototype = {
   },
 }
 
-Remotable.params.LongStringReturn = function(path, writeMethod)
+params.LongStringReturn = function(path, writeMethod)
 {
-  return new Remotable.Param(path, new Remotable.types.LongString(writeMethod));
+  return Remotable.Param(path, types.LongString(writeMethod));
 }
 
 /**
@@ -323,17 +336,17 @@ Remotable.LongString.prototype = {
     return promise.resolve(this.str.substring(start, end));
   }, {
     params: [
-      Remotable.params.Simple("start"),
-      Remotable.params.Simple("end")
+      params.Simple("start"),
+      params.Simple("end")
     ],
-    ret: Remotable.params.Simple("substring")
+    ret: params.Simple("substring")
   }),
 
   release: Remotable.remotable(function() {
     delete this.str;
   }, {
     params: [],
-    ret: Remotable.params.Void
+    ret: params.Void
   })
 }
 
