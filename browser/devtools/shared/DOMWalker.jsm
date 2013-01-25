@@ -33,7 +33,7 @@ this.createWalker = function(target, options) {
 };
 
 /**
- * Remotable types specific to the DOM walker.
+ * Remotable types/params specific to the DOM walker.
  */
 
 var domTypes = {};
@@ -46,7 +46,6 @@ domTypes.PseudoModification = new types.Context(
 );
 domTypes.PseudoModifications = new types.Array(domTypes.PseudoModification);
 
-
 var domParams = {};
 domParams.Node = function(path) {
   return new Remotable.Param(path, domTypes.Node);
@@ -57,8 +56,10 @@ domParams.Nodes = function(path) {
 domParams.PseudoModifications = function(path) {
   return new Remotable.Param(path, domTypes.PseudoModifications);
 };
+domParams.WalkerString = function(path) {
+  return new params.LongStringReturn(path, "writeString");
+};
 
-// Some custom params/returns for this file.
 domParams.LongNodeListOptions = params.Complex([
   params.Simple("maxNodes"),
   params.Simple("whatToShow"),
@@ -376,13 +377,19 @@ DOMWalker.prototype = {
     return ret;
   },
 
-  innerHTML: function(node) {
-    return promise.resolve(node._rawNode.innerHTML);
-  },
+  innerHTML: remotable(function(node) {
+    return promise.resolve(new Remotable.LongString(node._rawNode.innerHTML));
+  }, {
+    params: [domParams.Node("node")],
+    ret: domParams.WalkerString("innerHTML")
+  }),
 
-  outerHTML: function(node) {
-    return promise.resolve(node._rawNode.outerHTML);
-  },
+  outerHTML: remotable(function(node) {
+    return promise.resolve(new Remotable.LongString(node._rawNode.outerHTML));
+  }, {
+    params: [domParams.Node("node")],
+    ret: domParams.WalkerString("outerHTML")
+  }),
 
   _addPseudoClassLock: function(node, pseudo) {
     let deferred = promise.defer();
@@ -751,8 +758,10 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
 
   this.conn = aParentActor.conn;
   this.parent = aParentActor;
-  this._nodePool = new DOMNodePool(this);
+  this._nodePool = new Remotable.WrapperPool(this.conn, "node", DOMNodeActor);
   this.conn.addActorPool(this._nodePool);
+  this._stringPool = new Remotable.WrapperPool(this.conn, "str", Remotable.LongStringActor);
+  this.conn.addActorPool(this._stringPool);
 
   this._boundOnMutations = this._onMutations.bind(this);
   this.impl.on("mutations", this._boundOnMutations);
@@ -776,19 +785,26 @@ DOMWalkerActor.prototype = {
 
     this.conn.removeActorPool(this._nodePool);
     delete this._nodePool;
+    this.conn.removeActorPool(this._stringPool);
+    delete this._stringPool;
     this.parent.releaseActor(this);
     delete this.conn;
     delete this.parent;
   },
 
+  // Conversions for protocol types.
   writeNode: function DWA_writeNode(node) {
-    return this._nodePool.fromNode(node).form();
+    return this._nodePool.add(node).form();
   },
   readNode: function DWA_readNode(node) {
-    return this._nodePool.node(node);
+    return this._nodePool.obj(node);
   },
 
-  sendPseudoModification: function(node) {
+  writeString: function DWA_writeString(longStr) {
+    return this._stringPool.add(longStr).form();
+  },
+
+  writePseudoModification: function(node) {
     let actor = this._nodePool.nodeActor(node);
     return {
       actor: actor,
@@ -845,12 +861,15 @@ DOMWalkerActor.prototype = {
 };
 
 // These are ephemeral, created as needed by the DOMWalkerNodePool.
-function DOMNodeActor(aConn, aNodeRef)
+function DOMNodeActor(aPool, aActorID, aNodeRef)
 {
+  let self = this instanceof DOMNodeActor ?
+    this : DOMNodeActor.prototype;
   Remotable.initServer(DOMNodeActor.prototype, DOMRef.prototype)
-  this.conn = aConn;
-  this.impl = aNodeRef;
-  this.actorID = aNodeRef.__actorID;
+  self.conn = aPool.conn;
+  self.impl = aNodeRef;
+  self.actorID = aActorID;
+  return self;
 }
 
 DOMNodeActor.prototype = {
@@ -903,45 +922,6 @@ DOMNodeActor.prototype = {
 DOMNodeActor.prototype.requestTypes = {
   setNodeValue: DOMNodeActor.prototype.onSetNodeValue,
 };
-
-/**
- * Keeps track of the actor IDs we handed out and creates DOMNodeActors
- * as needed.
- */
-function DOMNodePool(aActor) {
-  this.walkerActor = aActor;
-  this.idMap = new Map();
-  // XXX: maybe we should just use this.conn.allocID...
-  this.currentID = 0;
-}
-
-DOMNodePool.prototype = {
-  fromNode: function(aNodeRef)  {
-    if (!aNodeRef.__actorID) {
-      aNodeRef.__actorID = this.walkerActor.actorID + "." + this.currentID++;
-      this.idMap.set(aNodeRef.__actorID, aNodeRef);
-    }
-
-    return new DOMNodeActor(this.walkerActor.conn, aNodeRef)
-  },
-
-  nodeActor: function(aNodeRef) aNodeRef.__actorID || this.fromNode(aNodeRef).actorID,
-
-  node: function DNP_node(aActorID) this.idMap.get(aActorID),
-
-  has: function DNP_has(aActorID) this.idMap.has(aActorID),
-
-  get: function DNP_get(aActorID) {
-    return new DOMNodeActor(this.walkerActor.conn, this.idMap.get(aActorID));
-  },
-
-  isEmpty: function DNP_isEmpty() this.idMap.size == 0,
-
-  cleanup: function DNP_cleanup() {
-    this.idMap.clear();
-  },
-};
-
 
 function promisePass(r) {
   return r;

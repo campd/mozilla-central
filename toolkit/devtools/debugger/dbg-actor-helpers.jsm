@@ -55,6 +55,19 @@ Remotable.types.Array.prototype = {
 
 Remotable.types.SimpleArray = new Remotable.types.Array(Remotable.types.Simple);
 
+Remotable.types.LongString = function(writeMethod) {
+  this.writeMethod = writeMethod;
+}
+
+Remotable.types.LongString.prototype = {
+  write: function(value, context) {
+    return context[this.writeMethod].call(context, value);
+  },
+  read: function(value, context) {
+    return new Remotable.LongStringClient(context.client, value);
+  }
+};
+
 /**
  * A Param is used to describe the layout of a request/response packet,
  * and to build that request/response packet.
@@ -123,6 +136,11 @@ Remotable.params.Complex.prototype = {
   },
 }
 
+Remotable.params.LongStringReturn = function(path, writeMethod)
+{
+  return new Remotable.Param(path, new Remotable.types.LongString(writeMethod));
+}
+
 /**
  * The remotable function tags a method has a remote implementation.
  * @param function fn
@@ -136,6 +154,20 @@ Remotable.remotable = function(fn, spec)
   fn._remoteSpec = spec;
   return fn;
 };
+
+/**
+ * For servers and clients, implements a custom handler for the
+ * remotable method.  The generated implementation will not be
+ * created.
+ *
+ * @param string internalName
+ *   The new name for the generated implementation.
+ */
+Remotable.custom = function(fn)
+{
+  fn._custom = true;
+  return fn;
+}
 
 /**
  * Initialize an implementation prototype.  Call this
@@ -239,20 +271,176 @@ Remotable.initServer = function(serverProto, implProto)
 
   let remoteSpecs = implProto.__remoteSpecs;
   remoteSpecs.forEach(function(spec) {
-    let handler = function(aPacket) {
-      let args = [];
-      for (let param of spec.params) {
-        args.push(param.read(aPacket, this));
+    let handler = null;
+    if (spec.name in serverProto) {
+      handler = serverProto[spec.name];
+      if (!handler._custom) {
+        throw new Error(spec.name + " already exists and is not marked custom.\n");
       }
-      this.impl[spec.name].apply(this.impl, args).then(function(ret) {
-        let response = {
-          from: this.actorID
-        };
-        spec.ret.write(response, ret, this);
-        this.conn.send(response);
-      }.bind(this)).then(null, this.writeError.bind(this));
+    } else {
+      handler = function(aPacket) {
+        let args = [];
+        for (let param of spec.params) {
+          args.push(param.read(aPacket, this));
+        }
+
+        this.impl[spec.name].apply(this.impl, args).then(function(ret) {
+          let response = {
+            from: this.actorID
+          };
+          spec.ret.write(response, ret, this);
+          this.conn.send(response);
+        }.bind(this)).then(null, this.writeError.bind(this));
+      }
     };
 
     serverProto.requestTypes[spec.requestType || spec.name] = handler;
   });
+}
+
+Remotable.LongString = function(str)
+{
+  Remotable.initImplementation(Remotable.LongString.prototype);
+  this.str = str;
+}
+
+Remotable.LongString.INITIAL_SIZE = 1000;
+Remotable.LongString.READ_SIZE = 1000;
+
+Remotable.LongString.prototype = {
+  get initial() {
+    return this.str.substring(0, Remotable.LongString.INITIAL_SIZE);
+  },
+
+  get length() {
+    return this.str.length;
+  },
+
+  string: function() {
+    return promise.resolve(this.str);
+  },
+
+  substring: Remotable.remotable(function(start, end) {
+    return promise.resolve(this.str.substring(start, end));
+  }, {
+    params: [
+      Remotable.params.Simple("start"),
+      Remotable.params.Simple("end")
+    ],
+    ret: Remotable.params.Simple("substring")
+  }),
+
+  release: Remotable.remotable(function() {
+    delete this.str;
+  }, {
+    params: [],
+    ret: Remotable.params.Void
+  })
+}
+
+Remotable.LongStringClient = function(client, form)
+{
+  Remotable.initClient(Remotable.LongStringClient.prototype, Remotable.LongString.prototype);
+  this.client = client;
+  this.initial = form.initial;
+  this.length = form.length;
+  this.actorID = form.actor;
+}
+
+Remotable.LongStringClient.prototype = {
+  actor: function() promise.resolve(this.actorID),
+  string: function() {
+    let deferred = promise.defer();
+    let start = this.initial.length;
+    let chunks = [this.initial];
+
+    let readChunk = function() {
+      let end = start + (Math.min(Remotable.LongString.READ_SIZE, this.length - start));
+      this.substring(start, end).then(function(chunk) {
+        chunks.push(chunk);
+        if (end === this.length) {
+          deferred.resolve(chunks.join(""));
+          return;
+        }
+        start = end;
+        dump("length is " + this.length + "\n");
+        readChunk();
+      }.bind(this), function(error) {
+        deferred.reject(error);
+      });
+    }.bind(this);
+
+    readChunk();
+
+    return deferred.promise;
+  },
+};
+
+Remotable.LongStringActor = function(pool, actorID, impl)
+{
+  let self = this instanceof Remotable.LongStringActor ?
+    this : Object.create(Remotable.LongStringActor.prototype);
+  Remotable.initServer(Remotable.LongStringActor.prototype,
+                       Remotable.LongString.prototype);
+  self.conn = pool.conn;
+  self.pool = pool;
+  self.actorID = actorID;
+  self.impl = impl;
+  return self;
+}
+
+Remotable.LongStringActor.prototype = {
+  form: function() {
+    if (this.impl.length < Remotable.LongString.INITIAL_SIZE) {
+      return this.impl.str;
+    }
+
+    return {
+      type: "longString",
+      actor: this.actorID,
+      initial: this.impl.initial,
+      length: this.impl.length,
+    }
+  },
+
+  release: Remotable.custom(function(aPacket) {
+    this.impl.release();
+    this.pool.remove(this.actorID);
+    return {from: this.actorID};
+  }),
+};
+
+/**
+ * An actor pool that dynamically creates actor objects as needed
+ * based on the underlying actor.
+ */
+Remotable.WrapperPool = function(conn, prefix, factory)
+{
+  this.conn = conn;
+  this.prefix = prefix;
+  this.factory = factory;
+  this.map = new Map();
+}
+
+Remotable.WrapperPool.prototype = {
+  add: function(obj) {
+    if (!obj.__actorID) {
+      obj.__actorID = this.conn.allocID(this.prefix || undefined);
+    }
+    this.map.set(obj.__actorID, obj);
+    return this.factory(this, obj.__actorID, obj);
+  },
+  remove: function(actorID) {
+    this.map.delete(actorID);
+  },
+  obj: function(actorID) this.map.get(actorID),
+  has: function(actorID) this.map.has(actorID),
+  get: function(actorID) {
+    let obj = this.map.get(actorID);
+    return this.factory(this, obj.__actorID, this.map.get(actorID));
+  },
+  isEmpty: function() this.map.size == 0,
+  cleanup: function() {
+    this.map.clear();
+  }
 }

@@ -546,10 +546,14 @@ InspectorPanel.prototype = {
       return;
     }
     this.walker.innerHTML(this.selection.nodeRef).then(function(toCopy) {
-      if (toCopy) {
-        clipboardHelper.copyString(toCopy);
-      }
+      toCopy.string().then(function(str) {
+        if (str) {
+          clipboardHelper.copyString(str);
+        }
+        toCopy.release();
+      }.bind(this));
     }.bind(this));
+
     // XXX: promisePass/promiseError
   },
 
@@ -562,9 +566,12 @@ InspectorPanel.prototype = {
       return;
     }
     this.walker.outerHTML(this.selection.nodeRef).then(function(toCopy) {
-      if (toCopy) {
-        clipboardHelper.copyString(toCopy);
-      }
+      toCopy.string().then(function(str) {
+        if (str) {
+          clipboardHelper.copyString(str);
+        }
+        toCopy.release();
+      }.bind(this));
     }.bind(this));
     // XXX: promisePass/promiseError
   },
