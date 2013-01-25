@@ -48,16 +48,16 @@ domTypes.PseudoModifications = new types.Array(domTypes.PseudoModification);
 
 var domParams = {};
 domParams.Node = function(path) {
-  return new Remotable.Param(path, domTypes.Node);
+  return Remotable.Param(path, domTypes.Node);
 };
 domParams.Nodes = function(path) {
-  return new Remotable.Param(path, domTypes.Nodes);
+  return Remotable.Param(path, domTypes.Nodes);
 };
 domParams.PseudoModifications = function(path) {
-  return new Remotable.Param(path, domTypes.PseudoModifications);
+  return Remotable.Param(path, domTypes.PseudoModifications);
 };
 domParams.WalkerString = function(path) {
-  return new params.LongStringReturn(path, "writeString");
+  return params.LongStringReturn(path, "writeString");
 };
 
 domParams.LongNodeListOptions = params.Options([
