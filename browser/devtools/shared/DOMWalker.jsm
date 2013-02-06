@@ -46,6 +46,11 @@ domTypes.PseudoModification = new types.Context(
 );
 domTypes.PseudoModifications = new types.Array(domTypes.PseudoModification);
 
+domTypes.NodeAttributes = new types.Context(
+  "writeNodeAttributes",
+  "readNodeAttributes"
+);
+
 var domParams = {};
 domParams.Node = function(path) {
   return Remotable.Param(path, domTypes.Node);
@@ -55,6 +60,9 @@ domParams.Nodes = function(path) {
 };
 domParams.PseudoModifications = function(path) {
   return Remotable.Param(path, domTypes.PseudoModifications);
+};
+domParams.NodeAttributes = function(path) {
+  return Remotable.Param(path, domTypes.NodeAttributes);
 };
 domParams.WalkerString = function(path) {
   return params.LongStringReturn(path, "writeString");
@@ -144,8 +152,37 @@ DOMRef.prototype = {
   },
 
   getAttribute: function(attr) this._rawNode.getAttribute(attr),
+  hasAttribute: function(attr) this._rawNode.hasAttribute(attr),
 
   get attributes() this._rawNode.attributes,
+
+  startModifyAttributes: function() {
+    return new AttributeModificationList(this);
+  },
+
+  /**
+   * Takes an array of attribute modifications.  Use startModifyAttributes
+   * for a helper API.
+   */
+  modifyAttributes: remotable(function(attributeMods) {
+    dump("modifying attributes: " + JSON.stringify(attributeMods) + "\n");
+    for (let mod of attributeMods) {
+      if (mod.type == "setAttribute") {
+        dump("setting attribute\n");
+        this.rawNode.setAttribute(mod.name, mod.value);
+      } else if (mod.type == "setAttributeNS") {
+        this.rawNode.setAttributeNS(mod.namespace, mod.name, mod.value);
+      } else if (mod.type == "removeAttribute") {
+        this.rawNode.removeAttribute(mod.name);
+      } else if (mod.type == "removeAttributeNS") {
+        this.rawNode.removeAttributeNS(mod.namespace, mod.name);
+      }
+    }
+    return promise.resolve(this);
+  }, {
+    params: [ params.SimpleArray("modifications") ],
+    ret: domParams.NodeAttributes("attrs")
+  }),
 
   get classList() new ClassListRef(this._rawNode.classList),
 
@@ -165,6 +202,32 @@ DOMRef.prototype = {
 };
 
 Remotable.initImplementation(DOMRef.prototype)
+
+function AttributeModificationList(node) {
+  this.node = node;
+  this.modifications = [];
+}
+AttributeModificationList.prototype = {
+  setAttribute: function(name, value) {
+    this.modifications.push({ type: "setAttribute", name: name, value: value });
+    return this;
+  },
+  setAttributeNS: function(namespace, name, value) {
+    this.modifications.push({ type: "setAttributeNS", namespace: namespace, name: name, value: value });
+    return this;
+  },
+  removeAttribute: function(name, value) {
+    this.modifications.push({ type: "removeAttribute", name: name });
+    return this;
+  },
+  removeAttributeNS: function(namespace, name, value) {
+    this.modifications.push({ type: "removeAttributeNS", namespace: namespace, name: name });
+    return this;
+  },
+  apply: function(name) {
+    return this.node.modifyAttributes(this.modifications);
+  }
+};
 
 // XXX: yuck, this should just be a proxy.
 function ClassListRef(aList)
@@ -621,6 +684,11 @@ RemoteRef.prototype = {
 
   isConnected: function() this.form_isConnected,
 
+  readNodeAttributes: function(modified) {
+    this._updateForm(modified);
+    return this;
+  },
+
   _getAttribute: function(name) {
     if (!this._attrMap) {
       this._attrMap = {};
@@ -628,15 +696,22 @@ RemoteRef.prototype = {
         this._attrMap[attr.name] = attr;
       }
     }
-    return this._attrMap[name];
+    return this._attrMap[name] || undefined;
   },
 
   getAttribute: function(name) {
     let attr = this._getAttribute(name);
     return attr ? attr.value : null;
   },
+  hasAttribute: function(name) {
+    return !!this._getAttribute(name);
+  },
 
   get attributes() this.form_attrs,
+
+  startModifyAttributes: function() {
+    return new AttributeModificationList(this);
+  },
 
   get classList() [],
 
@@ -678,7 +753,7 @@ RemoteRef.prototype = {
     if (mutation.type == "attributes") {
       if (mutation.newValue === null) {
         // XXX: get attribute namespace right.
-        this.form_attrs = this._form_attrs.filter(function (a) a.name != mutation.attributeName);
+        this.form_attrs = this.form_attrs.filter(function (a) a.name != mutation.attributeName);
         delete this._attrMap[mutation.attributeName];
       } else {
         let attr = this._getAttribute(mutation.attributeName);
@@ -739,7 +814,9 @@ RemoteWalker.prototype = {
     }
 
     if (this._refMap.has(form.actor)) {
-      return this._refMap.get(form.actor);
+      let ref = this._refMap.get(form.actor);
+      ref._updateForm(form);
+      return ref;
     }
 
     let ref = new RemoteRef(this, form);
@@ -930,13 +1007,7 @@ DOMNodeActor.prototype = {
     }
 
     if (this.impl.attributes) {
-      let attrs = [];
-      for (let i = 0; i < this.impl.attributes.length; i++) {
-        let attr = this.impl.attributes[i];
-        // XXX: namespace?
-        attrs.push({name: attr.name, value: attr.value });
-      }
-      form.attrs = attrs;
+      form.attrs = this.writeAttrs();
     }
 
     if (this.impl.isWalkerRoot()) {
@@ -944,6 +1015,19 @@ DOMNodeActor.prototype = {
     }
 
     return form;
+  },
+
+  writeNodeAttributes: function(node) {
+    return this.writeAttrs();
+  },
+
+  writeAttrs: function() {
+    let attrs = [];
+    for (let i = 0; i < this.impl.attributes.length; i++) {
+      let attr = this.impl.attributes[i];
+      attrs.push({namespace: attr.namespace, name: attr.name, value: attr.value });
+    }
+    return attrs;
   },
 
   sendError: function(error) {

@@ -600,9 +600,9 @@ MarkupView.prototype = {
    */
   nodeChanged: function MT_nodeChanged(aNode)
   {
-    if (aNode === this._inspector.selection.nodeRef) {
-      this._inspector.change("markupview");
-    }
+//    if (aNode === this._inspector.selection.nodeRef) {
+//      this._inspector.change("markupview");
+//    }
   },
 
   /**
@@ -1075,13 +1075,9 @@ function ElementEditor(aContainer, aNode)
 
   this.update();
 
-  if (!aNode.rawNode) {
-    // We can't edit remotely yet.
-    return;
-  }
-
   // Make the tag name editable (unless this is a document element)
-  if (!aNode.isDocumentElement()) {
+  // XXX: or unless we're remote, for now.
+  if (!aNode.isDocumentElement() || !this.rawNode) {
     this.tag.setAttribute("tabindex", "0");
     _editableField({
       element: this.tag,
@@ -1102,8 +1098,16 @@ function ElementEditor(aContainer, aNode)
       }
 
       try {
-        this._applyAttributes(aVal);
+        let doMods = this.node.startModifyAttributes();
+        let undoMods = this.node.startModifyAttributes();
+        this._applyAttributes(aVal, null, doMods, undoMods);
+        this.undo.do(function() {
+          doMods.apply();
+        }, function() {
+          undoMods.apply();
+        });
       } catch (x) {
+        Cu.reportError(x);
         return;
       }
     }.bind(this)
@@ -1191,18 +1195,24 @@ ElementEditor.prototype = {
             return;
           }
 
-          this.undo.startBatch();
+          let doMods = this.node.startModifyAttributes();
+          let undoMods = this.node.startModifyAttributes();
 
           // Remove the attribute stored in this editor and re-add any attributes
-          // parsed out of the input element. Restore original attribute if
-          // parsing fails.
-          this._removeAttribute(this.rawNode, aAttr.name);
+          // parsed out of the input element. Bail out if parsing fails.
           try {
-            this._applyAttributes(aVal, attr);
-            this.undo.endBatch();
-          } catch (e) {
-            this.undo.endBatch();
-            this.undo.undo();
+            var self = this;
+            this._saveAttribute(aAttr.name, undoMods);
+            doMods.removeAttribute(aAttr.name);
+            this._applyAttributes(aVal, attr, doMods, undoMods);
+            this.undo.do(function() {
+              doMods.apply();
+            }, function() {
+              undoMods.apply();
+            });
+          } catch(ex) {
+            dump(ex);
+            Cu.reportError(ex);
           }
         }.bind(this)
       });
@@ -1226,7 +1236,7 @@ ElementEditor.prototype = {
    *        user put them.
    * @throws SYNTAX_ERR if aValue is not well-formed.
    */
-  _applyAttributes: function EE__applyAttributes(aValue, aAttrNode)
+  _applyAttributes: function EE__applyAttributes(aValue, aAttrNode, aDoMods, aUndoMods)
   {
     // Create a dummy node for parsing the attribute list.
     let dummyNode = this.doc.createElement("div");
@@ -1240,57 +1250,28 @@ ElementEditor.prototype = {
 
     let attrs = parsedNode.attributes;
 
-    this.undo.startBatch();
-
     for (let i = 0; i < attrs.length; i++) {
       // Create an attribute editor next to the current attribute if needed.
       this._createAttribute(attrs[i], aAttrNode ? aAttrNode.nextSibling : null);
-      this._setAttribute(this.rawNode, attrs[i].name, attrs[i].value);
-    }
 
-    this.undo.endBatch();
+      this._saveAttribute(attrs[i].name, aUndoMods);
+      aDoMods.setAttribute(attrs[i].name, attrs[i].value);
+    }
   },
 
   /**
-   * Helper function for _setAttribute and _removeAttribute,
-   * returns a function that puts an attribute back the way it was.
+   * Saves the current state of the given attribute into an attribute
+   * modification list.
    */
-  _restoreAttribute: function EE_restoreAttribute(aNode, aName)
+  _saveAttribute: function(aName, aUndoMods)
   {
-    if (aNode.hasAttribute(aName)) {
-      let oldValue = aNode.getAttribute(aName);
-      return function() {
-        aNode.setAttribute(aName, oldValue);
-        this.markup.nodeChanged(aNode);
-      }.bind(this);
+    let node = this.node;
+    if (node.hasAttribute(aName)) {
+      let oldValue = node.getAttribute(aName);
+      aUndoMods.setAttribute(aName, oldValue);
     } else {
-      return function() {
-        aNode.removeAttribute(aName);
-        this.markup.nodeChanged(aNode);
-      }.bind(this);
+      aUndoMods.removeAttribute(aName);
     }
-  },
-
-  /**
-   * Sets an attribute.  This operation is undoable.
-   */
-  _setAttribute: function EE_setAttribute(aNode, aName, aValue)
-  {
-    this.undo.do(function() {
-      aNode.setAttribute(aName, aValue);
-      this.markup.nodeChanged(aNode);
-    }.bind(this), this._restoreAttribute(aNode, aName));
-  },
-
-  /**
-   * Removes an attribute.  This operation is undoable.
-   */
-  _removeAttribute: function EE_removeAttribute(aNode, aName)
-  {
-    this.undo.do(function() {
-      aNode.removeAttribute(aName);
-      this.markup.nodeChanged(aNode);
-    }.bind(this), this._restoreAttribute(aNode, aName));
   },
 
   /**

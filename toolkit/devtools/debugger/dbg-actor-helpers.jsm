@@ -121,6 +121,10 @@ params.Simple = function(path) {
   return Remotable.Param(path, types.Simple);
 },
 
+params.SimpleArray = function(path) {
+  return Remotable.Param(path, types.SimpleArray);
+}
+
 /**
  * An options param allows the user to specify a set of parameters
  * to be uplifted from an object into the packet.
