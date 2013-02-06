@@ -1275,21 +1275,6 @@ ElementEditor.prototype = {
   },
 
   /**
-   * Handler for the new attribute editor.
-   */
-  _onNewAttribute: function EE_onNewAttribute(aValue, aCommit)
-  {
-    if (!aValue || !aCommit) {
-      return;
-    }
-
-    this._setAttribute(this.rawNode, aValue, "");
-    let attr = this._createAttribute({ name: aValue, value: ""});
-    attr.style.removeAttribute("display");
-    attr.querySelector("attrvalue").click();
-  },
-
-  /**
    * Called when the tag name editor has is done editing.
    */
   onTagEdit: function EE_onTagEdit(aVal, aCommit) {
