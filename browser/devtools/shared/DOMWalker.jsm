@@ -72,6 +72,10 @@ domParams.LongNodeList = params.Options([
   domParams.Nodes("nodes")
 ]);
 
+domParams.TraversalOptions = params.Options([
+  params.Simple("whatToShow")
+]);
+
 function DOMRef(node) {
   this._rawNode = node;
 }
@@ -344,15 +348,35 @@ DOMWalker.prototype = {
     ret: domParams.LongNodeList
   }),
 
-  nextSibling: function(node, options={}) {
+  insertBefore: remotable(function(node, parent, sibling) {
+    parent.rawNode.insertBefore(node.rawNode, sibling ? sibling.rawNode : null);
+    return promise.resolve(undefined);
+  }, {
+    params: [domParams.Node("node"), domParams.Node("parent"), domParams.Node("sibling")],
+    ret: params.Void(),
+  }),
+
+  nextSibling: remotable(function(node, options={}) {
     let walker = documentWalker(node._rawNode, options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL);
     return promise.resolve(this._ref(walker.nextSibling()));
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      domParams.TraversalOptions
+    ],
+    ret: domParams.Node("node")
+  }),
 
-  previousSibling: function(node, options={}) {
+  previousSibling: remotable(function(node, options={}) {
     let walker = documentWalker(node._rawNode, options.whatToShow || Ci.nsIDOMNodeFilter.SHOW_ALL);
     return promise.resolve(this._ref(walker.previousSibling()));
-  },
+  }, {
+    params: [
+      domParams.Node("node"),
+      domParams.TraversalOptions
+    ],
+    ret: domParams.Node("node")
+  }),
 
   _readForward: function MV__readForward(aWalker, aCount)
   {
@@ -499,6 +523,14 @@ DOMWalker.prototype = {
     ret: domParams.PseudoModifications("modified")
   }),
 
+  removeNode: remotable(function(node) {
+    node.rawNode.parentNode.removeChild(node.rawNode);
+    return promise.resolve(undefined);
+  }, {
+    params: [ domParams.Node("node") ],
+    ret: params.Void(),
+  }),
+
   /**
    * Get a DOMRef for the given local node.
    * Using this method is not remote-protocol safe.
@@ -512,6 +544,7 @@ DOMWalker.prototype = {
   },
 
   _ref: function(node) {
+    if (!node) return node;
     if (this._refMap.has(node)) {
       return this._refMap.get(node);
     }
@@ -663,6 +696,8 @@ RemoteRef.prototype = {
       }
     } else if (mutation.type == "characterData") {
       this.form_nodeValue = mutation.newValue;
+    } else if (mutation.type == "childList") {
+      this.form_numChildren = mutation.newNumChildren;
     }
   }
 };
@@ -794,10 +829,10 @@ DOMWalkerActor.prototype = {
 
   // Conversions for protocol types.
   writeNode: function DWA_writeNode(node) {
-    return this._nodePool.add(node).form();
+    return node ? this._nodePool.add(node).form() : null;
   },
   readNode: function DWA_readNode(node) {
-    return this._nodePool.obj(node);
+    return node ? this._nodePool.obj(node) : null;
   },
 
   writeString: function DWA_writeString(longStr) {
@@ -825,6 +860,7 @@ DOMWalkerActor.prototype = {
         toSend.push({
           target: target,
           type: "childList",
+          newNumChildren: mutation.target.numChildren,
         });
       } else if (mutation.type == "attributes") {
         toSend.push({

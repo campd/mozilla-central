@@ -278,6 +278,9 @@ Remotable.initServer = function(serverProto, implProto)
         error: "unknownError",
         message: err.toString()
       });
+      if (err.stack) {
+        dump(err.stack);
+      }
     };
   }
 

@@ -247,28 +247,25 @@ MarkupView.prototype = {
    */
   deleteNode: function MC__deleteNode(aNode)
   {
-    if (!aNode.rawNode) {
-      // Can't delete remotely yet.
-      return;
-    }
+    let self = this;
+    return this._document(aNode).then(function(aDocument) {
+      if (aNode === aDocument ||
+          aNode.isDocumentElement() ||
+          aNode.nodeType === Ci.nsIDOMNode.DOCUMENT_TYPE_NODE) {
+        return;
+      }
 
-    let rawNode = aNode.rawNode;
-    let doc = nodeDocument(rawNode);
-    if (rawNode === doc ||
-        rawNode === doc.documentElement ||
-        rawNode.nodeType == Ci.nsIDOMNode.DOCUMENT_TYPE_NODE) {
-      return;
-    }
-
-    let parentNode = rawNode.parentNode;
-    let sibling = rawNode.nextSibling;
-
-    this.undo.do(function() {
-      let container = this._containers.get(aNode);
-      parentNode.removeChild(rawNode);
-    }.bind(this), function() {
-      parentNode.insertBefore(rawNode, sibling);
+      self._parent(aNode).then(function(aParent) {
+        return self.walker.nextSibling(aNode).then(function(aNextSibling) {
+          self.undo.do(function() {
+            self.walker.removeNode(aNode);
+          }, function() {
+            self.walker.insertBefore(aNode, aParent, aNextSibling);
+          });
+        });
+      });
     });
+
   },
 
   /**
@@ -398,6 +395,8 @@ MarkupView.prototype = {
   },
 
   /**
+   * XXX: the dom walker client should really be doing the caching
+   * here.
    * @returns an array of nodes, or null if we don't trust the
    *          hierarchy.
    */
@@ -445,6 +444,37 @@ MarkupView.prototype = {
       return promise.resolve(parents);
     }
     return this.walker.parents(aNode);
+  },
+
+  /**
+   * Return the immediate parent of the node, using the local structure
+   * if we think it's trustworthy.
+   */
+  _parent: function MT_parent(aNode)
+  {
+    return this._parents(aNode).then(function(aParents) {
+      return aParents.length > 0 ? aParents[0] : null;
+    });
+  },
+
+  /**
+   * Returns the document for a node, using the local structure
+   * if we think it's trustworthy.
+   */
+  _document: function MT__document(aNode) {
+    if (aNode.nodeType == Ci.nsIDOMNode.DOCUMENT_NODE) {
+      return promise.resolve(aNode);
+    }
+    let parents  = this._localParents(aNode);
+    if (parents) {
+      for (let i = 0, n = parents.length; i < n; i++) {
+        if (parents[i].nodeType == Ci.nsIDOMNode.DOCUMENT_NODE) {
+          return promise.resolve(parents[i]);
+        }
+      }
+    }
+    // Didn't find a local document parent, ask the server.
+    return this.walker.document(aNode);
   },
 
   /**
@@ -798,7 +828,7 @@ function MarkupContainer(aMarkupView, aNode)
   this.children = null;
   this.markup.template("container", this);
   this.elt.container = this;
-  this.children.container = this;
+  this.children.childrenContainer = this;
 
   this.expander.addEventListener("click", function() {
     this.markup.navigate(this);
@@ -919,7 +949,7 @@ MarkupContainer.prototype = {
    * (for example, if the parent container's chidlren list is out of date)
    */
   get parentContainer() {
-    return this.elt.parentNode ? this.elt.parentNode.container : null;
+    return this.elt.parentNode ? this.elt.parentNode.childrenContainer : null;
   }
 }
 
