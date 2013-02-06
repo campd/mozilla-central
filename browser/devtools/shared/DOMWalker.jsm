@@ -165,10 +165,8 @@ DOMRef.prototype = {
    * for a helper API.
    */
   modifyAttributes: remotable(function(attributeMods) {
-    dump("modifying attributes: " + JSON.stringify(attributeMods) + "\n");
     for (let mod of attributeMods) {
       if (mod.type == "setAttribute") {
-        dump("setting attribute\n");
         this.rawNode.setAttribute(mod.name, mod.value);
       } else if (mod.type == "setAttributeNS") {
         this.rawNode.setAttributeNS(mod.namespace, mod.name, mod.value);
