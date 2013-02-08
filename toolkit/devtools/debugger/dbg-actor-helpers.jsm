@@ -62,6 +62,36 @@ types.Array.prototype = {
 
 types.SimpleArray = types.Array(types.Simple);
 
+/**
+ * Typed dictionary.  Example:
+ * types.Dict({
+ *   a: Simple(),
+ *   b: Context("write", "read")
+ * });
+ */
+types.Dict = function(subtypes) {
+  let self = this instanceof types.Dict ? this : Object.create(types.Dict.prototype);
+  self.subtypes = subtypes;
+  return self;
+}
+
+types.Dict.prototype = {
+  write: function(value, context) {
+    let ret = {};
+    for (let t in this.subtypes) {
+      ret[t] = this.subtypes[t].write(value[t], context);
+    }
+    return ret;
+  },
+  read: function(value, context) {
+    let ret = {};
+    for (let t in this.subtypes) {
+      ret[t] = this.subtypes[t].read(value[t], context);
+    }
+    return ret;
+  }
+}
+
 types.LongString = function(writeMethod) {
   let self = this instanceof types.LongString ?
     this : Object.create(types.LongString.prototype);
@@ -433,11 +463,12 @@ Remotable.LongStringActor.prototype = {
  * An actor pool that dynamically creates actor objects as needed
  * based on the underlying implementation.
  */
-Remotable.WrapperPool = function(conn, prefix, factory)
+Remotable.WrapperPool = function(conn, prefix, factory, context)
 {
   this.conn = conn;
   this.prefix = prefix;
   this.factory = factory;
+  this.context = context;
   this.map = new Map();
 }
 
@@ -447,7 +478,7 @@ Remotable.WrapperPool.prototype = {
       obj.__actorID = this.conn.allocID(this.prefix || undefined);
     }
     this.map.set(obj.__actorID, obj);
-    return this.factory(this, obj.__actorID, obj);
+    return this.factory(this, obj.__actorID, obj, this.context);
   },
   actorID: function(obj) {
     if (!obj.__actorID) {
@@ -462,7 +493,7 @@ Remotable.WrapperPool.prototype = {
   has: function(actorID) this.map.has(actorID),
   get: function(actorID) {
     let obj = this.map.get(actorID);
-    return this.factory(this, obj.__actorID, this.map.get(actorID));
+    return this.factory(this, obj.__actorID, this.map.get(actorID), this.context);
   },
   isEmpty: function() this.map.size == 0,
   cleanup: function() {

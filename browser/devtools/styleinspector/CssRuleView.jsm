@@ -133,8 +133,6 @@ ElementStyle.prototype = {
     return this.walker.getNodeStyle(this.element, {
       inherited: true
     }).then(function(rules) {
-      dump(rules);
-
       // Store the current list of rules (if any) during the population
       // process.  They will be reused if possible.
       this._refreshRules = this.rules;
@@ -164,7 +162,6 @@ ElementStyle.prototype = {
    */
   _maybeAddRule: function ElementStyle_maybeAddRule(aOptions)
   {
-    dump("rule: " + aOptions.rule + "\n");
     // If we've already included this domRule (for example, when a
     // common selector is inherited), ignore it.
     if (aOptions.rule &&
@@ -925,7 +922,6 @@ CssRuleView.prototype = {
     }.bind(this);
 
     this._elementStyle.populate().then(function() {
-      dump("Creating editors\n");
       this._createEditors();
     }.bind(this)).then(function(r) r, console.error);
   },
