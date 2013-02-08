@@ -4,7 +4,8 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
-Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm")
+Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm");
+Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
 var { types, params, remotable } = Remotable;
 
@@ -31,6 +32,8 @@ this.createWalker = function(target, options) {
     return new RemoteWalker(target, options);
   }
 };
+
+const ELEMENT_STYLE = 100;
 
 /**
  * Remotable types/params specific to the DOM walker.
@@ -201,6 +204,79 @@ DOMRef.prototype = {
 
 Remotable.initImplementation(DOMRef.prototype)
 
+function StyleRuleRef(item, parentRule) {
+  this.parentRule = parentRule;
+  if (item instanceof Ci.nsIDOMCSSRule) {
+    this.type = item.type;
+    this.rawRule = item;
+
+    this.shortSource = CssLogic.shortSource(this.rawRule.parentStyleSheet);
+    if (this.rawRule instanceof Ci.nsIDOMCSSStyleRule && this.rawRule.parentStyleSheet) {
+      this.ruleLine = DOMUtils.getRuleLine(this.rawRule);
+    }
+  } else {
+    // Element style not attached to a rule.
+    this.type = ELEMENT_STYLE;
+    this.shortSource = CssLogic.shortSource(null);
+    this.rawRule = {
+      selectorText: "element style",
+      style: item,
+      toString: function() "[element rule " + this.style + "]"
+    };
+  }
+}
+
+StyleRuleRef.prototype = {
+  toString: function() "[StyleRuleRef for " + this.rawRule.toString() + "]",
+
+  // CSSStyleRule stuff
+  get selectorText() this.rawRule.selectorText,
+
+  get cssText() this.rawRule.style.cssText,
+
+  getPropertyCSSValue: function(propertyName) {
+    let val = this.rawRule.style.getPropertyCSSValue(propertyName);
+    return { cssText: val.cssText, cssValueType: val.cssValueType };
+  },
+
+  getPropertyPriority: function(propertyName) {
+    return this.rawRule.style.getPropertyPriority(propertyName);
+  },
+
+  getPropertyValue: function(propertyName) {
+    return this.rawRule.style.getPropertyValue(propertyName);
+  },
+
+  removeProperty: remotable(function(propertyName) {
+    this.rawRule.style.removeProperty(propertyName);
+    return promise.resolve(this);
+  }, {
+    params: [params.Simple("property")],
+    ret: params.Void() // XXX: should return new css text probably
+  }),
+
+  setProperty: remotable(function(propertyName, value, priority) {
+    this.rawRule.style.setProperty(propertyName, value, priority);
+    return promise.resolve(this);
+  }, {
+    params: [
+      params.Simple("property"),
+      params.Simple("value"),
+      params.Simple("priority")
+    ],
+    ret: params.Void(), // XXX: should return new css text probably
+  }),
+
+  // CSSCharsetRule
+  get encoding() this.rawRule.encoding,
+
+  // CSSImportRule
+  get href() this.rawRule.href,
+
+  // CSSImportRule and CSSMediaRule
+  get media() this.rawRule.media,
+};
+
 function AttributeModificationList(node) {
   this.node = node;
   this.modifications = [];
@@ -249,6 +325,7 @@ this.DOMWalker = function DOMWalker(document, options)
   EventEmitter.decorate(this);
   this._doc = document;
   this._refMap = new WeakMap();
+  this._declMap = new Map();
 
   if (!!options.watchVisited) {
     this._observer = new document.defaultView.MutationObserver(this._mutationObserver.bind(this));
@@ -276,6 +353,7 @@ DOMWalker.prototype = {
     }
 
     delete this._refMap;
+    delete this._declMap;
     delete this._doc;
 
     this.clearPseudoClassLocks(null, { all: true });
@@ -312,16 +390,24 @@ DOMWalker.prototype = {
     ret: domParams.Node("node"),
   }),
 
-  parents: remotable(function(node) {
+  parents: remotable(function(node, options={}) {
     let walker = documentWalker(node._rawNode);
     let parents = [];
     let cur;
     while(cur = walker.parentNode()) {
+      if (options.sameDocument && cur.ownerDocument != node.rawNode.ownerDocument) {
+        break;
+      }
       parents.push(this._ref(cur));
     }
     return promise.resolve(parents);
   }, {
-    params: [domParams.Node("node")],
+    params: [
+      domParams.Node("node"),
+      params.Options([
+        params.Simple("sameDocument")
+      ])
+    ],
     ret: domParams.Nodes("nodes"),
   }),
 
@@ -592,6 +678,52 @@ DOMWalker.prototype = {
     ret: params.Void(),
   }),
 
+  getNodeStyle: function(node, options) {
+    let rules = [];
+
+    this._addElementRules(rules, node, null, options);
+
+    if (!options.inherited) {
+      return promise.resolve(rules);
+    }
+
+    return this.parents(node, { sameDocument: true }).then(function(parents) {
+      for (let parent of parents) {
+        this._addElementRules(rules, parent, parent, options);
+      }
+      return rules;
+    }.bind(this));
+  },
+
+  _addElementRules: function(rules, element, inherited, options)
+  {
+    rules.push({
+      rule: this._declRef(element.rawNode.style),
+      inherited: inherited,
+    });
+
+    // Get the styles that apply to the element.
+    dump(element + "\n");
+    var domRules = DOMUtils.getCSSStyleRules(element.rawNode);
+
+    // getCSStyleRules returns ordered from least-specific to
+    // most-specific.
+    for (let i = domRules.Count() - 1; i >= 0; i--) {
+      let domRule = domRules.GetElementAt(i);
+
+      // XXX: Optionally provide access to system sheets.
+      let contentSheet = CssLogic.isContentStylesheet(domRule.parentStyleSheet);
+      if (!contentSheet) {
+        continue;
+      }
+
+      rules.push({
+        rule: this._declRef(domRule),
+        inherited: inherited,
+      });
+    }
+  },
+
   /**
    * Get a DOMRef for the given local node.
    * Using this method is not remote-protocol safe.
@@ -623,6 +755,20 @@ DOMWalker.prototype = {
     node.__preserveHack = true;
 
     this._refMap.set(node, ref);
+    return ref;
+  },
+
+  _declRef: function(item) {
+    if (!item) return item;
+    if (this._declMap.has(item)) {
+      return this._declMap.get(item);
+    }
+
+    let parent = item.parentRule;
+    parent = item.parentRule ? this._declRef(item.parentRule) : null;
+
+    let ref = new StyleRuleRef(item, parent);
+    this._declMap.set(item, ref);
     return ref;
   },
 

@@ -30,6 +30,7 @@ const CSS_PROP_RE = /\s*([^:\s]*)\s*:\s*(.*?)\s*(?:! (important))?;?$/;
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource:///modules/devtools/Console.jsm");
 
 this.EXPORTED_SYMBOLS = ["CssRuleView",
                          "_ElementStyle",
@@ -59,7 +60,7 @@ this.EXPORTED_SYMBOLS = ["CssRuleView",
 /**
  * ElementStyle maintains a list of Rule objects for a given element.
  *
- * @param {Element} aElement
+ * @param {NodeRef} aElement
  *        The element whose style we are viewing.
  * @param {object} aStore
  *        The ElementStyle can use this object to store metadata
@@ -68,8 +69,9 @@ this.EXPORTED_SYMBOLS = ["CssRuleView",
  *
  * @constructor
  */
-function ElementStyle(aElement, aStore)
+function ElementStyle(aWalker, aElement, aDocument, aStore)
 {
+  this.walker = aWalker;
   this.element = aElement;
   this.store = aStore || {};
 
@@ -87,14 +89,15 @@ function ElementStyle(aElement, aStore)
     this.store.disabled = new Map();
   }
 
-  let doc = aElement.ownerDocument;
+  // XXX: This is a potential security problem, don't let this through
+  // review.
+  let doc = aDocument;
 
   // To figure out how shorthand properties are interpreted by the
   // engine, we will set properties on a dummy element and observe
   // how their .style attribute reflects them as computed values.
   this.dummyElement = doc.createElementNS(this.element.namespaceURI,
                                           this.element.tagName);
-  this.populate();
 }
 // We're exporting _ElementStyle for unit tests.
 this._ElementStyle = ElementStyle;
@@ -127,59 +130,27 @@ ElementStyle.prototype = {
    */
   populate: function ElementStyle_populate()
   {
-    // Store the current list of rules (if any) during the population
-    // process.  They will be reused if possible.
-    this._refreshRules = this.rules;
+    return this.walker.getNodeStyle(this.element, {
+      inherited: true
+    }).then(function(rules) {
+      dump(rules);
 
-    this.rules = [];
+      // Store the current list of rules (if any) during the population
+      // process.  They will be reused if possible.
+      this._refreshRules = this.rules;
 
-    let element = this.element;
-    do {
-      this._addElementRules(element);
-    } while ((element = element.parentNode) &&
-             element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
+      this.rules = [];
 
-    // Mark overridden computed styles.
-    this.markOverridden();
-
-    // We're done with the previous list of rules.
-    delete this._refreshRules;
-  },
-
-  _addElementRules: function ElementStyle_addElementRules(aElement)
-  {
-    let inherited = aElement !== this.element ? aElement : null;
-
-    // Include the element's style first.
-    this._maybeAddRule({
-      style: aElement.style,
-      selectorText: CssLogic.l10n("rule.sourceElement"),
-      inherited: inherited
-    });
-
-    // Get the styles that apply to the element.
-    var domRules = this.domUtils.getCSSStyleRules(aElement);
-
-    // getCSStyleRules returns ordered from least-specific to
-    // most-specific.
-    for (let i = domRules.Count() - 1; i >= 0; i--) {
-      let domRule = domRules.GetElementAt(i);
-
-      // XXX: Optionally provide access to system sheets.
-      let contentSheet = CssLogic.isContentStylesheet(domRule.parentStyleSheet);
-      if (!contentSheet) {
-        continue;
+      for (let rule of rules) {
+        this._maybeAddRule(rule);
       }
 
-      if (domRule.type !== Ci.nsIDOMCSSRule.STYLE_RULE) {
-        continue;
-      }
+      // Mark overridden computed styles.
+      this.markOverridden();
 
-      this._maybeAddRule({
-        domRule: domRule,
-        inherited: inherited
-      });
-    }
+      // We're done with the previous list of rules.
+      delete this._refreshRules;
+    }.bind(this)).then(function(r) r, console.error);
   },
 
   /**
@@ -193,10 +164,11 @@ ElementStyle.prototype = {
    */
   _maybeAddRule: function ElementStyle_maybeAddRule(aOptions)
   {
+    dump("rule: " + aOptions.rule + "\n");
     // If we've already included this domRule (for example, when a
     // common selector is inherited), ignore it.
-    if (aOptions.domRule &&
-        this.rules.some(function(rule) rule.domRule === aOptions.domRule)) {
+    if (aOptions.rule &&
+        this.rules.some(function(rule) rule.domRule === aOptions.rule)) {
       return false;
     }
 
@@ -345,9 +317,9 @@ ElementStyle.prototype = {
 function Rule(aElementStyle, aOptions)
 {
   this.elementStyle = aElementStyle;
-  this.domRule = aOptions.domRule || null;
-  this.style = aOptions.style || this.domRule.style;
-  this.selectorText = aOptions.selectorText || this.domRule.selectorText;
+  this.domRule = aOptions.rule;
+  this.style = this.domRule; // XXX: walker doesn't expose separate rule and style
+  this.selectorText = this.style.selectorText;
   this.inherited = aOptions.inherited || null;
 
   if (this.domRule) {
@@ -371,8 +343,8 @@ Rule.prototype = {
     if (this._title) {
       return this._title;
     }
-    this._title = CssLogic.shortSource(this.sheet);
-    if (this.domRule) {
+    this._title = this.style.shortSource;
+    if (this.style.ruleLine) {
       this._title += ":" + this.ruleLine;
     }
 
@@ -407,14 +379,7 @@ Rule.prototype = {
   /**
    * The rule's line within a stylesheet
    */
-  get ruleLine()
-  {
-    if (!this.sheet) {
-      // No stylesheet, no ruleLine
-      return null;
-    }
-    return this.elementStyle.domUtils.getRuleLine(this.domRule);
-  },
+  get ruleLine() this.domRule.ruleLine,
 
   /**
    * Returns true if the rule matches the creation options
@@ -873,8 +838,9 @@ TextProperty.prototype = {
  *        set of disabled properties.
  * @constructor
  */
-this.CssRuleView = function CssRuleView(aDoc, aStore)
+this.CssRuleView = function CssRuleView(aWalker, aDoc, aStore)
 {
+  this.walker = aWalker;
   this.doc = aDoc;
   this.store = aStore;
   this.element = this.doc.createElementNS(XUL_NS, "vbox");
@@ -953,12 +919,15 @@ CssRuleView.prototype = {
       return;
     }
 
-    this._elementStyle = new ElementStyle(aElement, this.store);
+    this._elementStyle = new ElementStyle(this.walker, aElement, this.doc, this.store);
     this._elementStyle.onChanged = function() {
       this._changed();
     }.bind(this);
 
-    this._createEditors();
+    this._elementStyle.populate().then(function() {
+      dump("Creating editors\n");
+      this._createEditors();
+    }.bind(this)).then(function(r) r, console.error);
   },
 
   /**
@@ -1458,8 +1427,12 @@ RuleEditor.prototype = {
             textContent: ", "
           });
         }
-        let cls = element.mozMatchesSelector(selector) ? "ruleview-selector-matched" :
-                                                         "ruleview-selector-unmatched";
+        // XXX: not remote safe yet.
+        let cls = ""
+        if (element.rawNode) {
+          cls = element.rawNode.mozMatchesSelector(selector) ? "ruleview-selector-matched" :
+                                                                   "ruleview-selector-unmatched";
+        }
         createChild(this.selectorText, "span", {
           class: cls,
           textContent: selector

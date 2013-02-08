@@ -26,7 +26,7 @@ this.RuleViewTool = function RVT_RuleViewTool(aInspector, aWindow, aIFrame)
   this.doc = aWindow.document;
   this.outerIFrame = aIFrame;
 
-  this.view = new CssRuleView(this.doc);
+  this.view = new CssRuleView(this.inspector.walker, this.doc);
   this.doc.documentElement.appendChild(this.view.element);
 
   this._changeHandler = function() {
@@ -99,12 +99,6 @@ this.RuleViewTool = function RVT_RuleViewTool(aInspector, aWindow, aIFrame)
 
 RuleViewTool.prototype = {
   onSelect: function RVT_onSelect(aEvent) {
-    if (!this.inspector.selection.rawNode) {
-      // Rule view not remote-ready yet.
-      this.view.highlight(null);
-      return;
-    }
-
     if (!this.inspector.selection.isConnected() ||
         !this.inspector.selection.isElementNode()) {
       this.view.highlight(null);
@@ -115,12 +109,12 @@ RuleViewTool.prototype = {
       if (this.inspector.selection.reason == "highlighter") {
         this.view.highlight(null);
       } else {
-        this.view.highlight(this.inspector.selection.rawNode);
+        this.view.highlight(this.inspector.selection.nodeRef);
       }
     }
 
     if (aEvent == "locked") {
-      this.view.highlight(this.inspector.selection.rawNode);
+      this.view.highlight(this.inspector.selection.nodeRef);
     }
   },
 
@@ -129,7 +123,7 @@ RuleViewTool.prototype = {
   },
 
   refresh: function RVT_refresh() {
-    if (this.isActive() && this.inspector.selection.rawNode) {
+    if (this.isActive() && this.inspector.selection.nodeRef) {
       this.view.nodeChanged();
     }
   },
