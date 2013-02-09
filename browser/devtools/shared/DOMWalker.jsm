@@ -63,6 +63,11 @@ domTypes.NodeAttributes = types.Context(
   "readNodeAttributes"
 );
 
+domTypes.RuleCssText = types.Context(
+  "writeCssText",
+  "readCssText"
+);
+
 var domParams = {};
 domParams.Node = function(path) {
   return Remotable.Param(path, domTypes.Node);
@@ -80,6 +85,9 @@ domParams.PseudoModifications = function(path) {
 };
 domParams.NodeAttributes = function(path) {
   return Remotable.Param(path, domTypes.NodeAttributes);
+};
+domParams.RuleCssText = function(path) {
+  return Remotable.Param(path, domTypes.RuleCssText);
 };
 domParams.WalkerString = function(path) {
   return params.LongStringReturn(path, "writeString");
@@ -219,6 +227,33 @@ DOMRef.prototype = {
 
 Remotable.initImplementation(DOMRef.prototype)
 
+function AttributeModificationList(node) {
+  this.node = node;
+  this.modifications = [];
+}
+AttributeModificationList.prototype = {
+  setAttribute: function(name, value) {
+    this.modifications.push({ type: "setAttribute", name: name, value: value });
+    return this;
+  },
+  setAttributeNS: function(namespace, name, value) {
+    this.modifications.push({ type: "setAttributeNS", namespace: namespace, name: name, value: value });
+    return this;
+  },
+  removeAttribute: function(name, value) {
+    this.modifications.push({ type: "removeAttribute", name: name });
+    return this;
+  },
+  removeAttributeNS: function(namespace, name, value) {
+    this.modifications.push({ type: "removeAttributeNS", namespace: namespace, name: name });
+    return this;
+  },
+  apply: function(name) {
+    return this.node.modifyAttributes(this.modifications);
+  }
+};
+
+
 function StyleRuleRef(item, parentRule) {
   this.parentRule = parentRule;
   if (item instanceof Ci.nsIDOMCSSRule) {
@@ -249,12 +284,19 @@ StyleRuleRef.prototype = {
 
   get cssText() this.rawRule.style.cssText,
 
+  cssTextProperties: function() {
+    return (new ParsedCSSText(this.cssText)).props;
+  },
+
+  getPropertyValue: function(prop) this.rawRule.style.getPropertyValue(prop),
+  getPropertyPriority: function(prop) this.rawRule.style.getPropertyPriority(prop),
+
   removeProperty: remotable(function(propertyName) {
     this.rawRule.style.removeProperty(propertyName);
-    return promise.resolve(this);
+    return promise.resolve(this.cssText);
   }, {
     params: [params.Simple("property")],
-    ret: params.Void() // XXX: should return new css text probably
+    ret: domParams.RuleCssText("cssText")
   }),
 
   setProperty: remotable(function(propertyName, value, priority) {
@@ -266,7 +308,25 @@ StyleRuleRef.prototype = {
       params.Simple("value"),
       params.Simple("priority")
     ],
-    ret: params.Void(), // XXX: should return new css text probably
+    ret: domParams.RuleCssText("cssText")
+  }),
+
+  startModifyStyle: function() {
+    return new StyleModificationList(this);
+  },
+
+  modifyStyle: remotable(function(modifications) {
+    for (mod of modifications) {
+      if (mod.type == "setProperty") {
+        this.rawRule.style.setProperty(mod.name, mod.value, mod.priority);
+      } else if (mod.type == "removeProperty") {
+        this.rawRule.style.removeProperty(mod.name);
+      }
+    }
+    return promise.resolve(this);
+  }, {
+    params: [ params.SimpleArray("modifications") ],
+    ret: domParams.RuleCssText("cssText")
   }),
 
   // CSSCharsetRule
@@ -281,29 +341,21 @@ StyleRuleRef.prototype = {
 
 Remotable.initImplementation(StyleRuleRef.prototype)
 
-function AttributeModificationList(node) {
-  this.node = node;
+function StyleModificationList(rule) {
+  this.rule = rule;
   this.modifications = [];
 }
-AttributeModificationList.prototype = {
-  setAttribute: function(name, value) {
-    this.modifications.push({ type: "setAttribute", name: name, value: value });
+StyleModificationList.prototype = {
+  setProperty: function(name, value, priority) {
+    this.modifications.push({ type: "setProperty", name: name, value: value, priority: priority || "" });
     return this;
   },
-  setAttributeNS: function(namespace, name, value) {
-    this.modifications.push({ type: "setAttributeNS", namespace: namespace, name: name, value: value });
-    return this;
-  },
-  removeAttribute: function(name, value) {
-    this.modifications.push({ type: "removeAttribute", name: name });
-    return this;
-  },
-  removeAttributeNS: function(namespace, name, value) {
-    this.modifications.push({ type: "removeAttributeNS", namespace: namespace, name: name });
+  removeProperty: function(name) {
+    this.modifications.push({ type: "removeProperty", name: name });
     return this;
   },
   apply: function(name) {
-    return this.node.modifyAttributes(this.modifications);
+    return this.rule.modifyStyle(this.modifications);
   }
 };
 
@@ -958,6 +1010,21 @@ RemoteStyleRuleRef.prototype = {
   get selectorText() this.form_selectorText,
   get cssText() this.form_cssText,
 
+  _parsedText: function() {
+    if (!this.__parsedText) {
+      this.__parsedText = new ParsedCSSText(this.cssText);
+    }
+    return this.__parsedText;
+  },
+
+  cssTextProperties: function() this._parsedText().props,
+  getPropertyValue: function(name) this._parsedText.getPropertyValue(name),
+  getPropertyPriority: function(name) this._parsedText.getPropertyPriority(name),
+
+  startModifyStyle: function() {
+    return new StyleModificationList(this);
+  },
+
   get encoding() this.form_encoding,
   get href() this.form_href,
 
@@ -973,8 +1040,18 @@ RemoteStyleRuleRef.prototype = {
   _updateForm: function(form) {
     for (let name of Object.getOwnPropertyNames(form)) {
       this["form_" + name] = form[name];
+      if (name == "cssText") {
+        delete this.__parsedText;
+      }
     }
-  }
+  },
+
+  readCssText: function(value) {
+    this.form_cssText = value;
+    delete this.__parsedText;
+    return this;
+  },
+
 };
 
 function RemoteWalker(target, options)
@@ -1306,6 +1383,8 @@ StyleRuleActor.prototype = {
 
     return form;
   },
+
+  writeCssText: function(value) value.cssText,
 };
 
 
@@ -1419,6 +1498,47 @@ DocumentWalker.prototype = {
 
   // XXX bug 785143: not doing previousNode or nextNode, which would sure be useful.
 }
+
+// Used to split on css line separators
+const CSS_LINE_RE = /(?:[^;\(]*(?:\([^\)]*?\))?[^;\(]*)*;?/g;
+
+// Used to parse a single property line.
+const CSS_PROP_RE = /\s*([^:\s]*)\s*:\s*(.*?)\s*(?:! (important))?;?$/;
+
+function ParsedCSSText(cssText)
+{
+  let parsed = [];
+  let lines = cssText.match(CSS_LINE_RE);
+  for (let line of lines) {
+    let matches = CSS_PROP_RE.exec(line);
+    if (!matches || !matches[2])
+      continue;
+
+    let name = matches[1];
+    let value = matches[2];
+    let priority = matches[3] || "";
+    parsed.push({ name: matches[1], value: matches[2], priority: matches[3] || ""});
+  }
+  this.props = parsed;
+}
+
+ParsedCSSText.prototype = {
+  getProperty: function(prop) {
+    if (!this._propMap) {
+      this._propMap = Object.create(null);
+      for (let prop of this.props) {
+        this._propMap[prop.name] = prop;
+      }
+    }
+    return this._propMap[prop.name];
+  },
+  getPropertyValue: function(prop) {
+    return this.getProperty(prop).name;
+  },
+  getPropertyPriority: function(prop) {
+    return this.getProperty(prop).priority;
+  }
+};
 
 /**
  * A tree walker filter for avoiding empty whitespace text nodes.

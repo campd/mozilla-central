@@ -21,11 +21,6 @@ const FOCUS_BACKWARD = Ci.nsIFocusManager.MOVEFOCUS_BACKWARD;
  * used to parse CSSStyleDeclaration's cssText attribute.
  */
 
-// Used to split on css line separators
-const CSS_LINE_RE = /(?:[^;\(]*(?:\([^\)]*?\))?[^;\(]*)*;?/g;
-
-// Used to parse a single property line.
-const CSS_PROP_RE = /\s*([^:\s]*)\s*:\s*(.*?)\s*(?:! (important))?;?$/;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
@@ -315,8 +310,7 @@ function Rule(aElementStyle, aOptions)
 {
   this.elementStyle = aElementStyle;
   this.domRule = aOptions.rule;
-  this.style = this.domRule; // XXX: walker doesn't expose separate rule and style
-  this.selectorText = this.style.selectorText;
+  this.selectorText = this.domRule.selectorText;
   this.inherited = aOptions.inherited || null;
 
   if (this.domRule) {
@@ -340,8 +334,8 @@ Rule.prototype = {
     if (this._title) {
       return this._title;
     }
-    this._title = this.style.shortSource;
-    if (this.style.ruleLine) {
+    this._title = this.domRule.shortSource;
+    if (this.domRule.ruleLine) {
       this._title += ":" + this.ruleLine;
     }
 
@@ -366,14 +360,6 @@ Rule.prototype = {
   },
 
   /**
-   * The rule's stylesheet.
-   */
-  get sheet()
-  {
-    return this.domRule ? this.domRule.parentStyleSheet : null;
-  },
-
-  /**
    * The rule's line within a stylesheet
    */
   get ruleLine() this.domRule.ruleLine,
@@ -387,7 +373,7 @@ Rule.prototype = {
    */
   matches: function Rule_matches(aOptions)
   {
-    return (this.style === (aOptions.style || aOptions.domRule.style));
+    return (this.domRule === aOptions.domRule);
   },
 
   /**
@@ -404,7 +390,7 @@ Rule.prototype = {
   {
     let prop = new TextProperty(this, aName, aValue, aPriority);
     this.textProps.push(prop);
-    this.applyProperties();
+    this.applyProperties(this.domRule.startModifyStyle());
     return prop;
   },
 
@@ -418,12 +404,12 @@ Rule.prototype = {
    *        when calling from setPropertyValue & setPropertyName to signify
    *        that the property should be saved in store.userProperties.
    */
-  applyProperties: function Rule_applyProperties(aName)
+  applyProperties: function Rule_applyProperties(aModifications, aName)
   {
     let disabledProps = [];
     let store = this.elementStyle.store;
 
-    for each (let prop in this.textProps) {
+    for (let prop of this.textProps) {
       if (!prop.enabled) {
         disabledProps.push({
           name: prop.name,
@@ -433,31 +419,36 @@ Rule.prototype = {
         continue;
       }
 
-      this.style.setProperty(prop.name, prop.value, prop.priority);
+      aModifications.setProperty(prop.name, prop.value, prop.priority);
+    }
 
-      if (aName && prop.name == aName) {
-        store.userProperties.setProperty(
-          this.style, prop.name,
-          this.style.getPropertyValue(prop.name),
-          prop.value);
+    aModifications.apply().then(function(domRule) {
+      for (let prop of this.textProps) {
+        if (aName && prop.name == aName) {
+          store.userProperties.setProperty(
+            this.domRule, prop.name,
+            this.domRule.getPropertyValue(prop.name),
+            prop.value);
+        }
+
+        // Refresh the property's priority from the style, to reflect
+        // any changes made during parsing.
+        prop.priority = this.domRule.getPropertyPriority(prop.name);
+        prop.updateComputed();
       }
 
-      // Refresh the property's priority from the style, to reflect
-      // any changes made during parsing.
-      prop.priority = this.style.getPropertyPriority(prop.name);
-      prop.updateComputed();
-    }
-    this.elementStyle._changed();
+      this.elementStyle._changed();
 
-    // Store disabled properties in the disabled store.
-    let disabled = this.elementStyle.store.disabled;
-    if (disabledProps.length > 0) {
-      disabled.set(this.style, disabledProps);
-    } else {
-      disabled.delete(this.style);
-    }
+      // Store disabled properties in the disabled store.
+      let disabled = this.elementStyle.store.disabled;
+      if (disabledProps.length > 0) {
+        disabled.set(this.domRule, disabledProps);
+      } else {
+        disabled.delete(this.domRule);
+      }
 
-    this.elementStyle.markOverridden();
+      this.elementStyle.markOverridden();
+    }.bind(this));
   },
 
   /**
@@ -473,9 +464,10 @@ Rule.prototype = {
     if (aName === aProperty.name) {
       return;
     }
-    this.style.removeProperty(aProperty.name);
+    let mods = this.domRule.startModifyStyle();
+    mods.removeProperty(aProperty.name);
     aProperty.name = aName;
-    this.applyProperties(aName);
+    this.applyProperties(mods, aName);
   },
 
   /**
@@ -495,7 +487,7 @@ Rule.prototype = {
     }
     aProperty.value = aValue;
     aProperty.priority = aPriority;
-    this.applyProperties(aProperty.name);
+    this.applyProperties(this.domRule.startModifyStyle(), aProperty.name);
   },
 
   /**
@@ -504,10 +496,11 @@ Rule.prototype = {
   setPropertyEnabled: function Rule_enableProperty(aProperty, aValue)
   {
     aProperty.enabled = !!aValue;
+    let mods = this.domRule.startModifyStyle();
     if (!aProperty.enabled) {
-      this.style.removeProperty(aProperty.name);
+      mods.removeProperty(aProperty.name);
     }
-    this.applyProperties();
+    this.applyProperties(mods);
   },
 
   /**
@@ -517,10 +510,11 @@ Rule.prototype = {
   removeProperty: function Rule_removeProperty(aProperty)
   {
     this.textProps = this.textProps.filter(function(prop) prop != aProperty);
-    this.style.removeProperty(aProperty);
+    let mods = this.domRule.startModifyStyle();
+    mods.removeProperty(aProperty);
     // Need to re-apply properties in case removing this TextProperty
     // exposes another one.
-    this.applyProperties();
+    this.applyProperties(mods);
   },
 
   /**
@@ -529,22 +523,17 @@ Rule.prototype = {
    */
   _getTextProperties: function Rule_getTextProperties()
   {
+    let parsed = this.domRule.cssTextProperties();
     let textProps = [];
     let store = this.elementStyle.store;
-    let lines = this.style.cssText.match(CSS_LINE_RE);
-    for each (let line in lines) {
-      let matches = CSS_PROP_RE.exec(line);
-      if (!matches || !matches[2])
-        continue;
-
-      let name = matches[1];
+    for (let prop of parsed) {
       if (this.inherited &&
-          !this.elementStyle.domUtils.isInheritedProperty(name)) {
+          !this.elementStyle.domUtils.isInheritedProperty(prop.name)) {
         continue;
       }
-      let value = store.userProperties.getProperty(this.style, name, matches[2]);
-      let prop = new TextProperty(this, name, value, matches[3] || "");
-      textProps.push(prop);
+      let value = store.userProperties.getProperty(this.domRule, prop.name, prop.value);
+      let textProp = new TextProperty(this, prop.name, value, prop.priority);
+      textProps.push(textProp);
     }
 
     return textProps;
@@ -558,7 +547,7 @@ Rule.prototype = {
     let store = this.elementStyle.store;
 
     // Include properties from the disabled property store, if any.
-    let disabledProps = store.disabled.get(this.style);
+    let disabledProps = store.disabled.get(this.domRule);
     if (!disabledProps) {
       return [];
     }
@@ -566,7 +555,7 @@ Rule.prototype = {
     let textProps = [];
 
     for each (let prop in disabledProps) {
-      let value = store.userProperties.getProperty(this.style, prop.name, prop.value);
+      let value = store.userProperties.getProperty(this.domRule, prop.name, prop.value);
       let textProp = new TextProperty(this, prop.name, value, prop.priority);
       textProp.enabled = false;
       textProps.push(textProp);
@@ -1696,7 +1685,7 @@ TextPropertyEditor.prototype = {
     this.warning.hidden = this._validate();
 
     let store = this.prop.rule.elementStyle.store;
-    let propDirty = store.userProperties.contains(this.prop.rule.style, name);
+    let propDirty = store.userProperties.contains(this.prop.rule.domRule, name);
     if (propDirty) {
       this.element.setAttribute("dirty", "");
     } else {
