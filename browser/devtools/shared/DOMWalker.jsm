@@ -63,9 +63,9 @@ domTypes.NodeAttributes = types.Context(
   "readNodeAttributes"
 );
 
-domTypes.RuleCssText = types.Context(
-  "writeCssText",
-  "readCssText"
+domTypes.RuleCssProperties = types.Context(
+  "writeCssProperties",
+  "readCssProperties"
 );
 
 var domParams = {};
@@ -86,8 +86,8 @@ domParams.PseudoModifications = function(path) {
 domParams.NodeAttributes = function(path) {
   return Remotable.Param(path, domTypes.NodeAttributes);
 };
-domParams.RuleCssText = function(path) {
-  return Remotable.Param(path, domTypes.RuleCssText);
+domParams.RuleCssProperties = function(path) {
+  return Remotable.Param(path, domTypes.RuleCssProperties);
 };
 domParams.WalkerString = function(path) {
   return params.LongStringReturn(path, "writeString");
@@ -288,6 +288,20 @@ StyleRuleRef.prototype = {
     return (new ParsedCSSText(this.cssText)).props;
   },
 
+  cssProperties: function() {
+    let ret = Object.create(null);
+    let style = this.rawRule.style;
+    for (let i = 0, n = style.length; i < n; i++) {
+      let name = style[i];
+
+      ret[name] = {
+        value: style.getPropertyValue(name),
+        priority: style.getPropertyPriority(name) || undefined,
+      };
+    }
+    return ret;
+  },
+
   getPropertyValue: function(prop) this.rawRule.style.getPropertyValue(prop),
   getPropertyPriority: function(prop) this.rawRule.style.getPropertyPriority(prop),
 
@@ -296,7 +310,7 @@ StyleRuleRef.prototype = {
     return promise.resolve(this.cssText);
   }, {
     params: [params.Simple("property")],
-    ret: domParams.RuleCssText("cssText")
+    ret: domParams.RuleCssProperties("properties")
   }),
 
   setProperty: remotable(function(propertyName, value, priority) {
@@ -308,7 +322,7 @@ StyleRuleRef.prototype = {
       params.Simple("value"),
       params.Simple("priority")
     ],
-    ret: domParams.RuleCssText("cssText")
+    ret: domParams.RuleCssProperties("properties")
   }),
 
   startModifyStyle: function() {
@@ -326,7 +340,7 @@ StyleRuleRef.prototype = {
     return promise.resolve(this);
   }, {
     params: [ params.SimpleArray("modifications") ],
-    ret: domParams.RuleCssText("cssText")
+    ret: domParams.RuleCssProperties("properties")
   }),
 
   // CSSCharsetRule
@@ -1017,9 +1031,20 @@ RemoteStyleRuleRef.prototype = {
     return this.__parsedText;
   },
 
-  cssTextProperties: function() this._parsedText().props,
-  getPropertyValue: function(name) this._parsedText.getPropertyValue(name),
-  getPropertyPriority: function(name) this._parsedText.getPropertyPriority(name),
+  cssTextProperties: function() {
+    return this._parsedText().props;
+  },
+
+  cssProperties: function() {
+    return this.form_properties;
+  },
+
+  getPropertyValue: function(name) {
+    return this.form_properties[name].value;
+  },
+  getPropertyPriority: function(name) {
+    return this.form_properties[name].priority || "";
+  },
 
   startModifyStyle: function() {
     return new StyleModificationList(this);
@@ -1046,8 +1071,9 @@ RemoteStyleRuleRef.prototype = {
     }
   },
 
-  readCssText: function(value) {
-    this.form_cssText = value;
+  readCssProperties: function(value) {
+    this.form_cssText = value.cssText;
+    this.form_properties = value.properties;
     delete this.__parsedText;
     return this;
   },
@@ -1365,6 +1391,7 @@ StyleRuleActor.prototype = {
       case Ci.nsIDOMCSSRule.STYLE_RULE:
       case ELEMENT_STYLE:
         form.cssText = this.impl.cssText;
+        form.properties = this.impl.cssProperties();
         form.selectorText = this.impl.selectorText;
         break;
       case Ci.nsIDOMCSSRule.CHARSET_RULE:
@@ -1384,7 +1411,9 @@ StyleRuleActor.prototype = {
     return form;
   },
 
-  writeCssText: function(value) value.cssText,
+  writeCssProperties: function(value) {
+    return { cssText: value.cssText, properties: value.cssProperties() };
+  }
 };
 
 
