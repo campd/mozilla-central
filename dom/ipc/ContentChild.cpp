@@ -22,6 +22,7 @@
 #include "mozilla/dom/StorageChild.h"
 #include "mozilla/Hal.h"
 #include "mozilla/hal_sandbox/PHalChild.h"
+#include "mozilla/ipc/GeckoChildProcessHost.h"
 #include "mozilla/ipc/TestShellChild.h"
 #include "mozilla/ipc/XPCShellEnvironment.h"
 #include "mozilla/jsipc/PContextWrapperChild.h"
@@ -90,6 +91,7 @@
 #include "mozilla/dom/sms/SmsChild.h"
 #include "mozilla/dom/devicestorage/DeviceStorageRequestChild.h"
 #include "mozilla/dom/bluetooth/PBluetoothChild.h"
+#include "mozilla/ipc/InputStreamUtils.h"
 
 #include "nsDOMFile.h"
 #include "nsIRemoteBlob.h"
@@ -101,12 +103,14 @@
 #include "nsIPrincipal.h"
 #include "nsDeviceStorage.h"
 #include "AudioChannelService.h"
+#include "ProcessPriorityManager.h"
 
 using namespace base;
 using namespace mozilla;
 using namespace mozilla::docshell;
 using namespace mozilla::dom::bluetooth;
 using namespace mozilla::dom::devicestorage;
+using namespace mozilla::dom::ipc;
 using namespace mozilla::dom::sms;
 using namespace mozilla::dom::indexedDB;
 using namespace mozilla::hal_sandbox;
@@ -288,13 +292,8 @@ ContentChild::Init(MessageLoop* aIOLoop,
 #endif
 #endif
 
-    bool startBackground = true;
-    SendGetProcessAttributes(&mID, &startBackground,
-                             &mIsForApp, &mIsForBrowser);
-    hal::SetProcessPriority(
-        GetCurrentProcId(),
-        startBackground ? hal::PROCESS_PRIORITY_BACKGROUND:
-                          hal::PROCESS_PRIORITY_FOREGROUND);
+    SendGetProcessAttributes(&mID, &mIsForApp, &mIsForBrowser);
+
     if (mIsForApp && !mIsForBrowser) {
         SetProcessName(NS_LITERAL_STRING("(Preallocated app)"));
     } else {
@@ -504,6 +503,17 @@ ContentChild::AllocPImageBridge(mozilla::ipc::Transport* aTransport,
     return ImageBridgeChild::StartUpInChildProcess(aTransport, aOtherProcess);
 }
 
+bool
+ContentChild::RecvSetProcessPrivileges(const ChildPrivileges& aPrivs)
+{
+  ChildPrivileges privs = (aPrivs == PRIVILEGES_DEFAULT) ?
+                          GeckoChildProcessHost::DefaultChildPrivileges() :
+                          aPrivs;
+  // If this fails, we die.
+  SetCurrentProcessPrivileges(privs);
+  return true;
+}
+
 static CancelableTask* sFirstIdleTask;
 
 static void FirstIdle(void)
@@ -517,12 +527,19 @@ PBrowserChild*
 ContentChild::AllocPBrowser(const IPCTabContext& aContext,
                             const uint32_t& aChromeFlags)
 {
-    static bool firstIdleTaskPosted = false;
-    if (!firstIdleTaskPosted) {
+    static bool hasRunOnce = false;
+    if (!hasRunOnce) {
+        hasRunOnce = true;
+
         MOZ_ASSERT(!sFirstIdleTask);
         sFirstIdleTask = NewRunnableFunction(FirstIdle);
         MessageLoop::current()->PostIdleTask(FROM_HERE, sFirstIdleTask);
-        firstIdleTaskPosted = true;
+
+        // If we are the preallocated process transforming into an app process,
+        // we'll have background priority at this point.  Give ourselves a
+        // priority boost for a few seconds, so we don't get killed while we're
+        // loading our first TabChild.
+        TemporarilySetProcessPriorityToForeground();
     }
 
     // We'll happily accept any kind of IPCTabContext here; we don't need to
@@ -546,91 +563,13 @@ ContentChild::DeallocPBrowser(PBrowserChild* iframe)
 PBlobChild*
 ContentChild::AllocPBlob(const BlobConstructorParams& aParams)
 {
-  BlobChild* actor = BlobChild::Create(aParams);
-  actor->SetManager(this);
-  return actor;
+  return BlobChild::Create(aParams);
 }
 
 bool
 ContentChild::DeallocPBlob(PBlobChild* aActor)
 {
   delete aActor;
-  return true;
-}
-
-bool
-ContentChild::GetParamsForBlob(nsDOMFileBase* aBlob,
-                               BlobConstructorParams* aOutParams)
-{
-  BlobConstructorParams resultParams;
-
-  if (!(aBlob->IsMemoryBacked() || aBlob->GetSubBlobs()) &&
-      (aBlob->IsSizeUnknown() || aBlob->IsDateUnknown())) {
-    // We don't want to call GetSize or GetLastModifiedDate
-    // yet since that may stat a file on the main thread
-    // here. Instead we'll learn the size lazily from the
-    // other process.
-    resultParams = MysteryBlobConstructorParams();
-  }
-  else {
-    BlobOrFileConstructorParams params;
-
-    nsString contentType;
-    nsresult rv = aBlob->GetType(contentType);
-    NS_ENSURE_SUCCESS(rv, false);
-
-    uint64_t length;
-    rv = aBlob->GetSize(&length);
-    NS_ENSURE_SUCCESS(rv, false);
-
-    nsCOMPtr<nsIDOMFile> file;
-    static_cast<nsIDOMBlob*>(aBlob)->QueryInterface(NS_GET_IID(nsIDOMFile),
-                                          (void**)getter_AddRefs(file));
-    if (file) {
-      FileBlobConstructorParams fileParams;
-
-      rv = file->GetName(fileParams.name());
-      NS_ENSURE_SUCCESS(rv, false);
-
-      rv = file->GetMozLastModifiedDate(&fileParams.modDate());
-      NS_ENSURE_SUCCESS(rv, false);
-
-      fileParams.contentType() = contentType;
-      fileParams.length() = length;
-
-      params = fileParams;
-    } else {
-      NormalBlobConstructorParams blobParams;
-      blobParams.contentType() = contentType;
-      blobParams.length() = length;
-      params = blobParams;
-    }
-
-    MOZ_ASSERT(!(aBlob->IsMemoryBacked() &&
-                 aBlob->GetSubBlobs()), "Can't be both!");
-
-    if (aBlob->IsMemoryBacked()) {
-      const nsDOMMemoryFile* memoryBlob =
-        static_cast<const nsDOMMemoryFile*>(aBlob);
-
-      InfallibleTArray<uint8_t> data;
-      data.SetLength(memoryBlob->GetLength());
-      memcpy(data.Elements(), memoryBlob->GetData(), memoryBlob->GetLength());
-
-      MemoryBlobOrFileConstructorParams memoryParams(params, data);
-      resultParams = memoryParams;
-    }
-    else if (aBlob->GetSubBlobs()) {
-      MultipartBlobOrFileConstructorParams multipartParams(params);
-      resultParams = multipartParams;
-    }
-    else {
-      resultParams = BlobConstructorNoMultipartParams(params);
-    }
-  }
-
-  *aOutParams = resultParams;
-
   return true;
 }
 
@@ -643,7 +582,7 @@ ContentChild::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
   // XXX This is only safe so long as all blob implementations in our tree
   //     inherit nsDOMFileBase. If that ever changes then this will need to grow
   //     a real interface or something.
-  nsDOMFileBase* blob = static_cast<nsDOMFileBase*>(aBlob);
+  const nsDOMFileBase* blob = static_cast<nsDOMFileBase*>(aBlob);
 
   // All blobs shared between processes must be immutable.
   nsCOMPtr<nsIMutable> mutableBlob = do_QueryInterface(aBlob);
@@ -661,33 +600,62 @@ ContentChild::GetOrCreateActorForBlob(nsIDOMBlob* aBlob)
     return actor;
   }
 
-  BlobConstructorParams params;
-  if (!GetParamsForBlob(blob, &params)) {
-    return nullptr;
+  ParentBlobConstructorParams params;
+
+  if (blob->IsSizeUnknown() || blob->IsDateUnknown()) {
+    // We don't want to call GetSize or GetLastModifiedDate
+    // yet since that may stat a file on the main thread
+    // here. Instead we'll learn the size lazily from the
+    // other process.
+    params.blobParams() = MysteryBlobConstructorParams();
+    params.optionalInputStreamParams() = void_t();
   }
+  else {
+    nsString contentType;
+    nsresult rv = aBlob->GetType(contentType);
+    NS_ENSURE_SUCCESS(rv, nullptr);
+
+    uint64_t length;
+    rv = aBlob->GetSize(&length);
+    NS_ENSURE_SUCCESS(rv, nullptr);
+
+    nsCOMPtr<nsIInputStream> stream;
+    rv = aBlob->GetInternalStream(getter_AddRefs(stream));
+    NS_ENSURE_SUCCESS(rv, nullptr);
+
+    InputStreamParams inputStreamParams;
+    SerializeInputStream(stream, inputStreamParams);
+
+    params.optionalInputStreamParams() = inputStreamParams;
+
+    nsCOMPtr<nsIDOMFile> file = do_QueryInterface(aBlob);
+    if (file) {
+      FileBlobConstructorParams fileParams;
+
+      rv = file->GetName(fileParams.name());
+      NS_ENSURE_SUCCESS(rv, nullptr);
+
+      rv = file->GetMozLastModifiedDate(&fileParams.modDate());
+      NS_ENSURE_SUCCESS(rv, nullptr);
+
+      fileParams.contentType() = contentType;
+      fileParams.length() = length;
+
+      params.blobParams() = fileParams;
+    } else {
+      NormalBlobConstructorParams blobParams;
+      blobParams.contentType() = contentType;
+      blobParams.length() = length;
+      params.blobParams() = blobParams;
+    }
+    }
 
   BlobChild* actor = BlobChild::Create(aBlob);
   NS_ENSURE_TRUE(actor, nullptr);
 
-  SendPBlobConstructor(actor, params);
-
-  actor->SetManager(this);
-
-  if (const nsTArray<nsCOMPtr<nsIDOMBlob> >* subBlobs = blob->GetSubBlobs()) {
-    for (uint32_t i = 0; i < subBlobs->Length(); ++i) {
-      BlobConstructorParams subParams;
-      nsDOMFileBase* subBlob =
-        static_cast<nsDOMFileBase*>(subBlobs->ElementAt(i).get());
-      if (!GetParamsForBlob(subBlob, &subParams)) {
+  if (!SendPBlobConstructor(actor, params)) {
         return nullptr;
       }
-
-      BlobChild* subActor = BlobChild::Create(aBlob);
-      actor->SendPBlobConstructor(subActor, subParams);
-
-      subActor->SetManager(actor);
-    }
-  }
 
   return actor;
 }
@@ -992,22 +960,7 @@ ContentChild::RecvAsyncMessage(const nsString& aMsg,
 {
   nsRefPtr<nsFrameMessageManager> cpm = nsFrameMessageManager::sChildProcessManager;
   if (cpm) {
-    const SerializedStructuredCloneBuffer& buffer = aData.data();
-    const InfallibleTArray<PBlobChild*>& blobChildList = aData.blobsChild();
-    StructuredCloneData cloneData;
-    cloneData.mData = buffer.data;
-    cloneData.mDataLength = buffer.dataLength;
-    if (!blobChildList.IsEmpty()) {
-      uint32_t length = blobChildList.Length();
-      cloneData.mClosure.mBlobs.SetCapacity(length);
-      for (uint32_t i = 0; i < length; ++i) {
-        BlobChild* blobChild = static_cast<BlobChild*>(blobChildList[i]);
-        MOZ_ASSERT(blobChild);
-        nsCOMPtr<nsIDOMBlob> blob = blobChild->GetBlob();
-        MOZ_ASSERT(blob);
-        cloneData.mClosure.mBlobs.AppendElement(blob);
-      }
-    }
+    StructuredCloneData cloneData = ipc::UnpackClonedMessageDataForChild(aData);
     cpm->ReceiveMessage(static_cast<nsIContentFrameMessageManager*>(cpm.get()),
                         aMsg, false, &cloneData, nullptr, nullptr);
   }
@@ -1125,8 +1078,15 @@ ContentChild::RecvAppInfo(const nsCString& version, const nsCString& buildID)
 {
     mAppInfo.version.Assign(version);
     mAppInfo.buildID.Assign(buildID);
-
-    PreloadSlowThings();
+    // If we're part of the mozbrowser machinery, go ahead and start
+    // preloading things.  We can only do this for mozbrowser because
+    // PreloadSlowThings() may set the docshell of the first TabChild
+    // inactive, and we can only safely restore it to active from
+    // BrowserElementChild.js.
+    if ((mIsForApp || mIsForBrowser) &&
+        Preferences::GetBool("dom.ipc.processPrelaunch.enabled", false)) {
+        PreloadSlowThings();
+    }
     return true;
 }
 
@@ -1164,7 +1124,7 @@ ContentChild::RecvFileSystemUpdate(const nsString& aFsName,
                                              aMountGeneration);
 
     nsCOMPtr<nsIObserverService> obs = mozilla::services::GetObserverService();
-    nsString stateStr(NS_ConvertUTF8toUTF16(volume->StateStr()));
+    NS_ConvertUTF8toUTF16 stateStr(volume->StateStr());
     obs->NotifyObservers(volume, NS_VOLUME_STATE_CHANGED, stateStr.get());
 #else
     // Remove warnings about unused arguments

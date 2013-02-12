@@ -33,7 +33,7 @@
 #include "nsPresArena.h"
 #include "nsFrameSelection.h"
 #include "nsGUIEvent.h"
-#include "nsContentUtils.h"
+#include "nsContentUtils.h" // For AddScriptBlocker().
 #include "nsRefreshDriver.h"
 #include "mozilla/Attributes.h"
 
@@ -74,6 +74,7 @@ public:
                                    nsStyleSet* aStyleSet,
                                    nsCompatibility aCompatMode);
   virtual NS_HIDDEN_(void) Destroy();
+  virtual NS_HIDDEN_(void) MakeZombie();
 
   virtual NS_HIDDEN_(nsresult) SetPreferenceStyleRules(bool aForceReflow);
 
@@ -196,8 +197,8 @@ public:
                                                         nsIDOMEvent* aEvent,
                                                         nsEventStatus* aStatus);
   virtual bool ShouldIgnoreInvalidation();
-  virtual void WillPaint(bool aWillSendDidPaint);
-  virtual void WillPaintWindow(bool aWillSendDidPaint);
+  virtual void WillPaint();
+  virtual void WillPaintWindow();
   virtual void DidPaintWindow();
   virtual void ScheduleViewManagerFlush();
   virtual void DispatchSynthMouseMove(nsGUIEvent *aEvent, bool aFlushOnHoverChange);

@@ -328,7 +328,7 @@ MarionetteDriverActor.prototype = {
     let type = null;
     if (this.curFrame == null) {
       if (this.curBrowser == null) {
-        if (appName != "B2G" && this.context == "content") {
+        if (this.context == "content") {
           type = 'navigator:browser';
         }
         return Services.wm.getMostRecentWindow(type);
@@ -675,10 +675,10 @@ MarionetteDriverActor.prototype = {
    *        True if the script is asynchronous
    */
   executeScriptInSandbox: function MDA_executeScriptInSandbox(sandbox, script,
-     directInject, async, command_id) {
+     directInject, async, command_id, timeout) {
 
     if (directInject && async &&
-        (this.scriptTimeout == null || this.scriptTimeout == 0)) {
+        (timeout == null || timeout == 0)) {
       this.sendError("Please set a timeout", 21, null, command_id);
       return;
     }
@@ -717,6 +717,7 @@ MarionetteDriverActor.prototype = {
    *        function body
    */
   execute: function MDA_execute(aRequest, directInject) {
+    let timeout = aRequest.scriptTimeout ? aRequest.scriptTimeout : this.scriptTimeout;
     let command_id = this.command_id = this.getCommandId();
     this.logRequest("execute", aRequest);
     if (aRequest.newSandbox == undefined) {
@@ -728,7 +729,7 @@ MarionetteDriverActor.prototype = {
       this.sendAsync("executeScript", {value: aRequest.value,
                                        args: aRequest.args,
                                        newSandbox: aRequest.newSandbox,
-                                       timeout: this.scriptTimeout,
+                                       timeout: timeout,
                                        command_id: command_id,
                                        specialPowers: aRequest.specialPowers});
       return;
@@ -737,7 +738,7 @@ MarionetteDriverActor.prototype = {
     let curWindow = this.getCurrentWindow();
     let marionette = new Marionette(this, curWindow, "chrome",
                                     this.marionetteLog, this.marionettePerf,
-                                    this.scriptTimeout, this.testName);
+                                    timeout, this.testName);
     let _chromeSandbox = this.createExecuteSandbox(curWindow,
                                                    marionette,
                                                    aRequest.args,
@@ -761,7 +762,7 @@ MarionetteDriverActor.prototype = {
                      "func.apply(null, __marionetteParams);";
       }
       this.executeScriptInSandbox(_chromeSandbox, script, directInject,
-                                  false, command_id);
+                                  false, command_id, timeout);
     }
     catch (e) {
       this.sendError(e.name + ': ' + e.message, 17, e.stack, command_id);
@@ -795,6 +796,7 @@ MarionetteDriverActor.prototype = {
    *        'timeout' member will be used as the script timeout if it is given
    */
   executeJSScript: function MDA_executeJSScript(aRequest) {
+    let timeout = aRequest.scriptTimeout ? aRequest.scriptTimeout : this.scriptTimeout;
     let command_id = this.command_id = this.getCommandId();
     //all pure JS scripts will need to call Marionette.finish() to complete the test.
     if (aRequest.newSandbox == undefined) {
@@ -815,7 +817,7 @@ MarionetteDriverActor.prototype = {
                                           args: aRequest.args,
                                           newSandbox: aRequest.newSandbox,
                                           async: aRequest.async,
-                                          timeout: this.scriptTimeout,
+                                          timeout: timeout,
                                           command_id: command_id,
                                           specialPowers: aRequest.specialPowers });
    }
@@ -837,6 +839,7 @@ MarionetteDriverActor.prototype = {
    *        function body
    */
   executeWithCallback: function MDA_executeWithCallback(aRequest, directInject) {
+    let timeout = aRequest.scriptTimeout ? aRequest.scriptTimeout : this.scriptTimeout;
     let command_id = this.command_id = this.getCommandId();
     if (aRequest.newSandbox == undefined) {
       //if client does not send a value in newSandbox, 
@@ -849,7 +852,7 @@ MarionetteDriverActor.prototype = {
                                             args: aRequest.args,
                                             id: this.command_id,
                                             newSandbox: aRequest.newSandbox,
-                                            timeout: this.scriptTimeout,
+                                            timeout: timeout,
                                             command_id: command_id,
                                             specialPowers: aRequest.specialPowers});
       return;
@@ -858,9 +861,10 @@ MarionetteDriverActor.prototype = {
     let curWindow = this.getCurrentWindow();
     let original_onerror = curWindow.onerror;
     let that = this;
+    that.timeout = timeout;
     let marionette = new Marionette(this, curWindow, "chrome",
                                     this.marionetteLog, this.marionettePerf,
-                                    this.scriptTimeout, this.testName);
+                                    timeout, this.testName);
     marionette.command_id = this.command_id;
 
     function chromeAsyncReturnFunc(value, status) {
@@ -911,7 +915,7 @@ MarionetteDriverActor.prototype = {
       if (this.timer != null) {
         this.timer.initWithCallback(function() {
           chromeAsyncReturnFunc("timed out", 28);
-        }, that.scriptTimeout, Ci.nsITimer.TYPE_ONESHOT);
+        }, that.timeout, Ci.nsITimer.TYPE_ONESHOT);
       }
 
       _chromeSandbox.returnFunc = chromeAsyncReturnFunc;
@@ -929,7 +933,7 @@ MarionetteDriverActor.prototype = {
       }
 
       this.executeScriptInSandbox(_chromeSandbox, script, directInject,
-                                  true, command_id);
+                                  true, command_id, timeout);
     } catch (e) {
       chromeAsyncReturnFunc(e.name + ": " + e.message, 17);
     }
@@ -1224,7 +1228,7 @@ MarionetteDriverActor.prototype = {
     }
   },
 
-/**
+  /**
    * Set timeout for page loading, searching and scripts
    *
    * @param object aRequest
@@ -1253,6 +1257,86 @@ MarionetteDriverActor.prototype = {
         this.sendOk(this.command_id);
       }
     }
+  },
+
+  /**
+   * Single Tap
+   *
+   * @param object aRequest
+            'element' represents the ID of the element to single tap on
+   */
+  singleTap: function MDA_singleTap(aRequest) {
+    this.command_id = this.getCommandId();
+    let serId = aRequest.element;
+    let x = aRequest.x;
+    let y = aRequest.y;
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("singleTap", {value: serId,
+                                   corx: x,
+                                   cory: y,
+                                   command_id: this.command_id});
+    }
+  },
+
+  /**
+   * Double Tap
+   *
+   * @param object aRequest
+   *        'element' represents the ID of the element to double tap on
+   */
+  doubleTap: function MDA_doubleTap(aRequest) {
+    this.command_id = this.getCommandId();
+    let serId = aRequest.element;
+    let x = aRequest.x;
+    let y = aRequest.y;
+    if (this.context == "chrome") {
+      this.sendError("Not in Chrome", 500, null, this.command_id);
+    }
+    else {
+      this.sendAsync("doubleTap", {value: serId,
+                                   corx: x,
+                                   cory: y,
+                                   command_id: this.command_id});
+    }
+  },
+
+  /**
+   * Start touch
+   *
+   * @param object aRequest
+   *        'element' represents the ID of the element to touch
+   */
+  press: function MDA_press(aRequest) {
+    this.command_id = this.getCommandId();
+    let element = aRequest.element;
+    let x = aRequest.x;
+    let y = aRequest.y;
+    this.sendAsync("press", {value: element,
+                             corx: x,
+                             cory: y,
+                             command_id: this.command_id});
+  },
+
+  /**
+   * End touch
+   *
+   * @param object aRequest
+   *        'element' represents the ID of the element to end the touch
+   */
+  release: function MDA_release(aRequest) {
+    this.command_id = this.getCommandId();
+    let element = aRequest.element;
+    let touchId = aRequest.touchId;
+    let x = aRequest.x;
+    let y = aRequest.y;
+    this.sendAsync("release", {value: element,
+                               touchId: touchId,
+                               corx: x,
+                               cory: y,
+                               command_id: this.command_id});
   },
 
   /**
@@ -2005,6 +2089,10 @@ MarionetteDriverActor.prototype.requestTypes = {
   "executeScript": MarionetteDriverActor.prototype.execute,
   "setScriptTimeout": MarionetteDriverActor.prototype.setScriptTimeout,
   "timeouts": MarionetteDriverActor.prototype.timeouts,
+  "singleTap": MarionetteDriverActor.prototype.singleTap,
+  "doubleTap": MarionetteDriverActor.prototype.doubleTap,
+  "press": MarionetteDriverActor.prototype.press,
+  "release": MarionetteDriverActor.prototype.release,
   "executeAsyncScript": MarionetteDriverActor.prototype.executeWithCallback,
   "executeJSScript": MarionetteDriverActor.prototype.executeJSScript,
   "setSearchTimeout": MarionetteDriverActor.prototype.setSearchTimeout,

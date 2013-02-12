@@ -27,6 +27,14 @@ ifndef TEST_PACKAGE_NAME
 TEST_PACKAGE_NAME := $(ANDROID_PACKAGE_NAME)
 endif
 
+RUN_MOCHITEST_B2G_DESKTOP = \
+  rm -f ./$@.log && \
+  $(PYTHON) _tests/testing/mochitest/runtestsb2g.py --autorun --close-when-done \
+    --console-level=INFO --log-file=./$@.log --file-level=INFO \
+    --desktop --profile ${GAIA_PROFILE_DIR} \
+    --failure-file=$(call core_abspath,_tests/testing/mochitest/makefailures.json) \
+    $(TEST_PATH_ARG) $(EXTRA_TEST_ARGS)
+
 RUN_MOCHITEST = \
   rm -f ./$@.log && \
   $(PYTHON) _tests/testing/mochitest/runtests.py --autorun --close-when-done \
@@ -96,9 +104,19 @@ mochitest-robotium:
         $(RUN_MOCHITEST_ROBOTIUM); \
     fi
 
+ifdef MOZ_B2G
+mochitest-plain:
+	@if [ "${GAIA_PROFILE_DIR}"  = "" ]; then \
+        echo "please specify the GAIA_PROFILE_DIR env variable"; \
+    else \
+        $(RUN_MOCHITEST_B2G_DESKTOP); \
+        $(CHECK_TEST_ERROR_RERUN); \
+    fi
+else
 mochitest-plain:
 	$(RUN_MOCHITEST)
 	$(CHECK_TEST_ERROR_RERUN)
+endif
 
 mochitest-plain-rerun-failures:
 	$(RERUN_MOCHITEST)
@@ -344,6 +362,9 @@ cppunittests-remote:
           echo "please prepare your host with environment variables for TEST_DEVICE"; \
         fi
 
+jetpack-tests:
+	$(PYTHON) $(topsrcdir)/addon-sdk/source/bin/cfx -b $(browser_path) --parseable testpkgs
+
 # Package up the tests and test harnesses
 include $(topsrcdir)/toolkit/mozapps/installer/package-name.mk
 
@@ -383,6 +404,10 @@ ifeq ($(MOZ_WIDGET_TOOLKIT),android)
 package-tests: stage-android
 endif
 
+ifeq ($(MOZ_WIDGET_TOOLKIT),gonk)
+package-tests: stage-b2g
+endif
+
 make-stage-dir:
 	rm -rf $(PKG_STAGE)
 	$(NSINSTALL) -D $(PKG_STAGE)
@@ -393,6 +418,9 @@ make-stage-dir:
 	$(NSINSTALL) -D $(PKG_STAGE)/peptest
 	$(NSINSTALL) -D $(PKG_STAGE)/mozbase
 	$(NSINSTALL) -D $(PKG_STAGE)/modules
+
+stage-b2g: make-stage-dir
+	$(NSINSTALL) $(topsrcdir)/b2g/test/b2g-unittest-requirements.txt $(PKG_STAGE)/b2g
 
 robotium-id-map:
 ifeq ($(MOZ_BUILD_APP),mobile/android)
@@ -423,6 +451,7 @@ stage-android: make-stage-dir
 
 stage-jetpack: make-stage-dir
 	$(NSINSTALL) $(topsrcdir)/testing/jetpack/jetpack-location.txt $(PKG_STAGE)/jetpack
+	$(MAKE) -C $(DEPTH)/addon-sdk stage-tests-package
 
 stage-peptest: make-stage-dir
 	$(MAKE) -C $(DEPTH)/testing/peptest stage-package
@@ -462,6 +491,7 @@ stage-mozbase: make-stage-dir
   peptest \
   package-tests \
   make-stage-dir \
+  stage-b2g \
   stage-mochitest \
   stage-reftest \
   stage-xpcshell \

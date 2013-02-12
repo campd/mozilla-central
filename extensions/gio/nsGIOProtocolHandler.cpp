@@ -135,7 +135,7 @@ static void mount_operation_ask_password (GMountOperation   *mount_op,
                                           gpointer          user_data);
 //-----------------------------------------------------------------------------
 
-class nsGIOInputStream : public nsIInputStream
+class nsGIOInputStream MOZ_FINAL : public nsIInputStream
 {
   public:
     NS_DECL_ISUPPORTS
@@ -619,6 +619,7 @@ nsGIOInputStream::Close()
 
     NS_ASSERTION(thread && NS_SUCCEEDED(rv), "leaking channel reference");
     mChannel = nullptr;
+    (void) rv;
   }
 
   mSpec.Truncate(); // free memory
@@ -880,8 +881,8 @@ mount_operation_ask_password (GMountOperation   *mount_op,
 
 //-----------------------------------------------------------------------------
 
-class nsGIOProtocolHandler : public nsIProtocolHandler
-                           , public nsIObserver
+class nsGIOProtocolHandler MOZ_FINAL : public nsIProtocolHandler
+                                     , public nsIObserver
 {
   public:
     NS_DECL_ISUPPORTS
@@ -891,7 +892,7 @@ class nsGIOProtocolHandler : public nsIProtocolHandler
     nsresult Init();
 
   private:
-    void   InitSupportedProtocolsPref(nsIPrefBranch *prefs);
+    void InitSupportedProtocolsPref(nsIPrefBranch *prefs);
     bool IsSupportedProtocol(const nsCString &spec);
 
     nsCString mSupportedProtocols;

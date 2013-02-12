@@ -213,7 +213,8 @@ IsScopedStyleElement(nsIContent* aContent)
   // This is quicker than, say, QIing aContent to nsStyleLinkElement
   // and then calling its virtual GetStyleSheetInfo method to find out
   // if it is scoped.
-  return aContent->IsHTML(nsGkAtoms::style) &&
+  return (aContent->IsHTML(nsGkAtoms::style) ||
+          aContent->IsSVG(nsGkAtoms::style)) &&
          aContent->HasAttr(kNameSpaceID_None, nsGkAtoms::scoped);
 }
 
@@ -316,11 +317,13 @@ nsStyleLinkElement::DoUpdateStyleSheet(nsIDocument *aOldDocument,
     }
   }
 
-  if (mDontLoadStyle || !mUpdatesEnabled) {
+  NS_ENSURE_TRUE(thisContent, NS_ERROR_FAILURE);
+
+  // When static documents are created, stylesheets are cloned manually.
+  if (mDontLoadStyle || !mUpdatesEnabled ||
+      thisContent->OwnerDoc()->IsStaticDocument()) {
     return NS_OK;
   }
-
-  NS_ENSURE_TRUE(thisContent, NS_ERROR_FAILURE);
 
   nsCOMPtr<nsIDocument> doc = thisContent->GetDocument();
 

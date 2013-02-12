@@ -1637,10 +1637,10 @@ nestegg_get_cue_point(nestegg * ctx, unsigned int cluster_num, int64_t max_offse
   unsigned int cluster_count = 0;
   struct cue_point * cue_point;
   struct cue_track_positions * pos;
-  uint64_t seek_pos, t, tc_scale, time;
+  uint64_t seek_pos, track_number, tc_scale, time;
   struct ebml_list_node * cues_node = ctx->segment.cues.cue_point.head;
   struct ebml_list_node * cue_pos_node = NULL;
-  unsigned int track = 0, track_count = 0;
+  unsigned int track = 0, track_count = 0, track_index;
 
   if (!start_pos || !end_pos || !tstamp)
     return -1;
@@ -1670,7 +1670,13 @@ nestegg_get_cue_point(nestegg * ctx, unsigned int cluster_num, int64_t max_offse
       assert(cue_pos_node->id == ID_CUE_TRACK_POSITIONS);
       pos = cue_pos_node->data;
       for (track = 0; track < track_count; track++) {
-        if (ne_get_uint(pos->track, &t) == 0 && t - 1 == track) {
+        if (ne_get_uint(pos->track, &track_number) != 0)
+          return -1;
+
+        if (ne_map_track_number_to_index(ctx, track_number, &track_index) != 0)
+          return -1;
+
+        if (track_index == track) {
           if (ne_get_uint(pos->cluster_position, &seek_pos) != 0)
             return -1;
           if (cluster_count == cluster_num) {
@@ -1721,7 +1727,8 @@ nestegg_track_seek(nestegg * ctx, unsigned int track, uint64_t tstamp)
   int r;
   struct cue_point * cue_point;
   struct cue_track_positions * pos;
-  uint64_t seek_pos, tc_scale, t;
+  uint64_t seek_pos, tc_scale, track_number;
+  unsigned int t;
   struct ebml_list_node * node = ctx->segment.cues.cue_point.head;
 
   /* If there are no cues loaded, check for cues element in the seek head
@@ -1750,7 +1757,13 @@ nestegg_track_seek(nestegg * ctx, unsigned int track, uint64_t tstamp)
   while (node) {
     assert(node->id == ID_CUE_TRACK_POSITIONS);
     pos = node->data;
-    if (ne_get_uint(pos->track, &t) == 0 && t - 1 == track) {
+    if (ne_get_uint(pos->track, &track_number) != 0)
+      return -1;
+
+    if (ne_map_track_number_to_index(ctx, track_number, &t) != 0)
+      return -1;
+
+    if (t == track) {
       if (ne_get_uint(pos->cluster_position, &seek_pos) != 0)
         return -1;
       break;

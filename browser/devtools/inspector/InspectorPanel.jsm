@@ -10,8 +10,9 @@ this.EXPORTED_SYMBOLS = ["InspectorPanel"];
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/commonjs/promise/core.js");
+Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
+Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "MarkupView",
   "resource:///modules/devtools/MarkupView.jsm");
@@ -65,11 +66,23 @@ InspectorPanel.prototype = {
 
     this._initWalker();
 
+    // Initialize the search related items
+    this.searchBox = this.panelDoc.getElementById("inspector-searchbox");
+    this._lastSearched = null;
+    this._searchResults = null;
+    this._searchIndex = 0;
+    this._onHTMLSearch = this._onHTMLSearch.bind(this);
+    this._onSearchKeypress = this._onSearchKeypress.bind(this);
+    this.searchBox.addEventListener("command", this._onHTMLSearch, true);
+    this.searchBox.addEventListener("keypress", this._onSearchKeypress, true);
+
     // Create an empty selection
     this._selection = new Selection();
     this._selection.setWalker(this.walker);
     this.onNewSelection = this.onNewSelection.bind(this);
     this.selection.on("new-node", this.onNewSelection);
+    this.onBeforeNewSelection = this.onBeforeNewSelection.bind(this);
+    this.selection.on("before-new-node", this.onBeforeNewSelection);
     this.onDetached = this.onDetached.bind(this);
     this.selection.on("detached", this.onDetached);
 
@@ -83,15 +96,16 @@ InspectorPanel.prototype = {
       this.highlighter = new Highlighter(this.target, this, this._toolbox);
       let button = this.panelDoc.getElementById("inspector-inspect-toolbutton");
       button.hidden = false;
-      this.updateInspectorButton = function() {
+      this.onLockStateChanged = function() {
         if (this.highlighter.locked) {
           button.removeAttribute("checked");
+          this._toolbox.raise();
         } else {
           button.setAttribute("checked", "true");
         }
       }.bind(this);
-      this.highlighter.on("locked", this.updateInspectorButton);
-      this.highlighter.on("unlocked", this.updateInspectorButton);
+      this.highlighter.on("locked", this.onLockStateChanged);
+      this.highlighter.on("unlocked", this.onLockStateChanged);
 
       // Show a warning when the debugger is paused.
       // We show the warning only when the inspector
@@ -322,6 +336,17 @@ InspectorPanel.prototype = {
   },
 
   /**
+   * When a new node is selected, before the selection has changed.
+   */
+  onBeforeNewSelection: function InspectorPanel_onBeforeNewSelection(event,
+                                                                     node) {
+    if (this.breadcrumbs.indexOf(node) == -1) {
+      // only clear locks if we'd have to update breadcrumbs
+      this.clearPseudoClasses();
+    }
+  },
+
+  /**
    * When a node is deleted, select its parent node.
    */
   onDetached: function InspectorPanel_onDetached(event, parentNode) {
@@ -350,8 +375,8 @@ InspectorPanel.prototype = {
     this.target.off("navigate", this.onNavigatedAway);
 
     if (this.highlighter) {
-      this.highlighter.off("locked", this.updateInspectorButton);
-      this.highlighter.off("unlocked", this.updateInspectorButton);
+      this.highlighter.off("locked", this.onLockStateChanged);
+      this.highlighter.off("unlocked", this.onLockStateChanged);
       this.highlighter.destroy();
     }
 
@@ -367,8 +392,11 @@ InspectorPanel.prototype = {
 
     this.nodemenu.removeEventListener("popupshowing", this._setupNodeMenu, true);
     this.nodemenu.removeEventListener("popuphiding", this._resetNodeMenu, true);
+    this.searchBox.removeEventListener("command", this._onHTMLSearch, true);
+    this.searchBox.removeEventListener("keypress", this._onSearchKeypress, true);
     this.breadcrumbs.destroy();
     this.selection.off("new-node", this.onNewSelection);
+    this.selection.off("before-new-node", this.onBeforeNewSelection);
     this.selection.off("detached", this.onDetached);
     this._destroyMarkup();
     this._selection.destroy();
@@ -381,9 +409,77 @@ InspectorPanel.prototype = {
     this.breadcrumbs = null;
     this.lastNodemenuItem = null;
     this.nodemenu = null;
+    this.searchBox = null;
     this.highlighter = null;
 
     return Promise.resolve(null);
+  },
+
+  /**
+   * The command callback for the HTML search box. This function is
+   * automatically invoked as the user is typing.
+   */
+  _onHTMLSearch: function InspectorPanel__onHTMLSearch() {
+    let query = this.searchBox.value;
+    if (query == this._lastSearched) {
+      return;
+    }
+    this._lastSearched = query;
+    this._searchIndex = 0;
+
+    if (query.length == 0) {
+      this.searchBox.removeAttribute("filled");
+      this.searchBox.classList.remove("devtools-no-search-result");
+      return;
+    }
+
+    this.searchBox.setAttribute("filled", true);
+    this._searchResults = this.browser.contentDocument.querySelectorAll(query);
+    if (this._searchResults.length > 0) {
+      this.searchBox.classList.remove("devtools-no-search-result");
+      this.cancelLayoutChange();
+      this.selection.setNode(this._searchResults[0]);
+    } else {
+      this.searchBox.classList.add("devtools-no-search-result");
+    }
+  },
+
+  /**
+   * Search for the search box value as a query selector.
+   */
+  _onSearchKeypress: function InspectorPanel__onSearchKeypress(aEvent) {
+    let query = this.searchBox.value;
+    switch(aEvent.keyCode) {
+      case aEvent.DOM_VK_ENTER:
+      case aEvent.DOM_VK_RETURN:
+        if (query == this._lastSearched) {
+          this._searchIndex = (this._searchIndex + 1) % this._searchResults.length;
+        } else {
+          this._onHTMLSearch();
+          return;
+        }
+        break;
+
+      case aEvent.DOM_VK_UP:
+        if (--this._searchIndex < 0) {
+          this._searchIndex = this._searchResults.length - 1;
+        }
+        break;
+
+      case aEvent.DOM_VK_DOWN:
+        this._searchIndex = (this._searchIndex + 1) % this._searchResults.length;
+        break;
+
+      default:
+        return;
+    }
+
+    aEvent.preventDefault();
+    aEvent.stopPropagation();
+    this.cancelLayoutChange();
+    if (this._searchResults.length > 0) {
+      this.selection.setNode(this._searchResults[this._searchIndex]);
+    }
   },
 
   /**
@@ -525,10 +621,21 @@ InspectorPanel.prototype = {
   },
 
   /**
+   * Clear any pseudo-class locks applied to the current hierarchy.
+   */
+  clearPseudoClasses: function InspectorPanel_clearPseudoClasses() {
+    this.walker.clearPseudoClassLocks(null, { all: true});
+  },
+
+  /**
    * Toggle the highlighter when ruleview is hovered.
    */
   toggleHighlighter: function InspectorPanel_toggleHighlighter(event)
   {
+    if (!this.highlighter) {
+      return;
+    }
+
     if (event.type == "mouseover") {
       this.highlighter.hide();
     }
@@ -574,6 +681,21 @@ InspectorPanel.prototype = {
       }.bind(this));
     }.bind(this));
     // XXX: promisePass/promiseError
+  },
+
+  /**
+   * Copy a unique selector of the selected Node to the clipboard.
+   */
+  copyUniqueSelector: function InspectorPanel_copyUniqueSelector()
+  {
+    if (!this.selection.isNode()) {
+      return;
+    }
+
+    let toCopy = CssLogic.findCssSelector(this.selection.node);
+    if (toCopy) {
+      clipboardHelper.copyString(toCopy);
+    }
   },
 
   /**

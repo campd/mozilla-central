@@ -80,7 +80,7 @@
 #include "nsHtml5Module.h"
 #include "nsITextControlElement.h"
 #include "mozilla/dom/Element.h"
-#include "nsHTMLFieldSetElement.h"
+#include "HTMLFieldSetElement.h"
 #include "nsHTMLMenuElement.h"
 #include "nsAsyncDOMEvent.h"
 #include "nsDOMMutationObserver.h"
@@ -824,6 +824,8 @@ nsGenericHTMLElement::AfterSetAttr(int32_t aNamespaceID, nsIAtom* aName,
       } else {
         ClearHasValidDir();
         ClearHasFixedDir();
+        ClearHasDirAuto();
+        ClearHasDirAutoSet();
         if (NodeInfo()->Equals(nsGkAtoms::bdi)) {
           SetHasDirAuto();
         } else {
@@ -2028,14 +2030,29 @@ nsGenericHTMLElement::GetEnumAttr(nsIAtom* aAttr,
                                   const char* aDefault,
                                   nsAString& aResult) const
 {
+  GetEnumAttr(aAttr, aDefault, aDefault, aResult);
+}
+
+void
+nsGenericHTMLElement::GetEnumAttr(nsIAtom* aAttr,
+                                  const char* aDefaultMissing,
+                                  const char* aDefaultInvalid,
+                                  nsAString& aResult) const
+{
   const nsAttrValue* attrVal = mAttrsAndChildren.GetAttr(aAttr);
 
   aResult.Truncate();
 
-  if (attrVal && attrVal->Type() == nsAttrValue::eEnum) {
-    attrVal->GetEnumString(aResult, true);
-  } else if (aDefault) {
-    AppendASCIItoUTF16(nsDependentCString(aDefault), aResult);
+  if (!attrVal) {
+    if (aDefaultMissing) {
+      AppendASCIItoUTF16(nsDependentCString(aDefaultMissing), aResult);
+    }
+  } else {
+    if (attrVal->Type() == nsAttrValue::eEnum) {
+      attrVal->GetEnumString(aResult, true);
+    } else if (aDefaultInvalid) {
+      AppendASCIItoUTF16(nsDependentCString(aDefaultInvalid), aResult);
+    }
   }
 }
 
@@ -2766,8 +2783,8 @@ nsGenericHTMLFormElement::UpdateFieldSet(bool aNotify)
 
   for (parent = GetParent(); parent;
        prev = parent, parent = parent->GetParent()) {
-    nsHTMLFieldSetElement* fieldset =
-      nsHTMLFieldSetElement::FromContent(parent);
+    HTMLFieldSetElement* fieldset =
+      HTMLFieldSetElement::FromContent(parent);
     if (fieldset &&
         (!prev || fieldset->GetFirstLegend() != prev)) {
       if (mFieldSet == fieldset) {

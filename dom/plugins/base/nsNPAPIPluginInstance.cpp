@@ -53,7 +53,6 @@ using namespace mozilla;
 
 using namespace mozilla::gl;
 
-typedef nsNPAPIPluginInstance::TextureInfo TextureInfo;
 typedef nsNPAPIPluginInstance::VideoInfo VideoInfo;
 
 class PluginEventRunnable : public nsRunnable
@@ -101,7 +100,7 @@ public:
   {
   }
 
-  TextureInfo Lock()
+  nsNPAPIPluginInstance::TextureInfo Lock()
   {
     if (!EnsureGLContext()) {
       mTextureInfo.mTexture = 0;
@@ -116,7 +115,7 @@ public:
     return mTextureInfo;
   }
 
-  void Release(TextureInfo& aTextureInfo)
+  void Release(nsNPAPIPluginInstance::TextureInfo& aTextureInfo)
   { 
     mTextureInfo = aTextureInfo;
     mLock.Unlock();
@@ -146,10 +145,12 @@ public:
   }
 
 private:
-  TextureInfo mTextureInfo;
+  nsNPAPIPluginInstance::TextureInfo mTextureInfo;
  
   Mutex mLock;
 };
+
+static std::map<NPP, nsNPAPIPluginInstance*> sPluginNPPMap;
 
 #endif
 
@@ -190,11 +191,19 @@ nsNPAPIPluginInstance::nsNPAPIPluginInstance()
   mNPP.ndata = this;
 
   PLUGIN_LOG(PLUGIN_LOG_BASIC, ("nsNPAPIPluginInstance ctor: this=%p\n",this));
+
+#ifdef MOZ_WIDGET_ANDROID
+  sPluginNPPMap[&mNPP] = this;
+#endif
 }
 
 nsNPAPIPluginInstance::~nsNPAPIPluginInstance()
 {
   PLUGIN_LOG(PLUGIN_LOG_BASIC, ("nsNPAPIPluginInstance dtor: this=%p\n",this));
+
+#ifdef MOZ_WIDGET_ANDROID
+  sPluginNPPMap.erase(&mNPP);
+#endif
 
   if (mMIMEType) {
     PR_Free((void *)mMIMEType);
@@ -942,13 +951,13 @@ GLContext* nsNPAPIPluginInstance::GLContext()
   return sPluginContext;
 }
 
-TextureInfo nsNPAPIPluginInstance::LockContentTexture()
+nsNPAPIPluginInstance::TextureInfo nsNPAPIPluginInstance::LockContentTexture()
 {
   EnsureSharedTexture();
   return mContentTexture->Lock();
 }
 
-void nsNPAPIPluginInstance::ReleaseContentTexture(TextureInfo& aTextureInfo)
+void nsNPAPIPluginInstance::ReleaseContentTexture(nsNPAPIPluginInstance::TextureInfo& aTextureInfo)
 {
   EnsureSharedTexture();
   mContentTexture->Release(aTextureInfo);
@@ -1050,6 +1059,17 @@ void nsNPAPIPluginInstance::SetInverted(bool aInverted)
     return;
 
   mInverted = aInverted;
+}
+
+nsNPAPIPluginInstance* nsNPAPIPluginInstance::GetFromNPP(NPP npp)
+{
+  std::map<NPP, nsNPAPIPluginInstance*>::iterator it;
+
+  it = sPluginNPPMap.find(npp);
+  if (it == sPluginNPPMap.end())
+    return nullptr;
+
+  return it->second;
 }
 
 #endif

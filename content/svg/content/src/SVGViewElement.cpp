@@ -7,8 +7,6 @@
 #include "mozilla/dom/SVGViewElementBinding.h"
 #include "DOMSVGStringList.h"
 
-DOMCI_NODE_DATA(SVGViewElement, mozilla::dom::SVGViewElement)
-
 NS_IMPL_NS_NEW_NAMESPACED_SVG_ELEMENT(View)
 
 namespace mozilla {
@@ -42,15 +40,9 @@ nsSVGElement::EnumInfo SVGViewElement::sEnumInfo[1] =
 //----------------------------------------------------------------------
 // nsISupports methods
 
-NS_IMPL_ADDREF_INHERITED(SVGViewElement,SVGViewElementBase)
-NS_IMPL_RELEASE_INHERITED(SVGViewElement,SVGViewElementBase)
-
-NS_INTERFACE_TABLE_HEAD(SVGViewElement)
-  NS_NODE_INTERFACE_TABLE5(SVGViewElement, nsIDOMNode, nsIDOMElement,
-                           nsIDOMSVGElement, nsIDOMSVGViewElement,
-                           nsIDOMSVGFitToViewBox)
-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(SVGViewElement)
-NS_INTERFACE_MAP_END_INHERITING(SVGViewElementBase)
+NS_IMPL_ISUPPORTS_INHERITED3(SVGViewElement, SVGViewElementBase,
+                             nsIDOMNode, nsIDOMElement,
+                             nsIDOMSVGElement)
 
 //----------------------------------------------------------------------
 // Implementation
@@ -58,6 +50,7 @@ NS_INTERFACE_MAP_END_INHERITING(SVGViewElementBase)
 SVGViewElement::SVGViewElement(already_AddRefed<nsINodeInfo> aNodeInfo)
   : SVGViewElementBase(aNodeInfo)
 {
+  SetIsDOMBinding();
 }
 
 //----------------------------------------------------------------------
@@ -78,15 +71,6 @@ SVGViewElement::SetZoomAndPan(uint16_t aZoomAndPan, ErrorResult& rv)
 }
 
 //----------------------------------------------------------------------
-// nsIDOMSVGFitToViewBox methods
-
-/* readonly attribute nsIDOMSVGAnimatedRect viewBox; */
-NS_IMETHODIMP
-SVGViewElement::GetViewBox(nsIDOMSVGAnimatedRect * *aViewBox)
-{
-  *aViewBox = ViewBox().get();
-  return NS_OK;
-}
 
 already_AddRefed<nsIDOMSVGAnimatedRect>
 SVGViewElement::ViewBox()
@@ -94,15 +78,6 @@ SVGViewElement::ViewBox()
   nsCOMPtr<nsIDOMSVGAnimatedRect> box;
   mViewBox.ToDOMAnimatedRect(getter_AddRefs(box), this);
   return box.forget();
-}
-
-/* readonly attribute SVGPreserveAspectRatio preserveAspectRatio; */
-NS_IMETHODIMP
-SVGViewElement::GetPreserveAspectRatio(nsISupports
-                                       **aPreserveAspectRatio)
-{
-  *aPreserveAspectRatio = PreserveAspectRatio().get();
-  return NS_OK;
 }
 
 already_AddRefed<DOMSVGAnimatedPreserveAspectRatio>
@@ -114,14 +89,6 @@ SVGViewElement::PreserveAspectRatio()
 }
 
 //----------------------------------------------------------------------
-// nsIDOMSVGViewElement methods
-
-/* readonly attribute nsIDOMSVGStringList viewTarget; */
-NS_IMETHODIMP SVGViewElement::GetViewTarget(nsIDOMSVGStringList * *aViewTarget)
-{
-  *aViewTarget = ViewTarget().get();
-  return NS_OK;
-}
 
 already_AddRefed<nsIDOMSVGStringList>
 SVGViewElement::ViewTarget()

@@ -50,6 +50,18 @@ class HTMLElement(object):
     def click(self):
         return self.marionette._send_message('clickElement', 'ok', element=self.id)
 
+    def single_tap(self, x=None, y=None):
+        return self.marionette._send_message('singleTap', 'ok', element=self.id, x=x, y=y)
+
+    def double_tap(self, x=None, y=None):
+        return self.marionette._send_message('doubleTap', 'ok', element=self.id, x=x, y=y)
+
+    def press(self, x=None, y=None):
+        return self.marionette._send_message('press', 'value', element=self.id, x=x, y=y)
+
+    def release(self, touch_id, x=None, y=None):
+        return self.marionette._send_message('release', 'ok', element=self.id, touchId=touch_id, x=x, y=y)
+
     @property
     def text(self):
         return self.marionette._send_message('getElementText', 'value', element=self.id)
@@ -105,7 +117,7 @@ class Marionette(object):
                  emulator=None, sdcard=None, emulatorBinary=None,
                  emulatorImg=None, emulator_res='480x800', gecko_path=None,
                  connectToRunningEmulator=False, homedir=None, baseurl=None,
-                 noWindow=False, logcat_dir=None, busybox=None, load_early=False):
+                 noWindow=False, logcat_dir=None, busybox=None):
         self.host = host
         self.port = self.local_port = port
         self.bin = bin
@@ -154,8 +166,8 @@ class Marionette(object):
         self.client = MarionetteClient(self.host, self.port)
 
         if emulator:
-            self.emulator.setup(self, gecko_path=gecko_path,
-                                load_early=load_early,
+            self.emulator.setup(self,
+                                gecko_path=gecko_path,
                                 busybox=busybox)
 
     def __del__(self):
@@ -458,7 +470,7 @@ class Marionette(object):
 
         return unwrapped
 
-    def execute_js_script(self, script, script_args=None, async=True, new_sandbox=True, special_powers=False):
+    def execute_js_script(self, script, script_args=None, async=True, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -468,10 +480,11 @@ class Marionette(object):
                                       args=args,
                                       async=async,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers, 
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
-    def execute_script(self, script, script_args=None, new_sandbox=True, special_powers=False):
+    def execute_script(self, script, script_args=None, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -480,10 +493,11 @@ class Marionette(object):
                                       value=script,
                                       args=args,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers,
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
-    def execute_async_script(self, script, script_args=None, new_sandbox=True, special_powers=False):
+    def execute_async_script(self, script, script_args=None, new_sandbox=True, special_powers=False, script_timeout=None):
         if script_args is None:
             script_args = []
         args = self.wrapArguments(script_args)
@@ -492,7 +506,8 @@ class Marionette(object):
                                       value=script,
                                       args=args,
                                       newSandbox=new_sandbox,
-                                      specialPowers=special_powers)
+                                      specialPowers=special_powers,
+                                      scriptTimeout=script_timeout)
         return self.unwrapValue(response)
 
     def find_element(self, method, target, id=None):

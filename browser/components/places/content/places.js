@@ -75,10 +75,6 @@ var PlacesOrganizer = {
     document.getElementById("placesContext")
             .removeChild(document.getElementById("placesContext_show:info"));
 
-#ifndef MOZ_PER_WINDOW_PRIVATE_BROWSING
-    gPrivateBrowsingListener.init();
-#endif
-
     ContentArea.focus();
   },
 
@@ -111,9 +107,6 @@ var PlacesOrganizer = {
   },
 
   destroy: function PO_destroy() {
-#ifndef MOZ_PER_WINDOW_PRIVATE_BROWSING
-    gPrivateBrowsingListener.uninit();
-#endif
   },
 
   _location: null,
@@ -1198,45 +1191,6 @@ var ViewMenu = {
   }
 }
 
-#ifndef MOZ_PER_WINDOW_PRIVATE_BROWSING
-/**
- * Disables the "Import and Backup->Import From Another Browser" menu item
- * in private browsing mode.
- */
-let gPrivateBrowsingListener = {
-  _cmd_import: null,
-
-  init: function PO_PB_init() {
-    this._cmd_import = document.getElementById("OrganizerCommand_browserImport");
-
-    let pbs = Cc["@mozilla.org/privatebrowsing;1"].
-              getService(Ci.nsIPrivateBrowsingService);
-    if (pbs.privateBrowsingEnabled)
-      this.updateUI(true);
-
-    Services.obs.addObserver(this, "private-browsing", false);
-  },
-
-  uninit: function PO_PB_uninit() {
-    Services.obs.removeObserver(this, "private-browsing");
-  },
-
-  observe: function PO_PB_observe(aSubject, aTopic, aData) {
-    if (aData == "enter")
-      this.updateUI(true);
-    else if (aData == "exit")
-      this.updateUI(false);
-  },
-
-  updateUI: function PO_PB_updateUI(PBmode) {
-    if (PBmode)
-      this._cmd_import.setAttribute("disabled", "true");
-    else
-      this._cmd_import.removeAttribute("disabled");
-  }
-};
-#endif
-
 let ContentArea = {
   _specialViews: new Map(),
 
@@ -1297,10 +1251,17 @@ let ContentArea = {
   },
 
   get currentView() PlacesUIUtils.getViewForNode(this._deck.selectedPanel),
-  set currentView(aView) {
-    if (this.currentView != aView)
-      this._deck.selectedPanel = aView.associatedElement;
-    return aView;
+  set currentView(aNewView) {
+    let oldView = this.currentView;
+    if (oldView != aNewView) {
+      this._deck.selectedPanel = aNewView.associatedElement;
+
+      // If the content area inactivated view was focused, move focus
+      // to the new view.
+      if (document.activeElement == oldView.associatedElement)
+        aNewView.associatedElement.focus();
+    }
+    return aNewView;
   },
 
   get currentPlace() this.currentView.place,

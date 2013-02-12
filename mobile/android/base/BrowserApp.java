@@ -29,6 +29,7 @@ import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
 import android.util.Log;
+import android.view.KeyEvent;
 import android.view.LayoutInflater;
 import android.view.Menu;
 import android.view.MenuInflater;
@@ -101,6 +102,20 @@ abstract public class BrowserApp extends GeckoApp
                         showAboutHome();
                     else
                         hideAboutHome();
+
+                    // Dismiss any SiteIdentity Popup
+                    SiteIdentityPopup.getInstance().dismiss();
+
+                    final TabsPanel.Panel panel = tab.isPrivate()
+                                                ? TabsPanel.Panel.PRIVATE_TABS
+                                                : TabsPanel.Panel.NORMAL_TABS;
+                    if (areTabsShown() && mTabsPanel.getCurrentPanel() != panel) {
+                        mMainHandler.post(new Runnable() {
+                            public void run() {
+                                showTabs(panel);
+                            }
+                        });
+                    }
                 }
                 break;
             case LOAD_ERROR:
@@ -225,6 +240,8 @@ abstract public class BrowserApp extends GeckoApp
         registerEventListener("Feedback:MaybeLater");
         registerEventListener("Dex:Load");
         registerEventListener("Telemetry:Gather");
+
+        Distribution.init(this);
     }
 
     @Override
@@ -232,6 +249,8 @@ abstract public class BrowserApp extends GeckoApp
         super.onDestroy();
         if (mAboutHomeContent != null)
             mAboutHomeContent.onDestroy();
+        if (mBrowserToolbar != null)
+            mBrowserToolbar.onDestroy();
 
         unregisterEventListener("CharEncoding:Data");
         unregisterEventListener("CharEncoding:State");
@@ -971,7 +990,7 @@ abstract public class BrowserApp extends GeckoApp
         if (aMenu == null)
             return false;
 
-        if (!checkLaunchState(LaunchState.GeckoRunning))
+        if (!GeckoThread.checkLaunchState(GeckoThread.LaunchState.GeckoRunning))
             aMenu.findItem(R.id.settings).setEnabled(false);
 
         Tab tab = Tabs.getInstance().getSelectedTab();
@@ -1037,16 +1056,17 @@ abstract public class BrowserApp extends GeckoApp
                 return true;
 
             case R.id.abouthome_topsites_unpin:
-                mAboutHomeContent.unpinSite();
-                return true;
-
-            case R.id.abouthome_topsites_unpinall:
-                mAboutHomeContent.unpinAllSites();
+                mAboutHomeContent.unpinSite(AboutHomeContent.UnpinFlags.REMOVE_PIN);
                 return true;
 
             case R.id.abouthome_topsites_pin:
                 mAboutHomeContent.pinSite();
                 return true;
+
+            case R.id.abouthome_topsites_remove:
+                mAboutHomeContent.unpinSite(AboutHomeContent.UnpinFlags.REMOVE_HISTORY);
+                return true;
+
         }
         return super.onContextItemSelected(item);
     }
@@ -1127,6 +1147,20 @@ abstract public class BrowserApp extends GeckoApp
             default:
                 return super.onOptionsItemSelected(item);
         }
+    }
+
+    /**
+     * This will detect if the key pressed is back. If so, will show the history.
+     */
+    @Override
+    public boolean onKeyLongPress(int keyCode, KeyEvent event) {
+        if (keyCode == KeyEvent.KEYCODE_BACK) {
+            Tab tab = Tabs.getInstance().getSelectedTab();
+            if (tab != null) {
+                return tab.showAllHistory();
+            }
+        }
+        return super.onKeyLongPress(keyCode, event);
     }
 
     /*

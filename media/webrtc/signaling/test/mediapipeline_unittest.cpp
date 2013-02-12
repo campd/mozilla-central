@@ -36,7 +36,7 @@
 #include "gtest_utils.h"
 
 using namespace mozilla;
-MOZ_MTLOG_MODULE("mediapipeline");
+MOZ_MTLOG_MODULE("mediapipeline")
 
 MtransportTestUtils *test_utils;
 
@@ -47,8 +47,8 @@ class TestAgent {
       audio_flow_(new TransportFlow()),
       audio_prsock_(new TransportLayerPrsock()),
       audio_dtls_(new TransportLayerDtls()),
-      audio_config_(109, "opus", 48000, 480, 1, 64000),
-      audio_conduit_(mozilla::AudioSessionConduit::Create()),
+      audio_config_(109, "opus", 48000, 960, 2, 64000),
+      audio_conduit_(mozilla::AudioSessionConduit::Create(NULL)),
       audio_(),
       audio_pipeline_(),
       video_flow_(new TransportFlow()),
@@ -147,7 +147,7 @@ class TestAgentSend : public TestAgent {
         test_pc,
         NULL,
         test_utils->sts_target(),
-        audio_->GetStream(), audio_conduit_, audio_flow_, NULL);
+        audio_->GetStream(), 1, audio_conduit_, audio_flow_, NULL);
 
     audio_pipeline_->Init();
 
@@ -166,7 +166,6 @@ class TestAgentReceive : public TestAgent {
     audio->SetPullEnabled(true);
 
     mozilla::AudioSegment* segment= new mozilla::AudioSegment();
-    segment->Init(1);
     audio->AddTrack(0, 100, 0, segment);
     audio->AdvanceKnownTracksTime(mozilla::STREAM_TIME_MAX);
 
@@ -185,7 +184,7 @@ class TestAgentReceive : public TestAgent {
         test_pc,
         NULL,
         test_utils->sts_target(),
-        audio_->GetStream(),
+        audio_->GetStream(), 1,
         static_cast<mozilla::AudioSessionConduit *>(audio_conduit_.get()),
         audio_flow_, NULL);
 

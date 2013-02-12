@@ -274,6 +274,12 @@ class MochiRemote(Mochitest):
             print "ERROR: unable to find utility path for %s, please specify with --utility-path" % (os.name)
             sys.exit(1)
 
+        xpcshell_path = os.path.join(options.utilityPath, xpcshell)
+        if localAutomation.elf_arm(xpcshell_path):
+            self.error('xpcshell at %s is an ARM binary; please use '
+                       'the --utility-path argument to specify the path '
+                       'to a desktop version.' % xpcshell)
+
         options.profilePath = tempfile.mkdtemp()
         self.server = MochitestServer(localAutomation, options)
         self.server.start()

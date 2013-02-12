@@ -57,7 +57,7 @@ public:
    * Return true if there is a content channel active in this process
    * or one of its subprocesses.
    */
-  virtual bool ContentChannelIsActive();
+  virtual bool ContentOrNormalChannelIsActive();
 
 protected:
   void Notify();
@@ -98,8 +98,6 @@ protected:
 
   bool ChannelsActiveWithHigherPriorityThan(AudioChannelInternalType aType);
 
-  bool HasMoreThanOneContentChannelHidden();
-
   const char* ChannelName(AudioChannelType aType);
 
   AudioChannelInternalType GetInternalType(AudioChannelType aType,
@@ -129,6 +127,10 @@ protected:
   nsTArray<uint64_t> mChannelCounters[AUDIO_CHANNEL_INT_LAST];
 
   AudioChannelType mCurrentHigherChannel;
+  AudioChannelType mCurrentVisibleHigherChannel;
+
+  nsTArray<uint64_t> mActiveContentChildIDs;
+  bool mActiveContentChildIDsFrozen;
 
   // This is needed for IPC comunication between
   // AudioChannelServiceChild and this class.

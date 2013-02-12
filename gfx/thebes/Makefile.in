@@ -14,6 +14,10 @@ LIBRARY_NAME	= thebes
 LIBXUL_LIBRARY	= 1
 EXPORT_LIBRARY	= 1
 
+ifndef _MSC_VER
+FAIL_ON_WARNINGS = 1
+endif # !_MSC_VER
+
 EXPORTS	= \
 	gfx2DGlue.h \
 	gfx3DMatrix.h \
@@ -28,7 +32,6 @@ EXPORTS	= \
 	gfxFont.h \
 	gfxFontConstants.h \
 	gfxFontFeatures.h \
-	gfxFontMissingGlyphs.h \
 	gfxFontUtils.h \
 	gfxFontTest.h \
 	gfxImageSurface.h \
@@ -345,9 +348,7 @@ CMMSRCS = \
 
 endif
 
-CSRCS += woff.c
-
-DEFINES += -DIMPL_THEBES -DWOFF_MOZILLA_CLIENT -DHB_DONT_DEFINE_STDINT
+DEFINES += -DIMPL_THEBES -DHB_DONT_DEFINE_STDINT
 DEFINES += -DMOZ_OTS_REPORT_ERRORS
 
 ifeq (WINNT,$(OS_TARGET))

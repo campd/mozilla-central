@@ -159,6 +159,7 @@ public:
     static void NotifyIMEChange(const PRUnichar *aText, uint32_t aTextLen, int aStart, int aEnd, int aNewEnd);
 
     nsresult CaptureThumbnail(nsIDOMWindow *window, int32_t bufW, int32_t bufH, int32_t tabId, jobject buffer);
+    void SendThumbnail(jobject buffer, int32_t tabId, bool success);
     nsresult GetDisplayPort(bool aPageSizeUpdate, bool aIsBrowserContentDisplayed, int32_t tabId, nsIAndroidViewport* metrics, nsIAndroidDisplayport** displayPort);
 
     bool ProgressiveUpdateCallback(bool aHasPendingNewThebesContent, const gfx::Rect& aDisplayPort, float aDisplayResolution, bool aDrawingCritical, gfx::Rect& aViewport, float& aScaleX, float& aScaleY);
@@ -326,7 +327,7 @@ public:
     void CreateMessageList(const dom::sms::SmsFilterData& aFilter, bool aReverse, nsISmsRequest* aRequest);
     void GetNextMessageInList(int32_t aListId, nsISmsRequest* aRequest);
     void ClearMessageList(int32_t aListId);
-    already_AddRefed<nsISmsRequest> DequeueSmsRequest(int32_t aRequestId);
+    already_AddRefed<nsISmsRequest> DequeueSmsRequest(uint32_t aRequestId);
 
     bool IsTablet();
 
@@ -405,7 +406,7 @@ protected:
 
     int mAPIVersion;
 
-    int32_t QueueSmsRequest(nsISmsRequest* aRequest);
+    bool QueueSmsRequest(nsISmsRequest* aRequest, uint32_t* aRequestIdOut);
 
     // other things
     jmethodID jNotifyIME;
@@ -663,6 +664,5 @@ private:
 
 protected:
 };
-
 
 #endif /* AndroidBridge_h__ */

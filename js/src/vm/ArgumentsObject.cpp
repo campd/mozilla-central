@@ -64,7 +64,7 @@ struct CopyFrameArgs
       : frame_(frame)
     { }
 
-    void copyArgs(HeapValue *dst) const {
+    void copyArgs(JSContext *, HeapValue *dst) const {
         CopyStackFrameArguments(frame_, dst);
     }
 
@@ -85,14 +85,14 @@ struct CopyStackIterArgs
       : iter_(iter)
     { }
 
-    void copyArgs(HeapValue *dstBase) const {
+    void copyArgs(JSContext *cx, HeapValue *dstBase) const {
         if (!iter_.isIon()) {
             CopyStackFrameArguments(iter_.abstractFramePtr(), dstBase);
             return;
         }
 
         /* Copy actual arguments. */
-        iter_.ionForEachCanonicalActualArg(CopyToHeap(dstBase));
+        iter_.ionForEachCanonicalActualArg(cx, CopyToHeap(dstBase));
 
         /* Define formals which are not part of the actuals. */
         unsigned numActuals = iter_.numActualArgs();
@@ -125,12 +125,12 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
     if (!proto)
         return NULL;
 
-    RootedTypeObject type(cx, proto->getNewType(cx));
-    if (!type)
-        return NULL;
-
     bool strict = callee->strict();
     Class *clasp = strict ? &StrictArgumentsObjectClass : &NormalArgumentsObjectClass;
+
+    RootedTypeObject type(cx, proto->getNewType(cx, clasp));
+    if (!type)
+        return NULL;
 
     RootedShape shape(cx, EmptyShape::getInitialShape(cx, clasp, TaggedProto(proto),
                                                       proto->getParent(), FINALIZE_KIND,
@@ -155,14 +155,16 @@ ArgumentsObject::create(JSContext *cx, HandleScript script, HandleFunction calle
 
     /* Copy [0, numArgs) into data->slots. */
     HeapValue *dst = data->args, *dstEnd = data->args + numArgs;
-    copy.copyArgs(dst);
+    copy.copyArgs(cx, dst);
 
     data->deletedBits = reinterpret_cast<size_t *>(dstEnd);
     ClearAllBitArrayElements(data->deletedBits, numDeletedWords);
 
-    RawObject obj = JSObject::create(cx, FINALIZE_KIND, shape, type, NULL);
-    if (!obj)
+    RawObject obj = JSObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, shape, type, NULL);
+    if (!obj) {
+        js_free(data);
         return NULL;
+    }
 
     obj->initFixedSlot(INITIAL_LENGTH_SLOT, Int32Value(numActuals << PACKED_BITS_COUNT));
     obj->initFixedSlot(DATA_SLOT, PrivateValue(data));
@@ -347,7 +349,7 @@ args_enumerate(JSContext *cx, HandleObject obj)
 
         RootedObject pobj(cx);
         RootedShape prop(cx);
-        if (!baseops::LookupProperty(cx, argsobj, id, &pobj, &prop))
+        if (!baseops::LookupProperty<CanGC>(cx, argsobj, id, &pobj, &prop))
             return false;
     }
     return true;
@@ -465,22 +467,22 @@ strictargs_enumerate(JSContext *cx, HandleObject obj)
 
     // length
     id = NameToId(cx->names().length);
-    if (!baseops::LookupProperty(cx, argsobj, id, &pobj, &prop))
+    if (!baseops::LookupProperty<CanGC>(cx, argsobj, id, &pobj, &prop))
         return false;
 
     // callee
     id = NameToId(cx->names().callee);
-    if (!baseops::LookupProperty(cx, argsobj, id, &pobj, &prop))
+    if (!baseops::LookupProperty<CanGC>(cx, argsobj, id, &pobj, &prop))
         return false;
 
     // caller
     id = NameToId(cx->names().caller);
-    if (!baseops::LookupProperty(cx, argsobj, id, &pobj, &prop))
+    if (!baseops::LookupProperty<CanGC>(cx, argsobj, id, &pobj, &prop))
         return false;
 
     for (uint32_t i = 0, argc = argsobj->initialLength(); i < argc; i++) {
         id = INT_TO_JSID(i);
-        if (!baseops::LookupProperty(cx, argsobj, id, &pobj, &prop))
+        if (!baseops::LookupProperty<CanGC>(cx, argsobj, id, &pobj, &prop))
             return false;
     }
 
@@ -528,11 +530,9 @@ Class js::NormalArgumentsObjectClass = {
     NULL,                    /* hasInstance */
     ArgumentsObject::trace,
     {
-        NULL,       /* equality    */
         NULL,       /* outerObject */
         NULL,       /* innerObject */
         NULL,       /* iteratorObject  */
-        NULL,       /* unused      */
         false,      /* isWrappedNative */
     }
 };
@@ -561,11 +561,9 @@ Class js::StrictArgumentsObjectClass = {
     NULL,                    /* hasInstance */
     ArgumentsObject::trace,
     {
-        NULL,       /* equality    */
         NULL,       /* outerObject */
         NULL,       /* innerObject */
         NULL,       /* iteratorObject  */
-        NULL,       /* unused      */
         false,      /* isWrappedNative */
     }
 };

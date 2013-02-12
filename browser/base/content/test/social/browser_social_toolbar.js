@@ -110,11 +110,15 @@ var tests = {
     }, function () {
       let badge = statusIcon.getAttribute("badge");
       is(badge, "42", "status value is correct");
+      // If there is a counter, the aria-label should reflect it.
+      is(statusIcon.getAttribute("aria-label"), "Test Ambient 1 \u2046 (42)");
 
       ambience.counter = 0;
       Social.provider.setAmbientNotification(ambience);
       badge = statusIcon.getAttribute("badge");
       is(badge, "", "status value is correct");
+      // If there is no counter, the aria-label should be the same as the label
+      is(statusIcon.getAttribute("aria-label"), "Test Ambient 1 \u2046");
 
       // The menu bar isn't as easy to instrument on Mac.
       if (navigator.platform.contains("Mac"))
@@ -156,6 +160,15 @@ var tests = {
     let removeSocialMenuitems = document.getElementsByClassName("social-remove-menuitem");
     is(removeSocialMenuitems.length, 2, "Remove Social menuitems exist");
     next();
-  }
+  },
+  testToggleNotifications: function(next) {
+    let enabled = Services.prefs.getBoolPref("social.toast-notifications.enabled");
+    let cmd = document.getElementById("Social:ToggleNotifications");
+    is(cmd.getAttribute("checked"), enabled ? "true" : "false");
+    enabled = !enabled;
+    Services.prefs.setBoolPref("social.toast-notifications.enabled", enabled);
+    is(cmd.getAttribute("checked"), enabled ? "true" : "false");
+    Services.prefs.clearUserPref("social.toast-notifications.enabled");
+    next();
+  },
 }
-

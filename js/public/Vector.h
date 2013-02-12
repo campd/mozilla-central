@@ -9,6 +9,7 @@
 #define jsvector_h_
 
 #include "mozilla/Attributes.h"
+#include "mozilla/TypeTraits.h"
 
 #include "TemplateLib.h"
 #include "Utility.h"
@@ -30,7 +31,7 @@ class Vector;
 
 /*
  * This template class provides a default implementation for vector operations
- * when the element type is not known to be a POD, as judged by IsPodType.
+ * when the element type is not known to be a POD, as judged by IsPod.
  */
 template <class T, size_t N, class AP, bool IsPod>
 struct VectorImpl
@@ -102,7 +103,7 @@ struct VectorImpl
 /*
  * This partial template specialization provides a default implementation for
  * vector operations when the element type is known to be a POD, as judged by
- * IsPodType.
+ * IsPod.
  */
 template <class T, size_t N, class AP>
 struct VectorImpl<T, N, AP, true>
@@ -184,7 +185,7 @@ class Vector : private AllocPolicy
 
     /* utilities */
 
-    static const bool sElemIsPod = tl::IsPodType<T>::result;
+    static const bool sElemIsPod = mozilla::IsPod<T>::value;
     typedef VectorImpl<T, N, AllocPolicy, sElemIsPod> Impl;
     friend struct VectorImpl<T, N, AllocPolicy, sElemIsPod>;
 
@@ -405,6 +406,9 @@ class Vector : private AllocPolicy
 
     /* Clears and releases any heap-allocated storage. */
     void clearAndFree();
+
+    /* If true, appending |needed| elements will not call realloc(). */
+    bool canAppendWithoutRealloc(size_t needed) const;
 
     /*
      * Potentially fallible append operations.
@@ -770,6 +774,13 @@ Vector<T,N,AP>::clearAndFree()
 #ifdef DEBUG
     mReserved = 0;
 #endif
+}
+
+template <class T, size_t N, class AP>
+inline bool
+Vector<T,N,AP>::canAppendWithoutRealloc(size_t needed) const
+{
+    return mLength + needed <= mCapacity;
 }
 
 template <class T, size_t N, class AP>

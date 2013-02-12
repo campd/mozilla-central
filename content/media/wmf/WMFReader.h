@@ -18,7 +18,7 @@ class WMFByteStream;
 class WMFReader : public MediaDecoderReader
 {
 public:
-  WMFReader(MediaDecoder* aDecoder);
+  WMFReader(AbstractMediaDecoder* aDecoder);
 
   virtual ~WMFReader();
 
@@ -49,15 +49,19 @@ private:
 
   void ConfigureAudioDecoder();
   void ConfigureVideoDecoder();
+  HRESULT ConfigureVideoFrameGeometry(IMFMediaType* aMediaType);
 
   RefPtr<IMFSourceReader> mSourceReader;
   RefPtr<WMFByteStream> mByteStream;
+
+  // Region inside the video frame that makes up the picture. Pixels outside
+  // of this region should not be rendered.
+  nsIntRect mPictureRegion;
 
   uint32_t mAudioChannels;
   uint32_t mAudioBytesPerSample;
   uint32_t mAudioRate;
 
-  uint32_t mVideoWidth;
   uint32_t mVideoHeight;
   uint32_t mVideoStride;
 

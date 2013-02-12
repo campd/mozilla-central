@@ -6,7 +6,7 @@
 #include "base/basictypes.h"
 #include "CanvasRenderingContext2D.h"
 
-#include "nsIDOMXULElement.h"
+#include "nsXULElement.h"
 
 #include "prenv.h"
 
@@ -59,7 +59,6 @@
 #include "gfxFont.h"
 #include "gfxBlur.h"
 #include "gfxUtils.h"
-#include "gfxFontMissingGlyphs.h"
 
 #include "nsFrameManager.h"
 #include "nsFrameLoader.h"
@@ -1636,9 +1635,9 @@ CanvasRenderingContext2D::BeginPath()
 }
 
 void
-CanvasRenderingContext2D::Fill()
+CanvasRenderingContext2D::Fill(const CanvasWindingRule& winding)
 {
-  EnsureUserSpacePath();
+  EnsureUserSpacePath(winding);
 
   if (!mPath) {
     return;
@@ -1687,9 +1686,9 @@ CanvasRenderingContext2D::Stroke()
 }
 
 void
-CanvasRenderingContext2D::Clip()
+CanvasRenderingContext2D::Clip(const CanvasWindingRule& winding)
 {
-  EnsureUserSpacePath();
+  EnsureUserSpacePath(winding);
 
   if (!mPath) {
     return;
@@ -1848,9 +1847,11 @@ CanvasRenderingContext2D::EnsureWritablePath()
 }
 
 void
-CanvasRenderingContext2D::EnsureUserSpacePath()
+CanvasRenderingContext2D::EnsureUserSpacePath(const CanvasWindingRule& winding)
 {
   FillRule fillRule = CurrentState().fillRule;
+  if(winding == CanvasWindingRuleValues::Evenodd)
+    fillRule = FILL_EVEN_ODD;
 
   if (!mPath && !mPathBuilder && !mDSPathBuilder) {
     EnsureTarget();
@@ -2356,51 +2357,7 @@ struct NS_STACK_CLASS CanvasBidiProcessor : public nsBidiPresUtils::BidiProcesso
           mTextRun->GetDetailedGlyphs(i);
 
         if (glyphs[i].IsMissing()) {
-          float xpos;
-          float advance = detailedGlyphs[0].mAdvance * devUnitsPerAppUnit;
-          if (mTextRun->IsRightToLeft()) {
-            xpos = baselineOrigin.x - advanceSum - advance;
-          } else {
-            xpos = baselineOrigin.x + advanceSum;
-          }
-          advanceSum += advance;
-
-          // default-ignorable characters will have zero advance width.
-          // we don't draw a hexbox for them, just leave them invisible
-          if (advance > 0) {
-            // for now, we use gfxFontMissingGlyphs to draw the hexbox;
-            // some day we should replace this with a direct Azure version
-
-            // get the DrawTarget's transform, so we can apply it to the
-            // thebes context for gfxFontMissingGlyphs
-            Matrix matrix = mCtx->mTarget->GetTransform();
-            nsRefPtr<gfxContext> thebes;
-            if (gfxPlatform::GetPlatform()->SupportsAzureContent()) {
-              // XXX See bug 808288 comment 5 - Bas says:
-              // This is a little tricky, potentially this could go wrong if
-              // we fell back to a Cairo context because of for example
-              // extremely large Canvas size. Cairo content is technically
-              // -not- supported, but SupportsAzureContent would return true
-              // as the browser uses D2D content.
-              // I'm thinking Cairo content will be good enough to do
-              // DrawMissingGlyph though.
-              thebes = new gfxContext(mCtx->mTarget);
-            } else {
-              nsRefPtr<gfxASurface> drawSurf;
-              mCtx->GetThebesSurface(getter_AddRefs(drawSurf));
-              thebes = new gfxContext(drawSurf);
-            }
-            thebes->SetMatrix(gfxMatrix(matrix._11, matrix._12, matrix._21,
-                                        matrix._22, matrix._31, matrix._32));
-
-            gfxFloat height = font->GetMetrics().maxAscent;
-            gfxRect glyphRect(xpos, baselineOrigin.y - height,
-                              advance, height);
-            gfxFontMissingGlyphs::DrawMissingGlyph(thebes, glyphRect,
-                                                   detailedGlyphs[0].mGlyphID);
-
-            mCtx->mTarget->SetTransform(matrix);
-          }
+          advanceSum += detailedGlyphs[0].mAdvance * devUnitsPerAppUnit;
           continue;
         }
 
@@ -2836,19 +2793,21 @@ CanvasRenderingContext2D::SetMozDashOffset(double mozDashOffset)
 }
 
 bool
-CanvasRenderingContext2D::IsPointInPath(double x, double y)
+CanvasRenderingContext2D::IsPointInPath(double x, double y, const CanvasWindingRule& winding)
 {
   if (!FloatValidate(x,y)) {
     return false;
   }
 
-  EnsureUserSpacePath();
+  EnsureUserSpacePath(winding);
   if (!mPath) {
     return false;
   }
+
   if (mPathTransformWillUpdate) {
     return mPath->ContainsPoint(Point(x, y), mPathToDS);
   }
+
   return mPath->ContainsPoint(Point(x, y), mTarget->GetTransform());
 }
 
@@ -3230,7 +3189,7 @@ CanvasRenderingContext2D::DrawWindow(nsIDOMWindow* window, double x,
 }
 
 void
-CanvasRenderingContext2D::AsyncDrawXULElement(nsIDOMXULElement* elem,
+CanvasRenderingContext2D::AsyncDrawXULElement(nsXULElement& elem,
                                               double x, double y,
                                               double w, double h,
                                               const nsAString& bgColor,
@@ -3251,7 +3210,7 @@ CanvasRenderingContext2D::AsyncDrawXULElement(nsIDOMXULElement* elem,
   }
 
 #if 0
-  nsCOMPtr<nsIFrameLoaderOwner> loaderOwner = do_QueryInterface(elem);
+  nsCOMPtr<nsIFrameLoaderOwner> loaderOwner = do_QueryInterface(&elem);
   if (!loaderOwner) {
     error.Throw(NS_ERROR_FAILURE);
     return;
@@ -3418,6 +3377,20 @@ CanvasRenderingContext2D::GetImageDataArray(JSContext* aCx,
     return NS_ERROR_DOM_SYNTAX_ERR;
   }
 
+  IntRect srcRect(0, 0, mWidth, mHeight);
+  IntRect destRect(aX, aY, aWidth, aHeight);
+  IntRect srcReadRect = srcRect.Intersect(destRect);
+  RefPtr<DataSourceSurface> readback;
+  if (!srcReadRect.IsEmpty() && !mZero) {
+    RefPtr<SourceSurface> snapshot = mTarget->Snapshot();
+    if (snapshot) {
+      readback = snapshot->GetDataSurface();
+    }
+    if (!readback || !readback->GetData()) {
+      return NS_ERROR_OUT_OF_MEMORY;
+    }
+  }
+
   JSObject* darray = JS_NewUint8ClampedArray(aCx, len.value());
   if (!darray) {
     return NS_ERROR_OUT_OF_MEMORY;
@@ -3430,25 +3403,14 @@ CanvasRenderingContext2D::GetImageDataArray(JSContext* aCx,
 
   uint8_t* data = JS_GetUint8ClampedArrayData(darray);
 
-  IntRect srcRect(0, 0, mWidth, mHeight);
-  IntRect destRect(aX, aY, aWidth, aHeight);
-
-  IntRect srcReadRect = srcRect.Intersect(destRect);
   IntRect dstWriteRect = srcReadRect;
   dstWriteRect.MoveBy(-aX, -aY);
 
   uint8_t* src = data;
   uint32_t srcStride = aWidth * 4;
-
-  RefPtr<DataSourceSurface> readback;
-  if (!srcReadRect.IsEmpty()) {
-    RefPtr<SourceSurface> snapshot = mTarget->Snapshot();
-    if (snapshot) {
-      readback = snapshot->GetDataSurface();
-
-      srcStride = readback->Stride();
-      src = readback->GetData() + srcReadRect.y * srcStride + srcReadRect.x * 4;
-    }
+  if (readback) {
+    srcStride = readback->Stride();
+    src = readback->GetData() + srcReadRect.y * srcStride + srcReadRect.x * 4;
   }
 
   // NOTE! dst is the same as src, and this relies on reading
@@ -3640,6 +3602,13 @@ CanvasRenderingContext2D::PutImageData_explicit(int32_t x, int32_t y, uint32_t w
   RefPtr<SourceSurface> sourceSurface =
     mTarget->CreateSourceSurfaceFromData(imgsurf->Data(), IntSize(w, h), imgsurf->Stride(), FORMAT_B8G8R8A8);
 
+  // In certain scenarios, requesting larger than 8k image fails.  Bug 803568
+  // covers the details of how to run into it, but the full detailed
+  // investigation hasn't been done to determine the underlying cause.  We
+  // will just handle the failure to allocate the surface to avoid a crash.
+  if (!sourceSurface) {
+    return NS_ERROR_FAILURE;
+  }
 
   mTarget->CopySurface(sourceSurface,
                        IntRect(dirtyRect.x - x, dirtyRect.y - y,

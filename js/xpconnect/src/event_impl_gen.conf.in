@@ -23,16 +23,23 @@ simple_events = [
     'DeviceOrientationEvent',
     'DeviceLightEvent',
     'MozApplicationEvent',
+    'SmartCardEvent',
 #ifdef MOZ_B2G_BT
     'BluetoothDeviceEvent',
     'BluetoothDeviceAddressEvent',
 #endif
 #ifdef MOZ_B2G_RIL
+    'CallEvent',
+    'CFStateChangeEvent',
+    'DataErrorEvent',
     'ICCCardLockErrorEvent',
     'MozWifiStatusChangeEvent',
     'MozWifiConnectionInfoEvent',
     'MozCellBroadcastEvent',
+    'MozVoicemailEvent',
+    'USSDReceivedEvent',
 #endif
+    'MozSmsEvent',
     'DeviceStorageChangeEvent',
     'PopupBlockedEvent'
   ]

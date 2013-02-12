@@ -17,6 +17,7 @@
 #include "Layers.h"
 #include "ImageTypes.h"
 #include "ImageContainer.h"
+#include "VideoUtils.h"
 #endif
 
 #include "logging.h"
@@ -42,7 +43,7 @@ using namespace mozilla;
 
 
 // Logging context
-MOZ_MTLOG_MODULE("mediapipeline");
+MOZ_MTLOG_MODULE("mediapipeline")
 
 namespace mozilla {
 
@@ -476,11 +477,17 @@ void MediaPipeline::PacketReceived(TransportLayer *layer,
 }
 
 nsresult MediaPipelineTransmit::Init() {
+  char track_id_string[11];
   ASSERT_ON_THREAD(main_thread_);
+
+  // We can replace this when we are allowed to do streams or std::to_string
+  PR_snprintf(track_id_string, sizeof(track_id_string), "%d", track_id_);
 
   description_ = pc_ + "| ";
   description_ += conduit_->type() == MediaSessionConduit::AUDIO ?
-      "Transmit audio" : "Transmit video";
+      "Transmit audio[" : "Transmit video[";
+  description_ += track_id_string;
+  description_ += "]";
 
   // TODO(ekr@rtfm.com): Check for errors
   MOZ_MTLOG(PR_LOG_DEBUG, "Attaching pipeline to stream "
@@ -810,14 +817,33 @@ void MediaPipelineTransmit::PipelineListener::ProcessVideoChunk(
 #endif
 
 nsresult MediaPipelineReceiveAudio::Init() {
+  char track_id_string[11];
   ASSERT_ON_THREAD(main_thread_);
   MOZ_MTLOG(PR_LOG_DEBUG, __FUNCTION__);
 
-  description_ = pc_ + "| Receive audio";
+  // We can replace this when we are allowed to do streams or std::to_string
+  PR_snprintf(track_id_string, sizeof(track_id_string), "%d", track_id_);
+
+  description_ = pc_ + "| Receive audio[";
+  description_ += track_id_string;
+  description_ += "]";
 
   stream_->AddListener(listener_);
 
   return MediaPipelineReceive::Init();
+}
+
+
+MediaPipelineReceiveAudio::PipelineListener::PipelineListener(
+    SourceMediaStream * source, TrackID track_id,
+    const RefPtr<MediaSessionConduit>& conduit)
+    : source_(source),
+      track_id_(track_id),
+      conduit_(conduit),
+      played_(0) {
+  mozilla::AudioSegment *segment = new mozilla::AudioSegment();
+  source_->AddTrack(track_id_, 16000, 0, segment);
+  source_->AdvanceKnownTracksTime(STREAM_TIME_MAX);
 }
 
 void MediaPipelineReceiveAudio::PipelineListener::
@@ -848,23 +874,29 @@ NotifyPull(MediaStreamGraph* graph, StreamTime desired_time) {
     MOZ_MTLOG(PR_LOG_DEBUG, "Audio conduit returned buffer of length " << samples_length);
 
     AudioSegment segment;
-    segment.Init(1);
     nsAutoTArray<const int16_t*,1> channels;
     channels.AppendElement(samples_data);
     segment.AppendFrames(samples.forget(), channels, samples_length);
 
-    source_->AppendToTrack(1,  // TODO(ekr@rtfm.com): Track ID
-                           &segment);
+    source_->AppendToTrack(track_id_, &segment);
 
     played_ += 10;
   }
 }
 
 nsresult MediaPipelineReceiveVideo::Init() {
+  char track_id_string[11];
   ASSERT_ON_THREAD(main_thread_);
   MOZ_MTLOG(PR_LOG_DEBUG, __FUNCTION__);
 
-  description_ = pc_ + "| Receive video";
+  // We can replace this when we are allowed to do streams or std::to_string
+  PR_snprintf(track_id_string, sizeof(track_id_string), "%d", track_id_);
+
+  description_ = pc_ + "| Receive video[";
+  description_ += track_id_string;
+  description_ += "]";
+
+  stream_->AddListener(listener_);
 
   static_cast<VideoSessionConduit *>(conduit_.get())->
       AttachRenderer(renderer_);
@@ -872,28 +904,32 @@ nsresult MediaPipelineReceiveVideo::Init() {
   return MediaPipelineReceive::Init();
 }
 
-MediaPipelineReceiveVideo::PipelineRenderer::PipelineRenderer(
-    MediaPipelineReceiveVideo *pipeline) :
-    pipeline_(pipeline),
-    width_(640), height_(480) {
-
+MediaPipelineReceiveVideo::PipelineListener::PipelineListener(
+  SourceMediaStream* source, TrackID track_id)
+    : source_(source),
+      track_id_(track_id),
+      played_(0),
+      width_(640),
+      height_(480),
+#ifdef MOZILLA_INTERNAL_API
+      image_container_(),
+      image_(),
+#endif
+      monitor_("Video PipelineListener") {
 #ifdef MOZILLA_INTERNAL_API
   image_container_ = layers::LayerManager::CreateImageContainer();
-  SourceMediaStream *source =
-      pipeline_->stream_->AsSourceStream();
-  source->AddTrack(1 /* Track ID */, 30, 0, new VideoSegment());
-  source->AdvanceKnownTracksTime(STREAM_TIME_MAX);
+  source_->AddTrack(track_id_, USECS_PER_S, 0, new VideoSegment());
+  source_->AdvanceKnownTracksTime(STREAM_TIME_MAX);
 #endif
 }
 
-void MediaPipelineReceiveVideo::PipelineRenderer::RenderVideoFrame(
+void MediaPipelineReceiveVideo::PipelineListener::RenderVideoFrame(
     const unsigned char* buffer,
     unsigned int buffer_size,
     uint32_t time_stamp,
     int64_t render_time) {
 #ifdef MOZILLA_INTERNAL_API
-  SourceMediaStream *source =
-      pipeline_->stream_->AsSourceStream();
+  ReentrantMonitorAutoEnter enter(monitor_);
 
   // Create a video frame and append it to the track.
   ImageFormat format = PLANAR_YCBCR;
@@ -919,12 +955,30 @@ void MediaPipelineReceiveVideo::PipelineRenderer::RenderVideoFrame(
 
   videoImage->SetData(data);
 
-  VideoSegment segment;
-  char buf[32];
-  PR_snprintf(buf, 32, "%p", source);
+  image_ = image.forget();
+#endif
+}
 
-  segment.AppendFrame(image.forget(), 1, gfxIntSize(width_, height_));
-  source->AppendToTrack(1, &(segment));
+void MediaPipelineReceiveVideo::PipelineListener::
+NotifyPull(MediaStreamGraph* graph, StreamTime desired_time) {
+  ReentrantMonitorAutoEnter enter(monitor_);
+
+#ifdef MOZILLA_INTERNAL_API
+  nsRefPtr<layers::Image> image = image_;
+  TrackTicks target = TimeToTicksRoundUp(USECS_PER_S, desired_time);
+  TrackTicks delta = target - played_;
+
+  // Don't append if we've already provided a frame that supposedly
+  // goes past the current aDesiredTime Doing so means a negative
+  // delta and thus messes up handling of the graph
+  if (delta > 0) {
+    VideoSegment segment;
+    segment.AppendFrame(image ? image.forget() : nullptr, delta,
+                        gfxIntSize(width_, height_));
+    source_->AppendToTrack(track_id_, &(segment));
+
+    played_ = target;
+  }
 #endif
 }
 

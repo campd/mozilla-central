@@ -6,10 +6,11 @@
 
 /* state used in reflow of block frames */
 
+#include "nsBlockReflowState.h"
+
 #include "mozilla/DebugOnly.h"
 
 #include "nsBlockReflowContext.h"
-#include "nsBlockReflowState.h"
 #include "nsBlockFrame.h"
 #include "nsLineLayout.h"
 #include "nsPresContext.h"
@@ -32,7 +33,6 @@ using namespace mozilla::layout;
 nsBlockReflowState::nsBlockReflowState(const nsHTMLReflowState& aReflowState,
                                        nsPresContext* aPresContext,
                                        nsBlockFrame* aFrame,
-                                       const nsHTMLReflowMetrics& aMetrics,
                                        bool aTopMarginRoot,
                                        bool aBottomMarginRoot,
                                        bool aBlockNeedsFloatManager)
@@ -77,7 +77,6 @@ nsBlockReflowState::nsBlockReflowState(const nsHTMLReflowState& aReflowState,
 
   mReflowStatus = NS_FRAME_COMPLETE;
 
-  mPresContext = aPresContext;
   mNextInFlow = static_cast<nsBlockFrame*>(mBlock->GetNextInFlow());
 
   NS_WARN_IF_FALSE(NS_UNCONSTRAINEDSIZE != aReflowState.ComputedWidth(),
@@ -354,6 +353,14 @@ nsBlockReflowState::SetupPushedFloatList()
     mPushedFloats = mBlock->EnsurePushedFloats();
     SetFlag(BRS_PROPTABLE_FLOATCLIST, true);
   }
+}
+
+void
+nsBlockReflowState::AppendPushedFloat(nsIFrame* aFloatCont)
+{
+  SetupPushedFloatList();
+  aFloatCont->AddStateBits(NS_FRAME_IS_PUSHED_FLOAT);
+  mPushedFloats->AppendFrame(mBlock, aFloatCont);
 }
 
 /**

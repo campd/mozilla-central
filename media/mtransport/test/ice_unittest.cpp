@@ -17,6 +17,7 @@
 #include "nss.h"
 #include "ssl.h"
 
+#include "mozilla/Scoped.h"
 #include "nsThreadUtils.h"
 #include "nsXPCOM.h"
 
@@ -74,6 +75,12 @@ class IceTestPeer : public sigslot::has_slots<> {
 
   void Gather() {
     nsresult res;
+
+    std::vector<NrIceStunServer> stun_servers;
+    ScopedDeletePtr<NrIceStunServer> server(NrIceStunServer::Create(
+        std::string((char *)"216.93.246.14"), 3478));
+    stun_servers.push_back(*server);
+    ASSERT_TRUE(NS_SUCCEEDED(ice_ctx_->SetStunServers(stun_servers)));
 
     test_utils->sts_target()->Dispatch(
         WrapRunnableRet(ice_ctx_, &NrIceCtx::StartGathering, &res),
@@ -307,7 +314,7 @@ class IceTest : public ::testing::Test {
   void SendReceive() {
     //    p1_->Send(2);
     p1_->SendPacket(0, 1, reinterpret_cast<const unsigned char *>("TEST"), 4);
-    ASSERT_EQ(1, p1_->sent());
+    ASSERT_EQ(1u, p1_->sent());
     ASSERT_TRUE_WAIT(p2_->received() == 1, 1000);
   }
 

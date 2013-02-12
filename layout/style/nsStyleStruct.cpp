@@ -1009,8 +1009,7 @@ nsChangeHint nsStyleSVGReset::CalcDifference(const nsStyleSVGReset& aOther) cons
     NS_UpdateHint(hint, nsChangeHint_AllReflowHints);
     NS_UpdateHint(hint, nsChangeHint_RepaintFrame);
   } else if (mDominantBaseline != aOther.mDominantBaseline) {
-    NS_UpdateHint(hint, nsChangeHint_NeedReflow);
-    NS_UpdateHint(hint, nsChangeHint_NeedDirtyReflow);
+    NS_UpdateHint(hint, NS_STYLE_HINT_REFLOW);
   } else if (mStopColor     != aOther.mStopColor     ||
              mFloodColor    != aOther.mFloodColor    ||
              mLightingColor != aOther.mLightingColor ||
@@ -1211,7 +1210,6 @@ nsStyleTable::nsStyleTable()
   MOZ_COUNT_CTOR(nsStyleTable);
   // values not inherited
   mLayoutStrategy = NS_STYLE_TABLE_LAYOUT_AUTO;
-  mCols  = NS_STYLE_TABLE_COLS_NONE;
   mFrame = NS_STYLE_TABLE_FRAME_NONE;
   mRules = NS_STYLE_TABLE_RULES_NONE;
   mSpan = 1;
@@ -1234,7 +1232,7 @@ nsChangeHint nsStyleTable::CalcDifference(const nsStyleTable& aOther) const
   if (mRules != aOther.mRules || mSpan != aOther.mSpan ||
       mLayoutStrategy != aOther.mLayoutStrategy)
     return NS_STYLE_HINT_FRAMECHANGE;
-  if (mFrame != aOther.mFrame || mCols != aOther.mCols)
+  if (mFrame != aOther.mFrame)
     return NS_STYLE_HINT_REFLOW;
   return NS_STYLE_HINT_NONE;
 }
@@ -1644,10 +1642,8 @@ nsStyleImage::IsOpaque() const
   mImage->GetImage(getter_AddRefs(imageContainer));
   NS_ABORT_IF_FALSE(imageContainer, "IsComplete() said image container is ready");
 
-  // Check if the crop region of the current image frame is opaque
-  bool isOpaque;
-  if (NS_SUCCEEDED(imageContainer->GetCurrentFrameIsOpaque(&isOpaque)) &&
-      isOpaque) {
+  // Check if the crop region of the current image frame is opaque.
+  if (imageContainer->FrameIsOpaque(imgIContainer::FRAME_CURRENT)) {
     if (!mCropRect)
       return true;
 
@@ -2115,7 +2111,7 @@ nsStyleDisplay::nsStyleDisplay()
   mChildPerspective.SetCoordValue(0);
   mBackfaceVisibility = NS_STYLE_BACKFACE_VISIBILITY_VISIBLE;
   mTransformStyle = NS_STYLE_TRANSFORM_STYLE_FLAT;
-  mOrient = NS_STYLE_ORIENT_HORIZONTAL;
+  mOrient = NS_STYLE_ORIENT_AUTO;
 
   mTransitions.AppendElement();
   NS_ABORT_IF_FALSE(mTransitions.Length() == 1,

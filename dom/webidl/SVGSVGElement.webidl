@@ -11,7 +11,6 @@
  */
 
 interface SVGAnimatedString;
-interface SVGAnimatedLength;
 interface SVGViewSpec;
 interface SVGPoint;
 interface SVGRect;
@@ -37,15 +36,10 @@ interface SVGSVGElement : SVGGraphicsElement {
   void unsuspendRedrawAll();
   [Throws]
   void forceRedraw();
-  [Throws]
   void pauseAnimations();
-  [Throws]
   void unpauseAnimations();
-  [Throws]
   boolean animationsPaused();
-  [Throws]
   float getCurrentTime();
-  [Throws]
   void setCurrentTime(float seconds);
   // NodeList getIntersectionList(SVGRect rect, SVGElement referenceElement);
   // NodeList getEnclosureList(SVGRect rect, SVGElement referenceElement);

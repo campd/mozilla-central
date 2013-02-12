@@ -13,6 +13,8 @@
 
 #include "vm/StringObject-inl.h"
 
+#include "builtin/ParallelArray.h"
+
 #include "jsboolinlines.h"
 #include "jsinterpinlines.h"
 
@@ -52,23 +54,23 @@ InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, V
     AssertCanGC();
 
     RootedFunction fun(cx, fun0);
-
-    // In order to prevent massive bouncing between Ion and JM, see if we keep
-    // hitting functions that are uncompilable.
     if (fun->isInterpreted()) {
-        if (fun->isInterpretedLazy() && !JSFunction::getOrCreateScript(cx, fun))
+        if (fun->isInterpretedLazy() && !fun->getOrCreateScript(cx))
             return false;
 
+        // Clone function at call site if needed.
         if (fun->isCloneAtCallsite()) {
             RootedScript script(cx);
             jsbytecode *pc;
-            types::TypeScript::GetPcScript(cx, &script, &pc);
+            types::TypeScript::GetPcScript(cx, script.address(), &pc);
             fun = CloneFunctionAtCallsite(cx, fun0, script, pc);
             if (!fun)
                 return false;
         }
 
-        if (!fun->nonLazyScript()->canIonCompile()) {
+        // In order to prevent massive bouncing between Ion and JM, see if we keep
+        // hitting functions that are uncompilable.
+        if (cx->methodJitEnabled && !fun->nonLazyScript()->canIonCompile()) {
             UnrootedScript script = GetTopIonJSScript(cx);
             if (script->hasIonScript() &&
                 ++script->ion->slowCallCount >= js_IonOptions.slowCallLimit)
@@ -116,7 +118,7 @@ InvokeFunction(JSContext *cx, HandleFunction fun0, uint32_t argc, Value *argv, V
 JSObject *
 NewGCThing(JSContext *cx, gc::AllocKind allocKind, size_t thingSize)
 {
-    return gc::NewGCThing<JSObject>(cx, allocKind, thingSize);
+    return gc::NewGCThing<JSObject, CanGC>(cx, allocKind, thingSize, gc::DefaultHeap);
 }
 
 bool
@@ -167,7 +169,7 @@ InitProp(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValue v
 
 template<bool Equal>
 bool
-LooselyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+LooselyEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool equal;
     if (!js::LooselyEqual(cx, lhs, rhs, &equal))
@@ -176,12 +178,12 @@ LooselyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
     return true;
 }
 
-template bool LooselyEqual<true>(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
-template bool LooselyEqual<false>(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
+template bool LooselyEqual<true>(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
+template bool LooselyEqual<false>(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
 
 template<bool Equal>
 bool
-StrictlyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+StrictlyEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool equal;
     if (!js::StrictlyEqual(cx, lhs, rhs, &equal))
@@ -190,11 +192,11 @@ StrictlyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
     return true;
 }
 
-template bool StrictlyEqual<true>(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
-template bool StrictlyEqual<false>(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
+template bool StrictlyEqual<true>(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
+template bool StrictlyEqual<false>(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
 
 bool
-LessThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+LessThan(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool cond;
     if (!LessThanOperation(cx, lhs, rhs, &cond))
@@ -204,7 +206,7 @@ LessThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
 }
 
 bool
-LessThanOrEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+LessThanOrEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool cond;
     if (!LessThanOrEqualOperation(cx, lhs, rhs, &cond))
@@ -214,7 +216,7 @@ LessThanOrEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
 }
 
 bool
-GreaterThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+GreaterThan(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool cond;
     if (!GreaterThanOperation(cx, lhs, rhs, &cond))
@@ -224,7 +226,7 @@ GreaterThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
 }
 
 bool
-GreaterThanOrEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res)
+GreaterThanOrEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res)
 {
     bool cond;
     if (!GreaterThanOrEqualOperation(cx, lhs, rhs, &cond))
@@ -269,18 +271,15 @@ JSObject*
 NewInitArray(JSContext *cx, uint32_t count, types::TypeObject *typeArg)
 {
     RootedTypeObject type(cx, typeArg);
-    RootedObject obj(cx, NewDenseAllocatedArray(cx, count));
+    NewObjectKind newKind = !type ? SingletonObject : GenericObject;
+    RootedObject obj(cx, NewDenseAllocatedArray(cx, count, NULL, newKind));
     if (!obj)
         return NULL;
 
-    if (!type) {
-        if (!JSObject::setSingletonType(cx, obj))
-            return NULL;
-
+    if (!type)
         types::TypeScript::Monitor(cx, ObjectValue(*obj));
-    } else {
+    else
         obj->setType(type);
-    }
 
     return obj;
 }
@@ -288,19 +287,16 @@ NewInitArray(JSContext *cx, uint32_t count, types::TypeObject *typeArg)
 JSObject*
 NewInitObject(JSContext *cx, HandleObject templateObject)
 {
-    RootedObject obj(cx, CopyInitializerObject(cx, templateObject));
+    NewObjectKind newKind = templateObject->hasSingletonType() ? SingletonObject : GenericObject;
+    RootedObject obj(cx, CopyInitializerObject(cx, templateObject, newKind));
 
     if (!obj)
         return NULL;
 
-    if (templateObject->hasSingletonType()) {
-        if (!JSObject::setSingletonType(cx, obj))
-            return NULL;
-
+    if (templateObject->hasSingletonType())
         types::TypeScript::Monitor(cx, ObjectValue(*obj));
-    } else {
+    else
         obj->setType(templateObject->type());
-    }
 
     return obj;
 }
@@ -402,8 +398,7 @@ StringFromCharCode(JSContext *cx, int32_t code)
     if (StaticStrings::hasUnit(c))
         return cx->runtime->staticStrings.getUnit(c);
 
-    return js_NewStringCopyN(cx, &c, 1);
-
+    return js_NewStringCopyN<CanGC>(cx, &c, 1);
 }
 
 bool
@@ -500,7 +495,7 @@ CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval)
     if (callee->isFunction()) {
         JSFunction *fun = callee->toFunction();
         if (fun->isInterpreted())
-            rval.set(ObjectValue(*js_CreateThisForFunction(cx, callee, false)));
+            rval.set(ObjectValue(*CreateThisForFunction(cx, callee, false)));
     }
 
     return true;

@@ -32,8 +32,12 @@ MOCHITEST_BROWSER_TESTS = \
 	browser_dbg_propertyview-08.js \
 	browser_dbg_propertyview-09.js \
 	browser_dbg_propertyview-10.js \
-	browser_dbg_propertyview-edit.js \
+	browser_dbg_propertyview-11.js \
+	browser_dbg_propertyview-edit-value.js \
 	browser_dbg_propertyview-edit-watch.js \
+	browser_dbg_propertyview-data-big.js \
+	browser_dbg_propertyview-data-getset-01.js \
+	browser_dbg_propertyview-data-getset-02.js \
 	browser_dbg_propertyview-data.js \
 	browser_dbg_propertyview-filter-01.js \
 	browser_dbg_propertyview-filter-02.js \
@@ -102,6 +106,7 @@ MOCHITEST_BROWSER_PAGES = \
 	browser_dbg_script-switching.html \
 	test-script-switching-01.js \
 	test-script-switching-02.js \
+	browser_dbg_big-data.html \
 	browser_dbg_frame-parameters.html \
 	browser_dbg_update-editor-mode.html \
 	test-editor-mode \

@@ -8,6 +8,7 @@
 const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cu = Components.utils;
+const Cr = Components.results;
 
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
@@ -56,6 +57,10 @@ UpdateCheckListener.prototype = {
 
   onCheckComplete: function UCL_onCheckComplete(request, updates, updateCount) {
     if (Services.um.activeUpdate) {
+      // We're actively downloading an update, that's the update the user should
+      // see, even if a newer update is available.
+      this._updatePrompt.setUpdateStatus("active-update");
+      this._updatePrompt.showUpdateAvailable(Services.um.activeUpdate);
       return;
     }
 
@@ -91,11 +96,6 @@ UpdateCheckListener.prototype = {
 
     Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
     Services.aus.onError(request, update);
-  },
-
-  onProgress: function UCL_onProgress(request, position, totalSize) {
-    Services.aus.QueryInterface(Ci.nsIUpdateCheckListener);
-    Services.aus.onProgress(request, position, totalSize);
   }
 };
 
@@ -177,6 +177,14 @@ UpdatePrompt.prototype = {
   showUpdateError: function UP_showUpdateError(aUpdate) {
     log("Update error, state: " + aUpdate.state + ", errorCode: " +
         aUpdate.errorCode);
+    if (aUpdate.state == "applied" && aUpdate.errorCode == 0) {
+      // The user chose to apply the update later and then tried to download
+      // it again. If there isn't a new update to download, then the updater
+      // code will detect that there is an update waiting to be installed and
+      // fail. So reprompt the user to apply the update.
+      this.showApplyPrompt(aUpdate);
+      return;
+    }
 
     this.sendUpdateEvent("update-error", aUpdate);
     this.setUpdateStatus(aUpdate.statusText);
@@ -362,16 +370,21 @@ UpdatePrompt.prototype = {
   },
 
   finishOSUpdate: function UP_finishOSUpdate(aOsUpdatePath) {
-    let recoveryService = Cc["@mozilla.org/recovery-service;1"]
-                            .getService(Ci.nsIRecoveryService);
-
     log("Rebooting into recovery to apply FOTA update: " + aOsUpdatePath);
 
     try {
+      let recoveryService = Cc["@mozilla.org/recovery-service;1"]
+                            .getService(Ci.nsIRecoveryService);
       recoveryService.installFotaUpdate(aOsUpdatePath);
     } catch(e) {
       log("Error: Couldn't reboot into recovery to apply FOTA update " +
           aOsUpdatePath);
+      aUpdate = Services.um.activeUpdate;
+      if (aUpdate) {
+        aUpdate.errorCode = Cr.NS_ERROR_FAILURE;
+        aUpdate.statusText = "fota-reboot-failed";
+        this.showUpdateError(aUpdate);
+      }
     }
   },
 

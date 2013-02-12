@@ -601,14 +601,16 @@ class LocationService
 
   struct Entry
   {
-    const void* mPc;        // the entry is unused if this is null
+    static const void* const kUnused;
+
+    const void* mPc;        // if mPc==kUnused, the entry is unused
     char*       mFunction;  // owned by the Entry;  may be null
     const char* mLibrary;   // owned by mLibraryStrings;  never null
                             //   in a non-empty entry is in use
     ptrdiff_t   mLOffset;
 
     Entry()
-      : mPc(nullptr), mFunction(nullptr), mLibrary(nullptr), mLOffset(0)
+      : mPc(kUnused), mFunction(nullptr), mLibrary(nullptr), mLOffset(0)
     {}
 
     ~Entry()
@@ -665,7 +667,7 @@ public:
     MOZ_ASSERT(index < kNumEntries);
     Entry& entry = mEntries[index];
 
-    MOZ_ASSERT(aPc);    // important, because null represents an empty entry
+    MOZ_ASSERT(aPc != Entry::kUnused);
     if (entry.mPc != aPc) {
       mNumCacheMisses++;
 
@@ -732,7 +734,7 @@ public:
   {
     size_t n = 0;
     for (size_t i = 0; i < kNumEntries; i++) {
-      if (mEntries[i].mPc) {
+      if (mEntries[i].mPc != Entry::kUnused) {
         n++;
       }
     }
@@ -742,6 +744,10 @@ public:
   size_t NumCacheHits()   const { return mNumCacheHits; }
   size_t NumCacheMisses() const { return mNumCacheMisses; }
 };
+
+// We can't use 0 because that sometimes shows up as a PC in stack traces.
+const void* const LocationService::Entry::kUnused =
+  reinterpret_cast<const void* const>(intptr_t(-1));
 
 //---------------------------------------------------------------------------
 // Stack traces
@@ -2340,10 +2346,11 @@ RunTestMode(FILE* fp)
   Report(e2);
 
   // First realloc is like malloc;  second realloc creates a min-sized block.
+  // XXX: on Windows, second realloc frees the block.
   // 1st Dump: reported.
   // 2nd Dump: freed, irrelevant.
-  char* e3 = (char*) realloc(nullptr, 1024);
-  e3 = (char*) realloc(e3, 0);
+  char* e3 = (char*) realloc(nullptr, 1023);
+//e3 = (char*) realloc(e3, 0);
   MOZ_ASSERT(e3);
   Report(e3);
 

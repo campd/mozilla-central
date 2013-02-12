@@ -34,9 +34,17 @@ void
 BumpChunk::delete_(BumpChunk *chunk)
 {
 #ifdef DEBUG
-        memset(chunk, 0xcd, sizeof(*chunk) + chunk->bumpSpaceSize);
+    // Part of the chunk may have been marked as poisoned/noaccess.  Undo that
+    // before writing the 0xcd bytes.
+    size_t size = sizeof(*chunk) + chunk->bumpSpaceSize;
+#if defined(MOZ_ASAN)
+    ASAN_UNPOISON_MEMORY_REGION(chunk, size);
+#elif defined(MOZ_VALGRIND)
+    VALGRIND_MAKE_MEM_UNDEFINED(chunk, size);
 #endif
-        js_free(chunk);
+    memset(chunk, 0xcd, size);
+#endif
+    js_free(chunk);
 }
 
 bool
@@ -140,12 +148,3 @@ LifoAlloc::transferUnusedFrom(LifoAlloc *other)
         other->last = other->latest;
     }
 }
-
-bool
-LifoAlloc::ensureUnusedApproximateSlow(size_t n)
-{
-    // This relies on the behavior that releasing a chunk does not immediately free it.
-    LifoAllocScope scope(this);
-    return !!getOrCreateChunk(n);
-}
-

@@ -4,7 +4,10 @@
 
 "use strict";
 
+#ifndef MERGED_COMPARTMENT
+
 this.EXPORTED_SYMBOLS = [
+  "DailyValues",
   "MetricsStorageBackend",
   "dateToDays",
   "daysToDate",
@@ -12,14 +15,16 @@ this.EXPORTED_SYMBOLS = [
 
 const {utils: Cu} = Components;
 
-Cu.import("resource://gre/modules/commonjs/promise/core.js");
+const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
+
+#endif
+
+Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 Cu.import("resource://gre/modules/Sqlite.jsm");
 Cu.import("resource://gre/modules/Task.jsm");
 Cu.import("resource://services-common/log4moz.js");
 Cu.import("resource://services-common/utils.js");
 
-
-const MILLISECONDS_PER_DAY = 24 * 60 * 60 * 1000;
 
 // These do not account for leap seconds. Meh.
 function dateToDays(date) {
@@ -43,9 +48,9 @@ function daysToDate(days) {
  *
  * All days are defined in terms of UTC (as opposed to local time).
  */
-function DailyValues() {
+this.DailyValues = function () {
   this._days = new Map();
-}
+};
 
 DailyValues.prototype = Object.freeze({
   __iterator__: function () {
@@ -1204,6 +1209,21 @@ MetricsStorageSqliteBackend.prototype = Object.freeze({
   },
 
   /**
+   * Reduce memory usage as much as possible.
+   *
+   * This returns a promise that will be resolved on completion.
+   *
+   * @return Promise<>
+   */
+  compact: function () {
+    let self = this;
+    return this.enqueueOperation(function doCompact() {
+      self._connection.discardCachedStatements();
+      return self._connection.shrinkMemory();
+    });
+  },
+
+  /**
    * Ensure a field ID matches a specified type.
    *
    * This is called internally as part of adding values to ensure that
@@ -1261,6 +1281,18 @@ MetricsStorageSqliteBackend.prototype = Object.freeze({
     }
 
     return deferred.promise;
+  },
+
+  /**
+   * Enqueue a function to be performed as a transaction.
+   *
+   * The passed function should be a generator suitable for calling with
+   * `executeTransaction` from the SQLite connection.
+   */
+  enqueueTransaction: function (func, type) {
+    return this.enqueueOperation(
+      this._connection.executeTransaction.bind(this._connection, func, type)
+    );
   },
 
   _popAndPerformQueuedOperation: function () {

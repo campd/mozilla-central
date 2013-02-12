@@ -86,6 +86,7 @@
 #include "mozilla/dom/Element.h"
 #include "mozilla/layout/RenderFrameParent.h"
 #include "nsIAppsService.h"
+#include "sampler.h"
 
 #include "jsapi.h"
 #include "nsHTMLIFrameElement.h"
@@ -257,8 +258,6 @@ nsContentView::GetId(nsContentViewId* aId)
 // we'd need to re-institute a fixed version of bug 98158.
 #define MAX_DEPTH_CONTENT_FRAMES 10
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsFrameLoader)
-
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsFrameLoader)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mDocShell)
   NS_IMPL_CYCLE_COLLECTION_UNLINK(mMessageManager)
@@ -412,6 +411,8 @@ nsresult
 nsFrameLoader::ReallyStartLoadingInternal()
 {
   NS_ENSURE_STATE(mURIToLoad && mOwnerContent && mOwnerContent->IsInDoc());
+
+  SAMPLE_LABEL("nsFrameLoader", "ReallyStartLoading");
 
   nsresult rv = MaybeCreateDocShell();
   if (NS_FAILED(rv)) {
@@ -1295,6 +1296,14 @@ nsFrameLoader::SwapWithOtherLoader(nsFrameLoader* aOther,
 
   ourFrameFrame->EndSwapDocShells(otherFrame);
 
+  // If the content being swapped came from windows on two screens with
+  // incompatible backing resolution (e.g. dragging a tab between windows on
+  // hi-dpi and low-dpi screens), it will have style data that is based on
+  // the wrong appUnitsPerDevPixel value. So we tell the PresShells that their
+  // backing scale factor may have changed. (Bug 822266)
+  ourShell->BackingScaleFactorChanged();
+  otherShell->BackingScaleFactorChanged();
+
   ourParentDocument->FlushPendingNotifications(Flush_Layout);
   otherParentDocument->FlushPendingNotifications(Flush_Layout);
 
@@ -2032,6 +2041,8 @@ nsFrameLoader::TryRemoteBrowser()
     return false;
   }
 
+  SAMPLE_LABEL("nsFrameLoader", "CreateRemoteBrowser");
+
   MutableTabContext context;
   nsCOMPtr<mozIApplication> ownApp = GetOwnApp();
   nsCOMPtr<mozIApplication> containingApp = GetContainingApp();
@@ -2250,30 +2261,10 @@ nsFrameLoader::DoSendAsyncMessage(const nsAString& aMessage,
   PBrowserParent* tabParent = GetRemoteBrowser();
   if (tabParent) {
     ClonedMessageData data;
-
-    SerializedStructuredCloneBuffer& buffer = data.data();
-    buffer.data = aData.mData;
-    buffer.dataLength = aData.mDataLength;
-
-    const nsTArray<nsCOMPtr<nsIDOMBlob> >& blobs = aData.mClosure.mBlobs;
-    if (!blobs.IsEmpty()) {
-      InfallibleTArray<PBlobParent*>& blobParents = data.blobsParent();
-
-      uint32_t length = blobs.Length();
-      blobParents.SetCapacity(length);
-
-      ContentParent* cp = static_cast<ContentParent*>(tabParent->Manager());
-
-      for (uint32_t i = 0; i < length; ++i) {
-        BlobParent* blobParent = cp->GetOrCreateActorForBlob(blobs[i]);
-        if (!blobParent) {
-          return false;
-        }
-
-        blobParents.AppendElement(blobParent);
-      }
+    ContentParent* cp = static_cast<ContentParent*>(tabParent->Manager());
+    if (!BuildClonedMessageDataForParent(cp, aData, data)) {
+      return false;
     }
-
     return tabParent->SendAsyncMessage(nsString(aMessage), data);
   }
 

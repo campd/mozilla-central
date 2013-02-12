@@ -419,15 +419,15 @@ bool DefVarOrConst(JSContext *cx, HandlePropertyName dn, unsigned attrs, HandleO
 bool InitProp(JSContext *cx, HandleObject obj, HandlePropertyName name, HandleValue value);
 
 template<bool Equal>
-bool LooselyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
+bool LooselyEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
 
 template<bool Equal>
-bool StrictlyEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
+bool StrictlyEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
 
-bool LessThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
-bool LessThanOrEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
-bool GreaterThan(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
-bool GreaterThanOrEqual(JSContext *cx, HandleValue lhs, HandleValue rhs, JSBool *res);
+bool LessThan(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
+bool LessThanOrEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
+bool GreaterThan(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
+bool GreaterThanOrEqual(JSContext *cx, MutableHandleValue lhs, MutableHandleValue rhs, JSBool *res);
 
 template<bool Equal>
 bool StringsEqual(JSContext *cx, HandleString left, HandleString right, JSBool *res);
@@ -465,6 +465,7 @@ bool OperatorIn(JSContext *cx, HandleValue key, HandleObject obj, JSBool *out);
 bool GetIntrinsicValue(JSContext *cx, HandlePropertyName name, MutableHandleValue rval);
 
 bool CreateThis(JSContext *cx, HandleObject callee, MutableHandleValue rval);
+
 } // namespace ion
 } // namespace js
 

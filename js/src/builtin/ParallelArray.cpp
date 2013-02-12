@@ -844,7 +844,7 @@ ParallelArrayObject::DebugOptions::init(JSContext *cx, const Value &v)
     if (!JSObject::getGeneric(cx, obj, obj, id, &propv))
         return false;
 
-    propStr = ToString(cx, propv);
+    propStr = ToString<CanGC>(cx, propv);
     if (!propStr)
         return false;
 
@@ -861,7 +861,7 @@ ParallelArrayObject::DebugOptions::init(JSContext *cx, const Value &v)
     if (!JSObject::getGeneric(cx, obj, obj, id, &propv))
         return false;
 
-    propStr = ToString(cx, propv);
+    propStr = ToString<CanGC>(cx, propv);
     if (!propStr)
         return false;
 
@@ -974,7 +974,6 @@ Class ParallelArrayObject::class_ = {
         deleteElement,
         deleteSpecial,
         NULL,                // enumerate
-        NULL,                // typeof
         NULL,                // thisObject
     }
 };
@@ -1006,10 +1005,10 @@ ParallelArrayObject::initClass(JSContext *cx, JSObject *obj)
     RootedId shapeId(cx, AtomToId(cx->names().shape));
     unsigned flags = JSPROP_PERMANENT | JSPROP_SHARED | JSPROP_GETTER;
 
-    RootedObject scriptedLength(cx, js_NewFunction(cx, NullPtr(), NonGenericMethod<lengthGetter>,
-                                                   0, JSFunction::NATIVE_FUN, global, NullPtr()));
-    RootedObject scriptedShape(cx, js_NewFunction(cx, NullPtr(), NonGenericMethod<dimensionsGetter>,
-                                                  0, JSFunction::NATIVE_FUN, global, NullPtr()));
+    RootedObject scriptedLength(cx, NewFunction(cx, NullPtr(), NonGenericMethod<lengthGetter>,
+                                                0, JSFunction::NATIVE_FUN, global, NullPtr()));
+    RootedObject scriptedShape(cx, NewFunction(cx, NullPtr(), NonGenericMethod<dimensionsGetter>,
+                                               0, JSFunction::NATIVE_FUN, global, NullPtr()));
 
     RootedValue value(cx, UndefinedValue());
     if (!scriptedLength || !scriptedShape ||
@@ -1145,7 +1144,7 @@ ParallelArrayObject::create(JSContext *cx, HandleObject buffer, uint32_t offset,
 
     // Propagate element types.
     if (cx->typeInferenceEnabled()) {
-        AutoEnterTypeInference enter(cx);
+        AutoEnterAnalysis enter(cx);
         TypeObject *bufferType = buffer->getType(cx);
         TypeObject *resultType = result->getType(cx);
         if (!bufferType->unknownProperties() && !resultType->unknownProperties()) {
@@ -1260,7 +1259,7 @@ ParallelArrayObject::construct(JSContext *cx, unsigned argc, Value *vp)
         return ReportBadLength(cx);
 
     // Extract second argument, the elemental function.
-    RootedObject elementalFun(cx, ValueToCallable(cx, &args[1]));
+    RootedObject elementalFun(cx, ValueToCallable(cx, args[1], args.length() - 2));
     if (!elementalFun)
         return false;
 
@@ -1301,7 +1300,7 @@ ParallelArrayObject::map(JSContext *cx, CallArgs args)
     if (!buffer)
         return false;
 
-    RootedObject elementalFun(cx, ValueToCallable(cx, &args[0]));
+    RootedObject elementalFun(cx, ValueToCallable(cx, args[0], args.length() - 1));
     if (!elementalFun)
         return false;
 
@@ -1339,7 +1338,7 @@ ParallelArrayObject::reduce(JSContext *cx, CallArgs args)
         return false;
     }
 
-    RootedObject elementalFun(cx, ValueToCallable(cx, &args[0]));
+    RootedObject elementalFun(cx, ValueToCallable(cx, args[0], args.length() - 1));
     if (!elementalFun)
         return false;
 
@@ -1377,7 +1376,7 @@ ParallelArrayObject::scan(JSContext *cx, CallArgs args)
     if (!buffer)
         return false;
 
-    RootedObject elementalFun(cx, ValueToCallable(cx, &args[0]));
+    RootedObject elementalFun(cx, ValueToCallable(cx, args[0], args.length() - 1));
     if (!elementalFun)
         return false;
 
@@ -1419,7 +1418,7 @@ ParallelArrayObject::scatter(JSContext *cx, CallArgs args)
         return false;
 
     // The default value is optional and defaults to undefined.
-    Value defaultValue;
+    RootedValue defaultValue(cx);
     if (args.length() >= 2)
         defaultValue = args[1];
     else
@@ -1428,7 +1427,7 @@ ParallelArrayObject::scatter(JSContext *cx, CallArgs args)
     // The conflict function is optional.
     RootedObject conflictFun(cx);
     if (args.length() >= 3 && !args[2].isUndefined()) {
-        conflictFun = ValueToCallable(cx, &args[2]);
+        conflictFun = ValueToCallable(cx, args[2], args.length() - 3);
         if (!conflictFun)
             return false;
     }
@@ -1832,7 +1831,7 @@ ParallelArrayObject::getGeneric(JSContext *cx, HandleObject obj, HandleObject re
     if (ValueIsSpecial(obj, &idval, &sid, cx))
         return getSpecial(cx, obj, receiver, sid, vp);
 
-    JSAtom *atom = ToAtom(cx, idval);
+    JSAtom *atom = ToAtom<CanGC>(cx, idval);
     if (!atom)
         return false;
 

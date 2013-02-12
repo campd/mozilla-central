@@ -14,7 +14,6 @@
 #include "mozilla/TimeStamp.h"
 #include "InputData.h"
 #include "Axis.h"
-#include "nsContentUtils.h"
 #include "TaskThrottler.h"
 
 #include "base/message_loop.h"
@@ -77,6 +76,12 @@ public:
   // --------------------------------------------------------------------------
   // These methods must only be called on the controller/UI thread.
   //
+
+  /**
+   * Shut down the controller/UI thread state and prepare to be
+   * deleted (which may happen from any thread).
+   */
+  void Destroy();
 
   /**
    * General handler for incoming input events. Manipulates the frame metrics

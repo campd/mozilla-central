@@ -1,6 +1,6 @@
 const Cu = Components.utils;
 
-Cu.import("resource://gre/modules/commonjs/promise/core.js");
+Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 const promise = Promise;
 
 this.EXPORTED_SYMBOLS = ["Remotable"];

@@ -42,6 +42,7 @@
 #include "nsCRT.h"
 #include "nsCRLInfo.h"
 #include "nsCertOverrideService.h"
+#include "nsNTLMAuthModule.h"
 
 #include "nsIWindowWatcher.h"
 #include "nsIPrompt.h"
@@ -56,7 +57,8 @@
 #include "nsITokenPasswordDialogs.h"
 #include "nsICRLManager.h"
 #include "nsNSSShutDown.h"
-#include "nsSmartCardEvent.h"
+#include "GeneratedEvents.h"
+#include "nsIDOMSmartCardEvent.h"
 #include "nsIKeyModule.h"
 #include "ScopedNSSTypes.h"
 #include "SharedSSLState.h"
@@ -520,23 +522,11 @@ nsNSSComponent::DispatchEventToWindow(nsIDOMWindow *domWin,
 
   // create the event
   nsCOMPtr<nsIDOMEvent> event;
-  rv = doc->CreateEvent(NS_LITERAL_STRING("Events"), 
-                        getter_AddRefs(event));
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
-
-  event->InitEvent(eventType, false, true);
-
-  // create the Smart Card Event;
-  nsCOMPtr<nsIDOMSmartCardEvent> smartCardEvent = 
-                                          new nsSmartCardEvent(tokenName);
-  // init the smart card event, fail here if we can't complete the 
-  // initialization.
-  rv = smartCardEvent->Init(event);
-  if (NS_FAILED(rv)) {
-    return rv;
-  }
+  NS_NewDOMSmartCardEvent(getter_AddRefs(event), nullptr, nullptr);
+  nsCOMPtr<nsIDOMSmartCardEvent> smartCardEvent = do_QueryInterface(event);
+  rv = smartCardEvent->InitSmartCardEvent(eventType, false, true, tokenName);
+  NS_ENSURE_SUCCESS(rv, rv);
+  smartCardEvent->SetTrusted(true);
 
   // Send it 
   nsCOMPtr<nsIDOMEventTarget> target = do_QueryInterface(doc, &rv);
@@ -1914,6 +1904,10 @@ nsNSSComponent::Init()
     NS_ASSERTION(mPrefBranch, "Unable to get pref service");
   }
 
+  bool sendLM = false;
+  mPrefBranch->GetBoolPref("network.ntlm.send-lm-response", &sendLM);
+  nsNTLMAuthModule::SetSendLM(sendLM);
+
   // Do that before NSS init, to make sure we won't get unloaded.
   RegisterObservers();
 
@@ -2246,6 +2240,10 @@ nsNSSComponent::Observe(nsISupports *aSubject, const char *aTopic,
                || prefName.Equals("security.OCSP.require")) {
       MutexAutoLock lock(mutex);
       setValidationOptions(mPrefBranch);
+    } else if (prefName.Equals("network.ntlm.send-lm-response")) {
+      bool sendLM = false;
+      mPrefBranch->GetBoolPref("network.ntlm.send-lm-response", &sendLM);
+      nsNTLMAuthModule::SetSendLM(sendLM);
     } else {
       /* Look through the cipher table and set according to pref setting */
       for (CipherPref* cp = CipherPrefs; cp->pref; ++cp) {

@@ -17,7 +17,6 @@
 
 struct ChromePackage;
 class nsIDOMBlob;
-class nsDOMFileBase;
 class nsIObserver;
 struct ResourceMapping;
 struct OverrideMapping;
@@ -79,6 +78,8 @@ public:
     PImageBridgeChild*
     AllocPImageBridge(mozilla::ipc::Transport* aTransport,
                       base::ProcessId aOtherProcess) MOZ_OVERRIDE;
+
+    virtual bool RecvSetProcessPrivileges(const ChildPrivileges& aPrivs);
 
     virtual PBrowserChild* AllocPBrowser(const IPCTabContext &aContext,
                                          const uint32_t &chromeFlags);
@@ -201,8 +202,6 @@ public:
     bool IsForApp() { return mIsForApp; }
     bool IsForBrowser() { return mIsForBrowser; }
 
-    bool GetParamsForBlob(nsDOMFileBase* aBlob,
-                          BlobConstructorParams* aOutParams);
     BlobChild* GetOrCreateActorForBlob(nsIDOMBlob* aBlob);
 
 private:

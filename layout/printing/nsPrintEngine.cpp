@@ -125,10 +125,6 @@ static const char kPrintingPromptService[] = "@mozilla.org/embedcomp/printingpro
 #include "mozilla/dom/Element.h"
 #include "nsContentList.h"
 
-#ifdef MOZ_CRASHREPORTER
-#include "nsExceptionHandler.h"
-#endif
-
 using namespace mozilla;
 using namespace mozilla::dom;
 
@@ -240,7 +236,8 @@ nsPrintEngine::nsPrintEngine() :
   mDebugFile(nullptr),
   mLoadCounter(0),
   mDidLoadDataForPrinting(false),
-  mIsDestroying(false)
+  mIsDestroying(false),
+  mDisallowSelectionPrint(false)
 {
 }
 
@@ -283,8 +280,9 @@ void nsPrintEngine::Destroy()
 void nsPrintEngine::DestroyPrintingData()
 {
   if (mPrt) {
-    delete mPrt;
+    nsPrintData* data = mPrt;
     mPrt = nullptr;
+    delete data;
   }
 }
 
@@ -562,7 +560,8 @@ nsPrintEngine::DoCommonPrint(bool                    aIsPrintPreview,
     mPrt->mPrintSettings->SetHowToEnableFrameUI(nsIPrintSettings::kFrameEnableNone);
   }
   // Now determine how to set up the Frame print UI
-  mPrt->mPrintSettings->SetPrintOptions(nsIPrintSettings::kEnableSelectionRB, isSelection || mPrt->mIsIFrameSelected);
+  mPrt->mPrintSettings->SetPrintOptions(nsIPrintSettings::kEnableSelectionRB,
+                                        isSelection || mPrt->mIsIFrameSelected);
 
   nsCOMPtr<nsIDeviceContextSpec> devspec
     (do_CreateInstance("@mozilla.org/gfx/devicecontextspec;1", &rv));
@@ -1074,6 +1073,9 @@ nsPrintEngine::ShowPrintProgress(bool aIsForPrinting, bool& aDoNotify)
 bool
 nsPrintEngine::IsThereARangeSelection(nsIDOMWindow* aDOMWin)
 {
+  if (mDisallowSelectionPrint)
+    return false;
+
   nsCOMPtr<nsIPresShell> presShell;
   if (aDOMWin) {
     nsCOMPtr<nsPIDOMWindow> window(do_QueryInterface(aDOMWin));
@@ -1545,9 +1547,6 @@ nsresult nsPrintEngine::CleanupOnFailure(nsresult aResult, bool aIsPrinting)
     ShowPrintErrorDialog(aResult, aIsPrinting);
   }
 
-#ifdef MOZ_CRASHREPORTER
-  CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("Unsuccessful print.\n"));
-#endif
   FirePrintCompletionEvent();
 
   return aResult;
@@ -3177,9 +3176,6 @@ nsPrintEngine::DonePrintingPages(nsPrintObject* aPO, nsresult aResult)
   }
 
   if (NS_SUCCEEDED(aResult)) {
-#ifdef MOZ_CRASHREPORTER
-    CrashReporter::AppendAppNotesToCrashReport(NS_LITERAL_CSTRING("Successful print.\n"));
-#endif
     FirePrintCompletionEvent();
   }
 

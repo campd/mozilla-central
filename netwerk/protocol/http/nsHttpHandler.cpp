@@ -86,6 +86,7 @@ static NS_DEFINE_CID(kSocketProviderServiceCID, NS_SOCKETPROVIDERSERVICE_CID);
 #define NETWORK_ENABLEIDN       "network.enableIDN"
 #define BROWSER_PREF_PREFIX     "browser.cache."
 #define DONOTTRACK_HEADER_ENABLED "privacy.donottrackheader.enabled"
+#define DONOTTRACK_HEADER_VALUE   "privacy.donottrackheader.value"
 #ifdef MOZ_TELEMETRY_ON_BY_DEFAULT
 #define TELEMETRY_ENABLED        "toolkit.telemetry.enabledPreRelease"
 #else
@@ -170,6 +171,7 @@ nsHttpHandler::nsHttpHandler()
     , mSendSecureXSiteReferrer(true)
     , mEnablePersistentHttpsCaching(false)
     , mDoNotTrackEnabled(false)
+    , mDoNotTrackValue(1)
     , mTelemetryEnabled(false)
     , mAllowExperiments(true)
     , mHandlerActive(false)
@@ -178,6 +180,7 @@ nsHttpHandler::nsHttpHandler()
     , mSpdyV3(true)
     , mCoalesceSpdy(true)
     , mUseAlternateProtocol(false)
+    , mSpdyPersistentSettings(false)
     , mSpdySendingChunkSize(ASpdySession::kSendingChunkSize)
     , mSpdySendBufferSize(ASpdySession::kTCPSendBufferSize)
     , mSpdyPingThreshold(PR_SecondsToInterval(58))
@@ -249,6 +252,7 @@ nsHttpHandler::Init()
         prefBranch->AddObserver(NETWORK_ENABLEIDN, this, true);
         prefBranch->AddObserver(BROWSER_PREF("disk_cache_ssl"), this, true);
         prefBranch->AddObserver(DONOTTRACK_HEADER_ENABLED, this, true);
+        prefBranch->AddObserver(DONOTTRACK_HEADER_VALUE, this, true);
         prefBranch->AddObserver(TELEMETRY_ENABLED, this, true);
 
         PrefsChanged(prefBranch, nullptr);
@@ -381,7 +385,7 @@ nsHttpHandler::AddStandardRequestHeaders(nsHttpHeaderArray *request)
     // Add the "Do-Not-Track" header
     if (mDoNotTrackEnabled) {
       rv = request->SetHeader(nsHttp::DoNotTrack,
-                              NS_LITERAL_CSTRING("1"));
+                              nsPrintfCString("%d", mDoNotTrackValue));
       if (NS_FAILED(rv)) return rv;
     }
 
@@ -638,7 +642,9 @@ nsHttpHandler::InitUserAgentComponents()
 
     bool isTablet;
     nsresult rv = infoService->GetPropertyAsBool(NS_LITERAL_STRING("tablet"), &isTablet);
-    if (NS_FAILED(rv) || !isTablet)
+    if (NS_SUCCEEDED(rv) && isTablet)
+        mCompatDevice.AssignLiteral("Tablet");
+    else
         mCompatDevice.AssignLiteral("Mobile");
 #endif
 
@@ -1097,6 +1103,13 @@ nsHttpHandler::PrefsChanged(nsIPrefBranch *prefs, const char *pref)
             mUseAlternateProtocol = cVar;
     }
 
+    if (PREF_CHANGED(HTTP_PREF("spdy.persistent-settings"))) {
+        rv = prefs->GetBoolPref(HTTP_PREF("spdy.persistent-settings"),
+                                &cVar);
+        if (NS_SUCCEEDED(rv))
+            mSpdyPersistentSettings = cVar;
+    }
+
     if (PREF_CHANGED(HTTP_PREF("spdy.timeout"))) {
         rv = prefs->GetIntPref(HTTP_PREF("spdy.timeout"), &val);
         if (NS_SUCCEEDED(rv))
@@ -1213,6 +1226,13 @@ nsHttpHandler::PrefsChanged(nsIPrefBranch *prefs, const char *pref)
         rv = prefs->GetBoolPref(DONOTTRACK_HEADER_ENABLED, &cVar);
         if (NS_SUCCEEDED(rv)) {
             mDoNotTrackEnabled = cVar;
+        }
+    }
+    if (PREF_CHANGED(DONOTTRACK_HEADER_VALUE)) {
+        val = 1;
+        rv = prefs->GetIntPref(DONOTTRACK_HEADER_VALUE, &val);
+        if (NS_SUCCEEDED(rv)) {
+            mDoNotTrackValue = val;
         }
     }
 

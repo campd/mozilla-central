@@ -4,6 +4,8 @@
 
 #include "nsWyciwyg.h"
 
+#include "base/compiler_specific.h"
+
 #include "mozilla/net/NeckoChild.h"
 #include "WyciwygChannelChild.h"
 #include "mozilla/dom/TabChild.h"
@@ -39,7 +41,7 @@ WyciwygChannelChild::WyciwygChannelChild()
   , mState(WCC_NEW)
   , mIPCOpen(false)
   , mSentAppData(false)
-  , mEventQ(NS_ISUPPORTS_CAST(nsIWyciwygChannel*, this))
+  , ALLOW_THIS_IN_INITIALIZER_LIST(mEventQ(NS_ISUPPORTS_CAST(nsIWyciwygChannel*, this)))
 {
   LOG(("Creating WyciwygChannelChild @%x\n", this));
 }
@@ -603,6 +605,10 @@ WyciwygChannelChild::AsyncOpen(nsIStreamListener *aListener, nsISupports *aConte
   SerializeURI(mOriginalURI, originalURI);
 
   mozilla::dom::TabChild* tabChild = GetTabChild(this);
+  if (MissingRequiredTabChild(tabChild, "wyciwyg")) {
+    return NS_ERROR_ILLEGAL_VALUE;
+  }
+
   SendAsyncOpen(originalURI, mLoadFlags, IPC::SerializedLoadContext(this), tabChild);
 
   mSentAppData = true;

@@ -18,6 +18,7 @@ namespace js {
 namespace ion {
 
 class CodeGenerator;
+class CallInfo;
 
 class IonBuilder : public MIRGenerator
 {
@@ -171,7 +172,7 @@ class IonBuilder : public MIRGenerator
 
     bool build();
     bool buildInline(IonBuilder *callerBuilder, MResumePoint *callerResumePoint,
-                     MDefinition *thisDefn, MDefinitionVector &args);
+                     CallInfo &callInfo);
 
   private:
     bool traverseBytecode();
@@ -188,8 +189,8 @@ class IonBuilder : public MIRGenerator
     }
 
     JSFunction *getSingleCallTarget(types::StackTypeSet *calleeTypes);
-    unsigned getPolyCallTargets(types::StackTypeSet *calleeTypes,
-                                AutoObjectVector &targets, uint32_t maxTargets);
+    bool getPolyCallTargets(types::StackTypeSet *calleeTypes,
+                            AutoObjectVector &targets, uint32_t maxTargets);
     bool canInlineTarget(JSFunction *target);
 
     void popCfgStack();
@@ -283,6 +284,7 @@ class IonBuilder : public MIRGenerator
 
     MDefinition *walkScopeChain(unsigned hops);
 
+    MInstruction *addConvertElementsToDoubles(MDefinition *elements);
     MInstruction *addBoundsCheck(MDefinition *index, MDefinition *length);
     MInstruction *addShapeGuard(MDefinition *obj, const UnrootedShape shape, BailoutKind bailoutKind);
 
@@ -307,6 +309,10 @@ class IonBuilder : public MIRGenerator
     bool getPropTryPolymorphic(bool *emitted, HandlePropertyName name, HandleId id,
                                types::StackTypeSet *barrier, types::StackTypeSet *types,
                                TypeOracle::Unary unary, TypeOracle::UnaryTypes unaryTypes);
+
+    // Typed array helpers.
+    MInstruction *getTypedArrayLength(MDefinition *obj);
+    MInstruction *getTypedArrayElements(MDefinition *obj);
 
     bool jsop_add(MDefinition *left, MDefinition *right);
     bool jsop_bitnot();
@@ -380,71 +386,72 @@ class IonBuilder : public MIRGenerator
     };
 
     // Inlining helpers.
-    bool discardCallArgs(uint32_t argc, MDefinitionVector &argv, MBasicBlock *bb);
-    bool discardCall(uint32_t argc, MDefinitionVector &argv, MBasicBlock *bb);
     types::StackTypeSet *getInlineReturnTypeSet();
     MIRType getInlineReturnType();
-    types::StackTypeSet *getInlineArgTypeSet(uint32_t argc, uint32_t arg);
-    MIRType getInlineArgType(uint32_t argc, uint32_t arg);
+    types::StackTypeSet *getInlineThisTypeSet(CallInfo &callInfo);
+    MIRType getInlineThisType(CallInfo &callInfo);
+    types::StackTypeSet *getInlineArgTypeSet(CallInfo &callInfo, uint32_t arg);
+    MIRType getInlineArgType(CallInfo &callInfo, uint32_t arg);
 
     // Array natives.
-    InliningStatus inlineArray(uint32_t argc, bool constructing);
-    InliningStatus inlineArrayPopShift(MArrayPopShift::Mode mode, uint32_t argc, bool constructing);
-    InliningStatus inlineArrayPush(uint32_t argc, bool constructing);
-    InliningStatus inlineArrayConcat(uint32_t argc, bool constructing);
+    InliningStatus inlineArray(CallInfo &callInfo);
+    InliningStatus inlineArrayPopShift(CallInfo &callInfo, MArrayPopShift::Mode mode);
+    InliningStatus inlineArrayPush(CallInfo &callInfo);
+    InliningStatus inlineArrayConcat(CallInfo &callInfo);
 
     // Math natives.
-    InliningStatus inlineMathAbs(uint32_t argc, bool constructing);
-    InliningStatus inlineMathFloor(uint32_t argc, bool constructing);
-    InliningStatus inlineMathRound(uint32_t argc, bool constructing);
-    InliningStatus inlineMathSqrt(uint32_t argc, bool constructing);
-    InliningStatus inlineMathMinMax(bool max, uint32_t argc, bool constructing);
-    InliningStatus inlineMathPow(uint32_t argc, bool constructing);
-    InliningStatus inlineMathRandom(uint32_t argc, bool constructing);
-    InliningStatus inlineMathImul(uint32_t argc, bool constructing);
-    InliningStatus inlineMathFunction(MMathFunction::Function function, uint32_t argc,
-                                      bool constructing);
+    InliningStatus inlineMathAbs(CallInfo &callInfo);
+    InliningStatus inlineMathFloor(CallInfo &callInfo);
+    InliningStatus inlineMathRound(CallInfo &callInfo);
+    InliningStatus inlineMathSqrt(CallInfo &callInfo);
+    InliningStatus inlineMathMinMax(CallInfo &callInfo, bool max);
+    InliningStatus inlineMathPow(CallInfo &callInfo);
+    InliningStatus inlineMathRandom(CallInfo &callInfo);
+    InliningStatus inlineMathImul(CallInfo &callInfo);
+    InliningStatus inlineMathFunction(CallInfo &callInfo, MMathFunction::Function function);
 
     // String natives.
-    InliningStatus inlineStringObject(uint32_t argc, bool constructing);
-    InliningStatus inlineStrCharCodeAt(uint32_t argc, bool constructing);
-    InliningStatus inlineStrFromCharCode(uint32_t argc, bool constructing);
-    InliningStatus inlineStrCharAt(uint32_t argc, bool constructing);
+    InliningStatus inlineStringObject(CallInfo &callInfo);
+    InliningStatus inlineStrCharCodeAt(CallInfo &callInfo);
+    InliningStatus inlineStrFromCharCode(CallInfo &callInfo);
+    InliningStatus inlineStrCharAt(CallInfo &callInfo);
 
     // RegExp natives.
-    InliningStatus inlineRegExpTest(uint32_t argc, bool constructing);
+    InliningStatus inlineRegExpTest(CallInfo &callInfo);
 
-    InliningStatus inlineNativeCall(JSNative native, uint32_t argc, bool constructing);
+    // Parallel Array.
+    InliningStatus inlineUnsafeSetElement(CallInfo &callInfo);
+    bool inlineUnsafeSetDenseArrayElement(CallInfo &callInfo, uint32_t base);
+    bool inlineUnsafeSetTypedArrayElement(CallInfo &callInfo, uint32_t base, int arrayType);
+    InliningStatus inlineForceSequentialOrInParallelSection(CallInfo &callInfo);
+    InliningStatus inlineNewDenseArray(CallInfo &callInfo);
+    InliningStatus inlineNewDenseArrayForSequentialExecution(CallInfo &callInfo);
+    InliningStatus inlineNewDenseArrayForParallelExecution(CallInfo &callInfo);
 
-    bool jsop_call_inline(HandleFunction callee, uint32_t argc, bool constructing,
-                          MConstant *constFun, MBasicBlock *bottom,
+    InliningStatus inlineThrowError(CallInfo &callInfo);
+    InliningStatus inlineDump(CallInfo &callInfo);
+
+    InliningStatus inlineNativeCall(CallInfo &callInfo, JSNative native);
+
+    // Call functions
+    bool jsop_call_inline(HandleFunction callee, CallInfo &callInfo, MBasicBlock *bottom,
                           Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns);
-    bool inlineScriptedCall(AutoObjectVector &targets, AutoObjectVector &originals,
-                            uint32_t argc, bool constructing,
-                            types::StackTypeSet *types, types::StackTypeSet *barrier);
-    bool makeInliningDecision(AutoObjectVector &targets, uint32_t argc);
+    bool inlineScriptedCalls(AutoObjectVector &targets, AutoObjectVector &originals,
+                             CallInfo &callInfo);
+    bool inlineScriptedCall(HandleFunction target, CallInfo &callInfo);
+    bool makeInliningDecision(AutoObjectVector &targets);
 
     bool anyFunctionIsCloneAtCallsite(types::StackTypeSet *funTypes);
     MDefinition *makeCallsiteClone(HandleFunction target, MDefinition *fun);
-    void popFormals(uint32_t argc, MDefinition **fun, MPassArg **thisArg,
-                    Vector<MPassArg *> *args);
-    MCall *makeCallHelper(HandleFunction target,  types::StackTypeSet *calleeTypes,
-                          bool constructing, bool cloneAtCallsite,
-                          MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args);
-    MCall *makeCallHelper(HandleFunction target,  types::StackTypeSet *calleeTypes,
-                          uint32_t argc, bool constructing, bool cloneAtCallsite);
-    bool makeCallBarrier(HandleFunction target,  types::StackTypeSet *calleeTypes,
-                         uint32_t argc, bool constructing, bool cloneAtCallsite,
-                         types::StackTypeSet *types, types::StackTypeSet *barrier);
-    bool makeCallBarrier(HandleFunction target, types::StackTypeSet *calleeTypes,
-                         bool constructing, bool cloneAtCallsite,
-                         MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args,
-                         types::StackTypeSet *types, types::StackTypeSet *barrier);
-    bool makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
-                  uint32_t argc, bool constructing, bool cloneAtCallsite);
-    bool makeCall(HandleFunction target, types::StackTypeSet *calleeTypes,
-                  bool constructing, bool cloneAtCallsite,
-                  MDefinition *fun, MPassArg *thisArg, Vector<MPassArg *> &args);
+    MCall *makeCallHelper(HandleFunction target, CallInfo &callInfo,
+                          types::StackTypeSet *calleeTypes, bool cloneAtCallsite);
+    bool makeCallBarrier(HandleFunction target,  CallInfo &callInfo,
+                         types::StackTypeSet *calleeTypes, bool cloneAtCallsite);
+    bool makeCall(HandleFunction target, CallInfo &callInfo, 
+                  types::StackTypeSet *calleeTypes, bool cloneAtCallsite);
+
+    MDefinition *patchInlinedReturn(CallInfo &callInfo, MBasicBlock *exit, MBasicBlock *bottom);
+    MDefinition *patchInlinedReturns(CallInfo &callInfo, MIRGraphExits &exits, MBasicBlock *bottom);
 
     inline bool TestCommonPropFunc(JSContext *cx, types::StackTypeSet *types,
                                    HandleId id, JSFunction **funcp,
@@ -454,13 +461,11 @@ class IonBuilder : public MIRGenerator
     bool annotateGetPropertyCache(JSContext *cx, MDefinition *obj, MGetPropertyCache *getPropCache,
                                   types::StackTypeSet *objTypes, types::StackTypeSet *pushedTypes);
 
-    MGetPropertyCache *checkInlineableGetPropertyCache(uint32_t argc);
+    MGetPropertyCache *getInlineableGetPropertyCache(CallInfo &callInfo);
 
     MPolyInlineDispatch *
-    makePolyInlineDispatch(JSContext *cx, int argc,
-                           MGetPropertyCache *getPropCache,
-                           types::StackTypeSet *types, types::StackTypeSet *barrier,
-                           MBasicBlock *bottom,
+    makePolyInlineDispatch(JSContext *cx, CallInfo &callInfo,
+                           MGetPropertyCache *getPropCache, MBasicBlock *bottom,
                            Vector<MDefinition *, 8, IonAllocPolicy> &retvalDefns);
 
     const types::StackTypeSet *cloneTypeSet(const types::StackTypeSet *types);
@@ -521,6 +526,184 @@ class IonBuilder : public MIRGenerator
     // If this script can use a lazy arguments object, it will be pre-created
     // here.
     MInstruction *lazyArguments_;
+};
+
+class CallInfo
+{
+    types::StackTypeSet *barrier_;
+    types::StackTypeSet *types_;
+
+    MDefinition *fun_;
+    MDefinition *thisArg_;
+    Vector<MDefinition *> args_;
+
+    bool constructing_;
+
+  public:
+    CallInfo(JSContext *cx, bool constructing)
+      : barrier_(NULL),
+        types_(NULL),
+        fun_(NULL),
+        thisArg_(NULL),
+        args_(cx),
+        constructing_(constructing)
+    { }
+
+    CallInfo(JSContext *cx, bool constructing,
+             types::StackTypeSet *types, types::StackTypeSet *barrier)
+      : barrier_(barrier),
+        types_(types),
+        fun_(NULL),
+        thisArg_(NULL),
+        args_(cx),
+        constructing_(constructing)
+    { }
+
+    bool init(CallInfo &callInfo) {
+        JS_ASSERT(constructing_ == callInfo.constructing());
+
+        fun_ = callInfo.fun();
+        thisArg_ = callInfo.thisArg();
+
+        if (!args_.append(callInfo.argv()->begin(), callInfo.argv()->end()))
+            return false;
+
+        if (callInfo.hasTypeInfo())
+            setTypeInfo(callInfo.types(), callInfo.barrier());
+
+        return true;
+    }
+
+    bool init(MBasicBlock *current, uint32_t argc) {
+        JS_ASSERT(args_.length() == 0);
+
+        // Get the arguments in the right order
+        if (!args_.reserve(argc))
+            return false;
+        for (int32_t i = argc; i > 0; i--) {
+            if (!args_.append(current->peek(-i)))
+                return false;
+        }
+        current->popn(argc);
+
+        // Get |this| and |fun|
+        setThis(current->pop());
+        setFun(current->pop());
+
+        return true;
+    }
+
+    void popFormals(MBasicBlock *current) {
+        current->popn(argc() + 2);
+    }
+
+    void pushFormals(MBasicBlock *current) {
+        current->push(fun());
+        current->push(thisArg());
+
+        for (uint32_t i = 0; i < argc(); i++)
+            current->push(getArg(i));
+    }
+
+    void setTypeInfo(types::StackTypeSet *types, types::StackTypeSet *barrier) {
+        types_ = types;
+        barrier_ = barrier;
+    }
+
+    bool hasTypeInfo() const {
+        JS_ASSERT_IF(barrier_, types_);
+        return types_;
+    }
+
+    uint32_t argc() {
+        return args_.length();
+    }
+
+    void setArgs(Vector<MDefinition *> *args) {
+        JS_ASSERT(args_.length() == 0);
+        args_.append(args->begin(), args->end());
+    }
+
+    Vector<MDefinition *> *argv() {
+        return &args_;
+    }
+
+    MDefinition *getArg(uint32_t i) {
+        JS_ASSERT(i < argc());
+        return args_[i];
+    }
+
+    MDefinition *thisArg() {
+        JS_ASSERT(thisArg_);
+        return thisArg_;
+    }
+
+    void setThis(MDefinition *thisArg) {
+        thisArg_ = thisArg;
+    }
+
+    bool constructing() {
+        return constructing_;
+    }
+
+    types::StackTypeSet *types() {
+        return types_;
+    }
+
+    types::StackTypeSet *barrier() {
+        return barrier_;
+    }
+
+    void wrapArgs(MBasicBlock *current) {
+        thisArg_ = wrap(current, thisArg_);
+        for (uint32_t i = 0; i < argc(); i++)
+            args_[i] = wrap(current, args_[i]);
+    }
+
+    void unwrapArgs() {
+        thisArg_ = unwrap(thisArg_);
+        for (uint32_t i = 0; i < argc(); i++)
+            args_[i] = unwrap(args_[i]);
+    }
+
+    MDefinition *fun() const {
+        JS_ASSERT(fun_);
+        return fun_;
+    }
+
+    void setFun(MDefinition *fun) {
+        JS_ASSERT(!fun->isPassArg());
+        fun_ = fun;
+    }
+
+    bool isWrapped() {
+        bool wrapped = thisArg()->isPassArg();
+
+#if DEBUG
+        for (uint32_t i = 0; i < argc(); i++)
+            JS_ASSERT(args_[i]->isPassArg() == wrapped);
+#endif
+
+        return wrapped;
+    }
+
+  private:
+    static MDefinition *unwrap(MDefinition *arg) {
+        JS_ASSERT(arg->isPassArg());
+        MPassArg *passArg = arg->toPassArg();
+        MBasicBlock *block = passArg->block();
+        MDefinition *wrapped = passArg->getArgument();
+        wrapped->setFoldedUnchecked();
+        passArg->replaceAllUsesWith(wrapped);
+        block->discard(passArg);
+        return wrapped;
+    }
+    static MDefinition *wrap(MBasicBlock *current, MDefinition *arg) {
+        JS_ASSERT(!arg->isPassArg());
+        MPassArg *passArg = MPassArg::New(arg);
+        current->add(passArg);
+        return passArg;
+    }
 };
 
 } // namespace ion

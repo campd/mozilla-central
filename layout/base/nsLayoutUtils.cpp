@@ -77,6 +77,7 @@
 #include "nsSVGIntegrationUtils.h"
 #include "nsSVGForeignObjectFrame.h"
 #include "nsSVGOuterSVGFrame.h"
+#include "nsSVGTextFrame2.h"
 #include "nsStyleStructInlines.h"
 
 #include "mozilla/dom/PBrowserChild.h"
@@ -1153,6 +1154,40 @@ nsLayoutUtils::GetNearestScrollableFrame(nsIFrame* aFrame)
   return nullptr;
 }
 
+// static
+nsRect
+nsLayoutUtils::GetScrolledRect(nsIFrame* aScrolledFrame,
+                               const nsRect& aScrolledFrameOverflowArea,
+                               const nsSize& aScrollPortSize,
+                               uint8_t aDirection)
+{
+  nscoord x1 = aScrolledFrameOverflowArea.x,
+          x2 = aScrolledFrameOverflowArea.XMost(),
+          y1 = aScrolledFrameOverflowArea.y,
+          y2 = aScrolledFrameOverflowArea.YMost();
+  if (y1 < 0) {
+    y1 = 0;
+  }
+  if (aDirection != NS_STYLE_DIRECTION_RTL) {
+    if (x1 < 0) {
+      x1 = 0;
+    }
+  } else {
+    if (x2 > aScrollPortSize.width) {
+      x2 = aScrollPortSize.width;
+    }
+    // When the scrolled frame chooses a size larger than its available width (because
+    // its padding alone is larger than the available width), we need to keep the
+    // start-edge of the scroll frame anchored to the start-edge of the scrollport.
+    // When the scrolled frame is RTL, this means moving it in our left-based
+    // coordinate system, so we need to compensate for its extra width here by
+    // effectively repositioning the frame.
+    nscoord extraWidth = std::max(0, aScrolledFrame->GetSize().width - aScrollPortSize.width);
+    x2 += extraWidth;
+  }
+  return nsRect(x1, y1, x2 - x1, y2 - y1);
+}
+
 //static
 bool
 nsLayoutUtils::HasPseudoStyle(nsIContent* aContent,
@@ -1277,15 +1312,14 @@ nsLayoutUtils::GetEventCoordinatesRelativeTo(nsIWidget* aWidget,
   /* If we encountered a transform, we can't do simple arithmetic to figure
    * out how to convert back to aFrame's coordinates and must use the CTM.
    */
-  if (transformFound) {
+  if (transformFound || aFrame->IsSVGText()) {
     return TransformRootPointToFrame(aFrame, widgetToView);
   }
 
   /* Otherwise, all coordinate systems are translations of one another,
-   * so we can just subtract out the different.
+   * so we can just subtract out the difference.
    */
-  nsPoint offset = aFrame->GetOffsetToCrossDoc(rootFrame);
-  return widgetToView - offset;
+  return widgetToView - aFrame->GetOffsetToCrossDoc(rootFrame);
 }
 
 nsIFrame*
@@ -1503,15 +1537,35 @@ TransformGfxRectToAncestor(nsIFrame *aFrame,
   return ctm.TransformBounds(aRect);
 }
 
-nsPoint
-nsLayoutUtils::TransformRootPointToFrame(nsIFrame *aFrame,
-                                         const nsPoint &aPoint)
+static nsSVGTextFrame2*
+GetContainingSVGTextFrame(nsIFrame* aFrame)
 {
+  if (!aFrame->IsSVGText()) {
+    return nullptr;
+  }
+
+  return static_cast<nsSVGTextFrame2*>
+    (nsLayoutUtils::GetClosestFrameOfType(aFrame->GetParent(),
+                                          nsGkAtoms::svgTextFrame2));
+}
+
+nsPoint
+nsLayoutUtils::TransformAncestorPointToFrame(nsIFrame* aFrame,
+                                             const nsPoint& aPoint,
+                                             nsIFrame* aAncestor)
+{
+    nsSVGTextFrame2* text = GetContainingSVGTextFrame(aFrame);
+
     float factor = aFrame->PresContext()->AppUnitsPerDevPixel();
     gfxPoint result(NSAppUnitsToFloatPixels(aPoint.x, factor),
                     NSAppUnitsToFloatPixels(aPoint.y, factor));
 
-    result = TransformGfxPointFromAncestor(aFrame, result, nullptr);
+    if (text) {
+        result = TransformGfxPointFromAncestor(text, result, aAncestor);
+        result = text->TransformFramePointToTextChild(result, aFrame);
+    } else {
+        result = TransformGfxPointFromAncestor(aFrame, result, nullptr);
+    }
 
     return nsPoint(NSFloatPixelsToAppUnits(float(result.x), factor),
                    NSFloatPixelsToAppUnits(float(result.y), factor));
@@ -1522,13 +1576,20 @@ nsLayoutUtils::TransformAncestorRectToFrame(nsIFrame* aFrame,
                                             const nsRect &aRect,
                                             const nsIFrame* aAncestor)
 {
+    nsSVGTextFrame2* text = GetContainingSVGTextFrame(aFrame);
+
     float srcAppUnitsPerDevPixel = aAncestor->PresContext()->AppUnitsPerDevPixel();
     gfxRect result(NSAppUnitsToFloatPixels(aRect.x, srcAppUnitsPerDevPixel),
                    NSAppUnitsToFloatPixels(aRect.y, srcAppUnitsPerDevPixel),
                    NSAppUnitsToFloatPixels(aRect.width, srcAppUnitsPerDevPixel),
                    NSAppUnitsToFloatPixels(aRect.height, srcAppUnitsPerDevPixel));
 
-    result = TransformGfxRectFromAncestor(aFrame, result, aAncestor);
+    if (text) {
+      result = TransformGfxRectFromAncestor(text, result, aAncestor);
+      result = text->TransformFrameRectToTextChild(result, aFrame);
+    } else {
+      result = TransformGfxRectFromAncestor(aFrame, result, aAncestor);
+    }
 
     float destAppUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
     return nsRect(NSFloatPixelsToAppUnits(float(result.x), destAppUnitsPerDevPixel),
@@ -1542,13 +1603,21 @@ nsLayoutUtils::TransformFrameRectToAncestor(nsIFrame* aFrame,
                                             const nsRect& aRect,
                                             const nsIFrame* aAncestor)
 {
-  float srcAppUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
-  gfxRect result(NSAppUnitsToFloatPixels(aRect.x, srcAppUnitsPerDevPixel),
-                 NSAppUnitsToFloatPixels(aRect.y, srcAppUnitsPerDevPixel),
-                 NSAppUnitsToFloatPixels(aRect.width, srcAppUnitsPerDevPixel),
-                 NSAppUnitsToFloatPixels(aRect.height, srcAppUnitsPerDevPixel));
+  nsSVGTextFrame2* text = GetContainingSVGTextFrame(aFrame);
 
-  result = TransformGfxRectToAncestor(aFrame, result, aAncestor);
+  float srcAppUnitsPerDevPixel = aFrame->PresContext()->AppUnitsPerDevPixel();
+  gfxRect result;
+
+  if (text) {
+    result = text->TransformFrameRectFromTextChild(aRect, aFrame);
+    result = TransformGfxRectToAncestor(text, result, aAncestor);
+  } else {
+    result = gfxRect(NSAppUnitsToFloatPixels(aRect.x, srcAppUnitsPerDevPixel),
+                     NSAppUnitsToFloatPixels(aRect.y, srcAppUnitsPerDevPixel),
+                     NSAppUnitsToFloatPixels(aRect.width, srcAppUnitsPerDevPixel),
+                     NSAppUnitsToFloatPixels(aRect.height, srcAppUnitsPerDevPixel));
+    result = TransformGfxRectToAncestor(aFrame, result, aAncestor);
+  }
 
   float destAppUnitsPerDevPixel = aAncestor->PresContext()->AppUnitsPerDevPixel();
   return nsRect(NSFloatPixelsToAppUnits(float(result.x), destAppUnitsPerDevPixel),
@@ -1972,6 +2041,9 @@ nsLayoutUtils::PaintFrame(nsRenderingContext* aRenderingContext, nsIFrame* aFram
   }
   if (aFlags & PAINT_NO_COMPOSITE) {
     flags |= nsDisplayList::PAINT_NO_COMPOSITE;
+  }
+  if (aFlags & PAINT_NO_CLEAR_INVALIDATIONS) {
+    flags |= nsDisplayList::PAINT_NO_CLEAR_INVALIDATIONS;
   }
 
   list.PaintRoot(&builder, aRenderingContext, flags);
@@ -5253,8 +5325,18 @@ nsLayoutUtils::InflationMinFontSizeFor(const nsIFrame *aFrame)
 float
 nsLayoutUtils::FontSizeInflationFor(const nsIFrame *aFrame)
 {
+  if (aFrame->IsSVGText()) {
+    const nsIFrame* container = aFrame;
+    while (container->GetType() != nsGkAtoms::svgTextFrame2) {
+      container = container->GetParent();
+    }
+    NS_ASSERTION(container, "expected to find an ancestor nsSVGTextFrame2");
+    return
+      static_cast<const nsSVGTextFrame2*>(container)->GetFontSizeScaleFactor();
+  }
+
   if (!FontSizeInflationEnabled(aFrame->PresContext())) {
-    return 1.0;
+    return 1.0f;
   }
 
   return FontSizeInflationInner(aFrame, InflationMinFontSizeFor(aFrame));

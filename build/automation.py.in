@@ -53,6 +53,7 @@ _IS_CYGWIN = False
 #expand _IS_TEST_BUILD = __IS_TEST_BUILD__
 #expand _IS_DEBUG_BUILD = __IS_DEBUG_BUILD__
 #expand _CRASHREPORTER = __CRASHREPORTER__ == 1
+#expand _IS_ASAN = __IS_ASAN__ == 1
 
 
 if _IS_WIN32:
@@ -121,6 +122,7 @@ class Automation(object):
   IS_TEST_BUILD = _IS_TEST_BUILD
   IS_DEBUG_BUILD = _IS_DEBUG_BUILD
   CRASHREPORTER = _CRASHREPORTER
+  IS_ASAN = _IS_ASAN
 
   # timeout, in seconds
   DEFAULT_TIMEOUT = 60.0
@@ -432,7 +434,6 @@ class Automation(object):
       {'allowXULXBL':[(l.host, 'noxul' not in l.options) for l in locations]});
 
     part = """\
-user_pref("social.skipLoadingProviders", true);
 user_pref("browser.console.showInPanel", true);
 user_pref("browser.dom.window.dump.enabled", true);
 user_pref("browser.firstrun.show.localepicker", false);
@@ -441,6 +442,7 @@ user_pref("browser.startup.page", 0); // use about:blank, not browser.startup.ho
 user_pref("browser.ui.layout.tablet", 0); // force tablet UI off
 user_pref("dom.allow_scripts_to_close_windows", true);
 user_pref("dom.disable_open_during_load", false);
+user_pref("dom.experimental_forms", true); // on for testing
 user_pref("dom.max_script_run_time", 0); // no slow script dialogs
 user_pref("hangmonitor.timeout", 0); // no hang monitor
 user_pref("dom.max_chrome_script_run_time", 0);
@@ -454,6 +456,7 @@ user_pref("browser.warnOnQuit", false);
 user_pref("accessibility.typeaheadfind.autostart", false);
 user_pref("javascript.options.showInConsole", true);
 user_pref("devtools.errorconsole.enabled", true);
+user_pref("devtools.debugger.remote-port", 6023);
 user_pref("layout.debug.enable_data_xbl", true);
 user_pref("browser.EULA.override", true);
 user_pref("javascript.options.jit_hardening", true);
@@ -486,6 +489,7 @@ user_pref("extensions.getAddons.cache.enabled", false);
 user_pref("extensions.installDistroAddons", false);
 
 user_pref("extensions.testpilot.runStudies", false);
+user_pref("extensions.testpilot.alreadyCustomizedToolbar", true);
 
 user_pref("geo.wifi.uri", "http://%(server)s/tests/dom/tests/mochitest/geolocation/network_geolocation.sjs");
 user_pref("geo.wifi.testing", true);
@@ -525,6 +529,9 @@ user_pref("network.activity.blipIntervalMilliseconds", 250);
 
 // Don't allow the Data Reporting service to prompt for policy acceptance.
 user_pref("datareporting.policy.dataSubmissionPolicyBypassAcceptance", true);
+
+// Make sure CSS error reporting is enabled for tests
+user_pref("layout.css.report_errors", true);
 """ % { "server" : self.webServer + ":" + str(self.httpPort) }
     prefs.append(part)
 
@@ -809,6 +816,23 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
     env['GNOME_DISABLE_CRASH_DIALOG'] = '1'
     env['XRE_NO_WINDOWS_CRASH_DIALOG'] = '1'
     env['NS_TRACE_MALLOC_DISABLE_STACKS'] = '1'
+
+    # ASan specific environment stuff
+    if self.IS_ASAN and (self.IS_LINUX or self.IS_MAC):
+      try:
+        totalMemory = int(os.popen("free").readlines()[1].split()[1])
+
+        # Only 2 GB RAM or less available? Use custom ASan options to reduce
+        # the amount of resources required to do the tests. Standard options 
+        # will otherwise lead to OOM conditions on the current test slaves.
+        if totalMemory <= 1024 * 1024 * 2:
+          self.log.info("INFO | automation.py | ASan running in low-memory configuration")
+          env["ASAN_OPTIONS"] = "quarantine_size=50331648:redzone=64"
+      except OSError,err:
+        self.log.info("Failed determine available memory, disabling ASan low-memory configuration: %s", err.strerror)
+      except:
+        self.log.info("Failed determine available memory, disabling ASan low-memory configuration")
+
     return env
 
   if IS_WIN32:
@@ -1260,3 +1284,7 @@ user_pref("camino.use_system_proxy_settings", false); // Camino-only, harmless t
 
     else:
       self.log.info("INFO | automation.py | Cannot install extension, invalid extensionSource at: %s", extensionSource)
+
+  def elf_arm(self, filename):
+    data = open(filename, 'rb').read(20)
+    return data[:4] == "\x7fELF" and ord(data[18]) == 40 # EM_ARM

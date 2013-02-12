@@ -337,7 +337,7 @@ static void
 WeakObjectSlotBarrierPost(JSObject *obj, size_t slot, const char *desc)
 {
 #ifdef JSGC_GENERATIONAL
-    obj->compartment()->gcStoreBuffer.putGeneric(WeakObjectSlotRef(obj, slot, desc));
+    obj->runtime()->gcStoreBuffer.putGeneric(WeakObjectSlotRef(obj, slot, desc));
 #endif
 }
 
@@ -392,11 +392,11 @@ ArrayBufferObject::create(JSContext *cx, uint32_t nbytes, uint8_t *contents)
 {
     SkipRoot skip(cx, &contents);
 
-    RootedObject obj(cx, NewBuiltinClassInstance(cx, &ArrayBufferObject::protoClass));
+    RootedObject obj(cx, NewBuiltinClassInstance(cx, &ArrayBufferClass));
     if (!obj)
         return NULL;
     JS_ASSERT(obj->getAllocKind() == gc::FINALIZE_OBJECT16_BACKGROUND);
-    JS_ASSERT(obj->getClass() == &ArrayBufferObject::protoClass);
+    JS_ASSERT(obj->getClass() == &ArrayBufferClass);
 
     js::Shape *empty = EmptyShape::getInitialShape(cx, &ArrayBufferClass,
                                                    obj->getProto(), obj->getParent(),
@@ -1286,7 +1286,7 @@ class TypedArrayTemplate
         if (ValueIsSpecial(obj, &idval, &sid, cx))
             return obj_getSpecial(cx, obj, receiver, sid, vp);
 
-        JSAtom *atom = ToAtom(cx, idval);
+        JSAtom *atom = ToAtom<CanGC>(cx, idval);
         if (!atom)
             return false;
 
@@ -1538,32 +1538,57 @@ class TypedArrayTemplate
     }
 
     static JSObject *
-    makeInstance(JSContext *cx, HandleObject bufobj, uint32_t byteOffset, uint32_t len,
-                 HandleObject proto)
+    makeProtoInstance(JSContext *cx, HandleObject proto)
     {
+        JS_ASSERT(proto);
+
         RootedObject obj(cx, NewBuiltinClassInstance(cx, fastClass()));
         if (!obj)
             return NULL;
-        JS_ASSERT(obj->getAllocKind() == gc::FINALIZE_OBJECT8_BACKGROUND);
 
-        if (proto) {
-            types::TypeObject *type = proto->getNewType(cx);
-            if (!type)
+        types::TypeObject *type = proto->getNewType(cx, obj->getClass());
+        if (!type)
+            return NULL;
+        obj->setType(type);
+
+        return obj;
+    }
+
+    static JSObject *
+    makeTypedInstance(JSContext *cx, uint32_t len)
+    {
+        if (len * sizeof(NativeType) >= TypedArray::SINGLETON_TYPE_BYTE_LENGTH)
+            return NewBuiltinClassInstance(cx, fastClass(), SingletonObject);
+
+        jsbytecode *pc;
+        RootedScript script(cx, cx->stack.currentScript(&pc));
+        NewObjectKind newKind = script
+                                ? UseNewTypeForInitializer(cx, script, pc, fastClass())
+                                : GenericObject;
+        RootedObject obj(cx, NewBuiltinClassInstance(cx, fastClass(), newKind));
+
+        if (script) {
+            if (!types::SetInitializerObjectType(cx, script, pc, obj, newKind))
                 return NULL;
-            obj->setType(type);
-        } else if (cx->typeInferenceEnabled()) {
-            if (len * sizeof(NativeType) >= TypedArray::SINGLETON_TYPE_BYTE_LENGTH) {
-                if (!JSObject::setSingletonType(cx, obj))
-                    return NULL;
-            } else {
-                jsbytecode *pc;
-                RootedScript script(cx, cx->stack.currentScript(&pc));
-                if (script) {
-                    if (!types::SetInitializerObjectType(cx, script, pc, obj))
-                        return NULL;
-                }
-            }
         }
+
+        return obj;
+    }
+
+    static JSObject *
+    makeInstance(JSContext *cx, HandleObject bufobj, uint32_t byteOffset, uint32_t len,
+                 HandleObject proto)
+    {
+        RootedObject obj(cx);
+        if (proto)
+            obj = makeProtoInstance(cx, proto);
+        else if (cx->typeInferenceEnabled())
+            obj = makeTypedInstance(cx, len);
+        else
+            obj = NewBuiltinClassInstance(cx, fastClass());
+        if (!obj)
+            return NULL;
+        JS_ASSERT(obj->getAllocKind() == gc::FINALIZE_OBJECT8_BACKGROUND);
 
         obj->setSlot(TYPE_SLOT, Int32Value(ArrayTypeID()));
         obj->setSlot(BUFFER_SLOT, ObjectValue(*bufobj));
@@ -1724,8 +1749,8 @@ class TypedArrayTemplate
         unsigned flags = JSPROP_SHARED | JSPROP_GETTER | JSPROP_PERMANENT;
 
         Rooted<GlobalObject*> global(cx, cx->compartment->maybeGlobal());
-        RawObject getter = js_NewFunction(cx, NullPtr(), Getter<ValueGetter>, 0,
-                                          JSFunction::NATIVE_FUN, global, NullPtr());
+        RawObject getter = NewFunction(cx, NullPtr(), Getter<ValueGetter>, 0,
+                                       JSFunction::NATIVE_FUN, global, NullPtr());
         if (!getter)
             return false;
 
@@ -2501,7 +2526,7 @@ TypedArrayTemplate<double>::copyIndexToValue(JSObject *tarray, uint32_t index,
 }
 
 JSBool
-DataViewObject::construct(JSContext *cx, JSObject *bufobj, const CallArgs &args, JSObject *proto)
+DataViewObject::construct(JSContext *cx, JSObject *bufobj, const CallArgs &args, HandleObject proto)
 {
     if (!bufobj->isArrayBuffer()) {
         JS_ReportErrorNumber(cx, js_GetErrorMessage, NULL, JSMSG_NOT_EXPECTED_TYPE,
@@ -2585,7 +2610,7 @@ DataViewObject::class_constructor(JSContext *cx, unsigned argc, Value *vp)
         return true;
     }
 
-    return construct(cx, bufobj, args, NULL);
+    return construct(cx, bufobj, args, NullPtr());
 }
 
 /* static */ bool
@@ -3159,7 +3184,6 @@ Class js::ArrayBufferClass = {
         ArrayBufferObject::obj_deleteElement,
         ArrayBufferObject::obj_deleteSpecial,
         ArrayBufferObject::obj_enumerate,
-        NULL,       /* typeOf          */
         NULL,       /* thisObject      */
     }
 };
@@ -3294,11 +3318,9 @@ IMPL_TYPED_ARRAY_COMBINED_UNWRAPPERS(Float64, double, double)
     NULL,                    /* hasInstance */                                 \
     _typedArray::obj_trace,  /* trace       */                                 \
     {                                                                          \
-        NULL,       /* equality    */                                          \
         NULL,       /* outerObject */                                          \
         NULL,       /* innerObject */                                          \
         NULL,       /* iteratorObject  */                                      \
-        NULL,       /* unused      */                                          \
         false,      /* isWrappedNative */                                      \
     },                                                                         \
     {                                                                          \
@@ -3331,7 +3353,6 @@ IMPL_TYPED_ARRAY_COMBINED_UNWRAPPERS(Float64, double, double)
         _typedArray::obj_deleteElement,                                        \
         _typedArray::obj_deleteSpecial,                                        \
         _typedArray::obj_enumerate,                                            \
-        NULL,                /* typeOf      */                                 \
         NULL,                /* thisObject  */                                 \
     }                                                                          \
 }
@@ -3376,9 +3397,9 @@ InitTypedArrayClass(JSContext *cx)
 
     RootedFunction fun(cx);
     fun =
-        js_NewFunction(cx, NullPtr(),
-                       ArrayBufferObject::createTypedArrayFromBuffer<typename ArrayType::ThisType>,
-                       0, JSFunction::NATIVE_FUN, global, NullPtr());
+        NewFunction(cx, NullPtr(),
+                    ArrayBufferObject::createTypedArrayFromBuffer<typename ArrayType::ThisType>,
+                    0, JSFunction::NATIVE_FUN, global, NullPtr());
     if (!fun)
         return NULL;
 
@@ -3459,8 +3480,8 @@ InitArrayBufferClass(JSContext *cx)
 
     RootedId byteLengthId(cx, NameToId(cx->names().byteLength));
     unsigned flags = JSPROP_SHARED | JSPROP_GETTER | JSPROP_PERMANENT;
-    RawObject getter = js_NewFunction(cx, NullPtr(), ArrayBufferObject::byteLengthGetter, 0,
-                                      JSFunction::NATIVE_FUN, global, NullPtr());
+    RawObject getter = NewFunction(cx, NullPtr(), ArrayBufferObject::byteLengthGetter, 0,
+                                   JSFunction::NATIVE_FUN, global, NullPtr());
     if (!getter)
         return NULL;
 
@@ -3561,8 +3582,8 @@ DataViewObject::defineGetter(JSContext *cx, PropertyName *name, HandleObject pro
     unsigned flags = JSPROP_SHARED | JSPROP_GETTER | JSPROP_PERMANENT;
 
     Rooted<GlobalObject*> global(cx, cx->compartment->maybeGlobal());
-    JSObject *getter = js_NewFunction(cx, NullPtr(), DataViewObject::getter<ValueGetter>, 0,
-                                      JSFunction::NATIVE_FUN, global, NullPtr());
+    JSObject *getter = NewFunction(cx, NullPtr(), DataViewObject::getter<ValueGetter>, 0,
+                                   JSFunction::NATIVE_FUN, global, NullPtr());
     if (!getter)
         return false;
 
@@ -3605,8 +3626,8 @@ DataViewObject::initClass(JSContext *cx)
      * |new DataView(new otherWindow.ArrayBuffer())|, and install it in the
      * global for use by the DataView constructor.
      */
-    RootedFunction fun(cx, js_NewFunction(cx, NullPtr(), ArrayBufferObject::createDataViewForThis,
-                                          0, JSFunction::NATIVE_FUN, global, NullPtr()));
+    RootedFunction fun(cx, NewFunction(cx, NullPtr(), ArrayBufferObject::createDataViewForThis,
+                                       0, JSFunction::NATIVE_FUN, global, NullPtr()));
     if (!fun)
         return NULL;
 

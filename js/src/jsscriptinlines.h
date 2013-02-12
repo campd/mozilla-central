@@ -13,12 +13,12 @@
 #include "jsfun.h"
 #include "jsopcode.h"
 #include "jsscript.h"
-#include "jsscope.h"
 
 #include "vm/GlobalObject.h"
 #include "vm/RegExpObject.h"
+#include "vm/Shape.h"
 
-#include "jsscopeinlines.h"
+#include "vm/Shape-inl.h"
 
 namespace js {
 
@@ -157,11 +157,11 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
     if (!script)
         return;
 
-    JSCompartment *comp = script->compartment();
-    if (comp->needsBarrier()) {
-        JS_ASSERT(!comp->rt->isHeapBusy());
+    JS::Zone *zone = script->zone();
+    if (zone->needsBarrier()) {
+        JS_ASSERT(!zone->rt->isHeapBusy());
         js::UnrootedScript tmp = script;
-        MarkScriptUnbarriered(comp->barrierTracer(), &tmp, "write barrier");
+        MarkScriptUnbarriered(zone->barrierTracer(), &tmp, "write barrier");
         JS_ASSERT(tmp == script);
     }
 #endif
@@ -170,6 +170,12 @@ JSScript::writeBarrierPre(js::UnrootedScript script)
 inline void
 JSScript::writeBarrierPost(js::UnrootedScript script, void *addr)
 {
+}
+
+inline JSPrincipals *
+JSScript::principals()
+{
+    return compartment()->principals;
 }
 
 #endif /* jsscriptinlines_h___ */

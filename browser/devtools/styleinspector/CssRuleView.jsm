@@ -25,7 +25,7 @@ const FOCUS_BACKWARD = Ci.nsIFocusManager.MOVEFOCUS_BACKWARD;
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
-Cu.import("resource:///modules/devtools/Console.jsm");
+Cu.import("resource://gre/modules/devtools/Console.jsm");
 
 this.EXPORTED_SYMBOLS = ["CssRuleView",
                          "_ElementStyle",
@@ -831,7 +831,7 @@ this.CssRuleView = function CssRuleView(aWalker, aDoc, aStore)
   this.store = aStore;
   this.element = this.doc.createElementNS(XUL_NS, "vbox");
   this.element.setAttribute("tabindex", "0");
-  this.element.classList.add("ruleview");
+  this.element.className = "ruleview devtools-monospace";
   this.element.flex = 1;
 
   this._boundCopy = this._onCopy.bind(this);

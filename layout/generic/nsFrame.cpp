@@ -335,6 +335,18 @@ nsIFrame::IsVisibleConsideringAncestors(uint32_t aFlags) const
   return true;
 }
 
+void
+nsIFrame::FindCloserFrameForSelection(
+                                 nsPoint aPoint,
+                                 nsIFrame::FrameWithDistance* aCurrentBestFrame)
+{
+  if (nsLayoutUtils::PointIsCloserToRect(aPoint, mRect,
+                                         aCurrentBestFrame->mXDistance,
+                                         aCurrentBestFrame->mYDistance)) {
+    aCurrentBestFrame->mFrame = this;
+  }
+}
+
 static bool ApplyOverflowClipping(nsDisplayListBuilder* aBuilder,
                                     const nsIFrame* aFrame,
                                     const nsStyleDisplay* aDisp, 
@@ -2571,7 +2583,7 @@ nsFrame::IsSelectable(bool* aSelectable, uint8_t* aSelectStyle) const
   //
   // For instance, if the frame hierarchy is:
   //    AUTO     -> _MOZ_ALL -> NONE -> TEXT,     the returned value is _MOZ_ALL
-  //    TEXT     -> NONE     -> AUTO -> _MOZ_ALL, the returned value is NONE
+  //    TEXT     -> NONE     -> AUTO -> _MOZ_ALL, the returned value is TEXT
   //    _MOZ_ALL -> TEXT     -> AUTO -> AUTO,     the returned value is _MOZ_ALL
   //    AUTO     -> CELL     -> TEXT -> AUTO,     the returned value is TEXT
   //
@@ -2582,7 +2594,6 @@ nsFrame::IsSelectable(bool* aSelectable, uint8_t* aSelectStyle) const
     const nsStyleUIReset* userinterface = frame->GetStyleUIReset();
     switch (userinterface->mUserSelect) {
       case NS_STYLE_USER_SELECT_ALL:
-      case NS_STYLE_USER_SELECT_NONE:
       case NS_STYLE_USER_SELECT_MOZ_ALL:
         // override the previous values
         selectStyle = userinterface->mUserSelect;
@@ -2603,9 +2614,6 @@ nsFrame::IsSelectable(bool* aSelectable, uint8_t* aSelectStyle) const
   else
   if (selectStyle == NS_STYLE_USER_SELECT_MOZ_ALL)
     selectStyle = NS_STYLE_USER_SELECT_ALL;
-  else
-  if (selectStyle == NS_STYLE_USER_SELECT_MOZ_NONE)
-    selectStyle = NS_STYLE_USER_SELECT_NONE;
 
   // return stuff
   if (aSelectStyle)
@@ -3015,9 +3023,9 @@ NS_IMETHODIMP nsFrame::HandleDrag(nsPresContext* aPresContext,
 {
   MOZ_ASSERT(aEvent->eventStructType == NS_MOUSE_EVENT, "HandleDrag can only handle mouse event");
 
-  bool    selectable;
-  uint8_t selectStyle;
-  IsSelectable(&selectable, &selectStyle);
+  bool selectable;
+  IsSelectable(&selectable, nullptr);
+
   // XXX Do we really need to exclude non-selectable content here?
   // GetContentOffsetsFromPoint can handle it just fine, although some
   // other stuff might not like it.
@@ -3526,24 +3534,18 @@ static FrameTarget GetSelectionClosestFrame(nsIFrame* aFrame, nsPoint aPoint,
 
   if (kid) {
     // Go through all the child frames to find the closest one
-
-    // Large number to force the comparison to succeed
-    const nscoord HUGE_DISTANCE = nscoord_MAX;
-    nscoord closestXDistance = HUGE_DISTANCE;
-    nscoord closestYDistance = HUGE_DISTANCE;
-    nsIFrame *closestFrame = nullptr;
-
+    nsIFrame::FrameWithDistance closest = { nullptr, nscoord_MAX, nscoord_MAX };
     for (; kid; kid = kid->GetNextSibling()) {
       if (!SelfIsSelectable(kid, aFlags) || kid->IsEmpty())
         continue;
 
-      if (nsLayoutUtils::PointIsCloserToRect(aPoint, kid->GetRect(),
-                                             closestXDistance,
-                                             closestYDistance))
-        closestFrame = kid;
+      kid->FindCloserFrameForSelection(aPoint, &closest);
     }
-    if (closestFrame)
-      return GetSelectionClosestFrameForChild(closestFrame, aPoint, aFlags);
+    if (closest.mFrame) {
+      if (closest.mFrame->IsSVGText())
+        return FrameTarget(closest.mFrame, false, false);
+      return GetSelectionClosestFrameForChild(closest.mFrame, aPoint, aFlags);
+    }
   }
   return FrameTarget(aFrame, false, false);
 }
@@ -3592,15 +3594,13 @@ static nsIFrame* AdjustFrameForSelectionStyles(nsIFrame* aFrame) {
   {
     // These are the conditions that make all children not able to handle
     // a cursor.
-    if (frame->GetStyleUIReset()->mUserSelect == NS_STYLE_USER_SELECT_NONE || 
-        frame->GetStyleUIReset()->mUserSelect == NS_STYLE_USER_SELECT_ALL || 
+    if (frame->GetStyleUIReset()->mUserSelect == NS_STYLE_USER_SELECT_ALL ||
         frame->IsGeneratedContentFrame()) {
       adjustedFrame = frame;
     }
   }
   return adjustedFrame;
 }
-  
 
 nsIFrame::ContentOffsets nsIFrame::GetContentOffsetsFromPoint(nsPoint aPoint,
                                                               uint32_t aFlags)
@@ -3611,8 +3611,8 @@ nsIFrame::ContentOffsets nsIFrame::GetContentOffsetsFromPoint(nsPoint aPoint,
   }
   else {
     // This section of code deals with special selection styles.  Note that
-    // -moz-none and -moz-all exist, even though they don't need to be explicitly
-    // handled.
+    // -moz-all exists, even though it doesn't need to be explicitly handled.
+    //
     // The offset is forced not to end up in generated content; content offsets
     // cannot represent content outside of the document's content tree.
 
@@ -3622,8 +3622,8 @@ nsIFrame::ContentOffsets nsIFrame::GetContentOffsetsFromPoint(nsPoint aPoint,
     // should lead to the whole frame being selected
     if (adjustedFrame && adjustedFrame->GetStyleUIReset()->mUserSelect ==
         NS_STYLE_USER_SELECT_ALL) {
-      return OffsetsForSingleFrame(adjustedFrame, aPoint +
-                                   this->GetOffsetTo(adjustedFrame));
+      nsPoint adjustedPoint = aPoint + this->GetOffsetTo(adjustedFrame);
+      return OffsetsForSingleFrame(adjustedFrame, adjustedPoint);
     }
 
     // For other cases, try to find a closest frame starting from the parent of
@@ -3662,7 +3662,18 @@ nsIFrame::ContentOffsets nsIFrame::GetContentOffsetsFromPoint(nsPoint aPoint,
     offsets.associateWithNext = (offsets.offset == range.start);
     return offsets;
   }
-  nsPoint pt = aPoint - closest.frame->GetOffsetTo(this);
+
+  nsPoint pt;
+  if (closest.frame != this) {
+    if (closest.frame->IsSVGText()) {
+      pt = nsLayoutUtils::TransformAncestorPointToFrame(closest.frame,
+                                                        aPoint, this);
+    } else {
+      pt = aPoint - closest.frame->GetOffsetTo(this);
+    }
+  } else {
+    pt = aPoint;
+  }
   return static_cast<nsFrame*>(closest.frame)->CalcContentOffsetsFromFramePoint(pt);
 
   // XXX should I add some kind of offset standardization?
@@ -3682,7 +3693,10 @@ nsFrame::GetCursor(const nsPoint& aPoint,
 {
   FillCursorInformationFromStyle(GetStyleUserInterface(), aCursor);
   if (NS_STYLE_CURSOR_AUTO == aCursor.mCursor) {
-    aCursor.mCursor = NS_STYLE_CURSOR_DEFAULT;
+    // If this is editable, I-beam cursor is better for most elements.
+    aCursor.mCursor =
+      (mContent && mContent->IsEditable()) ? NS_STYLE_CURSOR_TEXT :
+                                             NS_STYLE_CURSOR_DEFAULT;
   }
 
 
@@ -7465,6 +7479,7 @@ nsIFrame::HasTerminalNewline() const
 static uint8_t
 ConvertSVGDominantBaselineToVerticalAlign(uint8_t aDominantBaseline)
 {
+  // Most of these are approximate mappings.
   switch (aDominantBaseline) {
   case NS_STYLE_DOMINANT_BASELINE_HANGING:
   case NS_STYLE_DOMINANT_BASELINE_TEXT_BEFORE_EDGE:
@@ -7474,9 +7489,17 @@ ConvertSVGDominantBaselineToVerticalAlign(uint8_t aDominantBaseline)
     return NS_STYLE_VERTICAL_ALIGN_TEXT_BOTTOM;
   case NS_STYLE_DOMINANT_BASELINE_CENTRAL:
   case NS_STYLE_DOMINANT_BASELINE_MIDDLE:
+  case NS_STYLE_DOMINANT_BASELINE_MATHEMATICAL:
     return NS_STYLE_VERTICAL_ALIGN_MIDDLE;
   case NS_STYLE_DOMINANT_BASELINE_AUTO:
   case NS_STYLE_DOMINANT_BASELINE_ALPHABETIC:
+    return NS_STYLE_VERTICAL_ALIGN_BASELINE;
+  case NS_STYLE_DOMINANT_BASELINE_USE_SCRIPT:
+  case NS_STYLE_DOMINANT_BASELINE_NO_CHANGE:
+  case NS_STYLE_DOMINANT_BASELINE_RESET_SIZE:
+    // These three should not simply map to 'baseline', but we don't
+    // support the complex baseline model that SVG 1.1 has and which
+    // css3-linebox now defines.
     return NS_STYLE_VERTICAL_ALIGN_BASELINE;
   default:
     NS_NOTREACHED("unexpected aDominantBaseline value");

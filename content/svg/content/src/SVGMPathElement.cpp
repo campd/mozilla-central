@@ -13,8 +13,6 @@
 #include "nsContentUtils.h"
 #include "mozilla/dom/SVGMPathElementBinding.h"
 
-DOMCI_NODE_DATA(SVGMpathElement, mozilla::dom::SVGMPathElement)
-
 NS_IMPL_NS_NEW_NAMESPACED_SVG_ELEMENT(MPath)
 
 namespace mozilla {
@@ -32,7 +30,6 @@ nsSVGElement::StringInfo SVGMPathElement::sStringInfo[1] =
 };
 
 // Cycle collection magic -- based on nsSVGUseElement
-NS_IMPL_CYCLE_COLLECTION_CLASS(SVGMPathElement)
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN_INHERITED(SVGMPathElement,
                                                 SVGMPathElementBase)
   tmp->UnlinkHrefTarget(false);
@@ -50,10 +47,9 @@ NS_IMPL_ADDREF_INHERITED(SVGMPathElement,SVGMPathElementBase)
 NS_IMPL_RELEASE_INHERITED(SVGMPathElement,SVGMPathElementBase)
 
 NS_INTERFACE_TABLE_HEAD_CYCLE_COLLECTION_INHERITED(SVGMPathElement)
-  NS_NODE_INTERFACE_TABLE6(SVGMPathElement, nsIDOMNode, nsIDOMElement,
+  NS_NODE_INTERFACE_TABLE5(SVGMPathElement, nsIDOMNode, nsIDOMElement,
                            nsIDOMSVGElement,  nsIDOMSVGURIReference,
-                           nsIDOMSVGMpathElement, nsIMutationObserver)
-  NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(SVGMpathElement)
+                           nsIMutationObserver)
 NS_INTERFACE_MAP_END_INHERITING(SVGMPathElementBase)
 
 // Constructor
@@ -91,9 +87,7 @@ NS_IMPL_ELEMENT_CLONE_WITH_INIT(SVGMPathElement)
 already_AddRefed<nsIDOMSVGAnimatedString>
 SVGMPathElement::Href()
 {
-  nsCOMPtr<nsIDOMSVGAnimatedString> href;
-  mStringAttributes[HREF].ToDOMAnimatedString(getter_AddRefs(href), this);
-  return href.forget();
+  return mStringAttributes[HREF].ToDOMAnimatedString(this);
 }
 
 NS_IMETHODIMP

@@ -1056,6 +1056,8 @@ public:
    * For debugging and stuff
    */
   virtual const char* Name() = 0;
+
+  virtual void WriteDebugInfo(FILE *aOutput) {}
 #endif
 
   nsDisplayItem* GetAbove() { return mAbove; }
@@ -1390,7 +1392,8 @@ public:
     PAINT_USE_WIDGET_LAYERS = 0x01,
     PAINT_FLUSH_LAYERS = 0x02,
     PAINT_EXISTING_TRANSACTION = 0x04,
-    PAINT_NO_COMPOSITE = 0x08
+    PAINT_NO_COMPOSITE = 0x08,
+    PAINT_NO_CLEAR_INVALIDATIONS = 0x10
   };
   void PaintRoot(nsDisplayListBuilder* aBuilder, nsRenderingContext* aCtx,
                  uint32_t aFlags) const;
@@ -1904,6 +1907,10 @@ public:
 
   static nsRegion GetInsideClipRegion(nsDisplayItem* aItem, nsPresContext* aPresContext, uint8_t aClip,
                                       const nsRect& aRect, bool* aSnap);
+
+#ifdef MOZ_DUMP_PAINTING
+  virtual void WriteDebugInfo(FILE *aOutput);
+#endif
 protected:
   typedef class mozilla::layers::ImageContainer ImageContainer;
   typedef class mozilla::layers::ImageLayer ImageLayer;
@@ -1960,6 +1967,14 @@ public:
   }
 
   NS_DISPLAY_DECL_NAME("BackgroundColor", TYPE_BACKGROUND_COLOR)
+#ifdef MOZ_DUMP_PAINTING
+  virtual void WriteDebugInfo(FILE *aOutput) {
+    fprintf(aOutput, "(rgba %d,%d,%d,%d)", 
+            NS_GET_R(mColor), NS_GET_G(mColor),
+            NS_GET_B(mColor), NS_GET_A(mColor));
+
+  }
+#endif
 
 protected:
   const nsStyleBackground* mBackgroundStyle;
@@ -2287,6 +2302,11 @@ public:
     // We don't need to compute an invalidation region since we have LayerTreeInvalidation
   }
   NS_DISPLAY_DECL_NAME("Opacity", TYPE_OPACITY)
+#ifdef MOZ_DUMP_PAINTING
+  virtual void WriteDebugInfo(FILE *aOutput) {
+    fprintf(aOutput, "(opacity %f)", mFrame->GetStyleDisplay()->mOpacity);
+  }
+#endif
 
   bool CanUseAsyncAnimations(nsDisplayListBuilder* aBuilder);
 };

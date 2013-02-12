@@ -198,7 +198,7 @@ class CallObject : public ScopeObject
     static CallObject *createForFunction(JSContext *cx, HandleObject enclosing, HandleFunction callee);
 
     static CallObject *createForFunction(JSContext *cx, AbstractFramePtr frame);
-    static CallObject *createForStrictEval(JSContext *cx, StackFrame *fp);
+    static CallObject *createForStrictEval(JSContext *cx, AbstractFramePtr frame);
 
     /* True if this is for a strict mode eval frame. */
     inline bool isForEval() const;
@@ -472,7 +472,7 @@ class ScopeIterKey
     ScopeIter::Type type_;
 
   public:
-    ScopeIterKey() : frame_(), cur_(NULL), block_(NULL), type_() {}
+    ScopeIterKey() : frame_(NullFramePtr()), cur_(NULL), block_(NULL), type_() {}
     ScopeIterKey(const ScopeIter &si)
       : frame_(si.frame_), cur_(si.cur_), block_(si.block_), type_(si.type_)
     {}

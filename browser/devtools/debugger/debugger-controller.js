@@ -15,6 +15,17 @@ const NEW_SCRIPT_DISPLAY_DELAY = 200; // ms
 const FETCH_SOURCE_RESPONSE_DELAY = 50; // ms
 const FRAME_STEP_CLEAR_DELAY = 100; // ms
 const CALL_STACK_PAGE_SIZE = 25; // frames
+const VARIABLES_VIEW_NON_SORTABLE = [
+  "Array",
+  "Int8Array",
+  "Uint8Array",
+  "Int16Array",
+  "Uint16Array",
+  "Int32Array",
+  "Uint32Array",
+  "Float32Array",
+  "Float64Array"
+];
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
@@ -23,6 +34,9 @@ Cu.import("resource://gre/modules/devtools/dbg-client.jsm");
 Cu.import("resource:///modules/source-editor.jsm");
 Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
 Cu.import("resource:///modules/devtools/VariablesView.jsm");
+
+XPCOMUtils.defineLazyModuleGetter(this,
+  "Reflect", "resource://gre/modules/reflect.jsm");
 
 /**
  * Object defining the debugger controller components.
@@ -50,7 +64,6 @@ let DebuggerController = {
       return;
     }
     this._isInitialized = true;
-
     window.removeEventListener("load", this._startupDebugger, true);
 
     DebuggerView.initialize(function() {
@@ -365,6 +378,7 @@ ThreadState.prototype = {
     this.activeThread.addListener("paused", this._update);
     this.activeThread.addListener("resumed", this._update);
     this.activeThread.addListener("detached", this._update);
+    this.activeThread.pauseOnExceptions(Prefs.pauseOnExceptions);
     this._handleTabNavigation();
   },
 
@@ -415,6 +429,9 @@ function StackFrames() {
   this._onFrames = this._onFrames.bind(this);
   this._onFramesCleared = this._onFramesCleared.bind(this);
   this._afterFramesCleared = this._afterFramesCleared.bind(this);
+  this._fetchScopeVariables = this._fetchScopeVariables.bind(this);
+  this._fetchVarProperties = this._fetchVarProperties.bind(this);
+  this._addVarExpander = this._addVarExpander.bind(this);
   this.evaluate = this.evaluate.bind(this);
 }
 
@@ -650,13 +667,12 @@ StackFrames.prototype = {
     // to contain all the values.
     if (this.syncedWatchExpressions && watchExpressionsEvaluation) {
       let label = L10N.getStr("watchExpressionsScopeLabel");
-      let arrow = L10N.getStr("watchExpressionsSeparatorLabel");
       let scope = DebuggerView.Variables.addScope(label);
-      scope.separator = arrow;
-      scope.showDescriptorTooltip = false;
-      scope.allowNameInput = true;
-      scope.allowDeletion = true;
-      scope.contextMenu = "debuggerWatchExpressionsContextMenu";
+
+      // Customize the scope for holding watch expressions evaluations.
+      scope.descriptorTooltip = false;
+      scope.contextMenuId = "debuggerWatchExpressionsContextMenu";
+      scope.separatorStr = L10N.getStr("watchExpressionsSeparatorLabel");
       scope.switch = DebuggerView.WatchExpressions.switchExpression;
       scope.delete = DebuggerView.WatchExpressions.deleteExpression;
 
@@ -671,10 +687,10 @@ StackFrames.prototype = {
       let label = this._getScopeLabel(environment);
       let scope = DebuggerView.Variables.addScope(label);
 
-      // Special additions to the innermost scope.
+      // Handle additions to the innermost scope.
       if (environment == frame.environment) {
         this._insertScopeFrameReferences(scope, frame);
-        this._fetchScopeVariables(scope, environment);
+        this._addScopeExpander(scope, environment);
         // Always expand the innermost scope by default.
         scope.expand();
       }
@@ -700,12 +716,12 @@ StackFrames.prototype = {
    *        The scope's environment.
    */
   _addScopeExpander: function SF__addScopeExpander(aScope, aEnv) {
-    let callback = this._fetchScopeVariables.bind(this, aScope, aEnv);
+    aScope._sourceEnvironment = aEnv;
 
     // It's a good idea to be prepared in case of an expansion.
-    aScope.onmouseover = callback;
+    aScope.addEventListener("mouseover", this._fetchScopeVariables, false);
     // Make sure that variables are always available on expansion.
-    aScope.onexpand = callback;
+    aScope.onexpand = this._fetchScopeVariables;
   },
 
   /**
@@ -722,15 +738,15 @@ StackFrames.prototype = {
     if (VariablesView.isPrimitive({ value: aGrip })) {
       return;
     }
-    let callback = this._fetchVarProperties.bind(this, aVar, aGrip);
+    aVar._sourceGrip = aGrip;
 
     // Some variables are likely to contain a very large number of properties.
     // It's a good idea to be prepared in case of an expansion.
     if (aVar.name == "window" || aVar.name == "this") {
-      aVar.onmouseover = callback;
+      aVar.addEventListener("mouseover", this._fetchVarProperties, false);
     }
     // Make sure that properties are always available on expansion.
-    aVar.onexpand = callback;
+    aVar.onexpand = this._fetchVarProperties;
   },
 
   /**
@@ -742,11 +758,11 @@ StackFrames.prototype = {
    *        The grip of the evaluation results.
    */
   _fetchWatchExpressions: function SF__fetchWatchExpressions(aScope, aExp) {
-    // Retrieve the expressions only once.
-    if (aScope.fetched) {
+    // Fetch the expressions only once.
+    if (aScope._fetched) {
       return;
     }
-    aScope.fetched = true;
+    aScope._fetched = true;
 
     // Add nodes for every watch expression in scope.
     this.activeThread.pauseGrip(aExp).getPrototypeAndProperties(function(aResponse) {
@@ -758,6 +774,12 @@ StackFrames.prototype = {
         let expVal = ownProperties[i].value;
         let expRef = aScope.addVar(name, ownProperties[i]);
         this._addVarExpander(expRef, expVal);
+
+        // Revert some of the custom watch expressions scope presentation flags.
+        expRef.switch = null;
+        expRef.delete = null;
+        expRef.descriptorTooltip = true;
+        expRef.separatorStr = L10N.getStr("variablesSeparatorLabel");
       }
 
       // Signal that watch expressions have been fetched.
@@ -772,21 +794,20 @@ StackFrames.prototype = {
    *
    * @param Scope aScope
    *        The scope where the variables will be placed into.
-   * @param object aEnv
-   *        The scope's environment.
    */
-  _fetchScopeVariables: function SF__fetchScopeVariables(aScope, aEnv) {
-    // Retrieve the variables only once.
-    if (aScope.fetched) {
+  _fetchScopeVariables: function SF__fetchScopeVariables(aScope) {
+    // Fetch the variables only once.
+    if (aScope._fetched) {
       return;
     }
-    aScope.fetched = true;
+    aScope._fetched = true;
+    let env = aScope._sourceEnvironment;
 
-    switch (aEnv.type) {
+    switch (env.type) {
       case "with":
       case "object":
         // Add nodes for every variable in scope.
-        this.activeThread.pauseGrip(aEnv.object).getPrototypeAndProperties(function(aResponse) {
+        this.activeThread.pauseGrip(env.object).getPrototypeAndProperties(function(aResponse) {
           this._insertScopeVariables(aResponse.ownProperties, aScope);
 
           // Signal that variables have been fetched.
@@ -797,11 +818,15 @@ StackFrames.prototype = {
       case "block":
       case "function":
         // Add nodes for every argument and every other variable in scope.
-        this._insertScopeArguments(aEnv.bindings.arguments, aScope);
-        this._insertScopeVariables(aEnv.bindings.variables, aScope);
+        this._insertScopeArguments(env.bindings.arguments, aScope);
+        this._insertScopeVariables(env.bindings.variables, aScope);
+
+        // No need to signal that variables have been fetched, since
+        // the scope arguments and variables are already attached to the
+        // environment bindings, so pausing the active thread is unnecessary.
         break;
       default:
-        Cu.reportError("Unknown Debugger.Environment type: " + aEnv.type);
+        Cu.reportError("Unknown Debugger.Environment type: " + env.type);
         break;
     }
   },
@@ -861,11 +886,11 @@ StackFrames.prototype = {
     }
     let variableNames = Object.keys(aVariables);
 
-    // Sort all of the variables before adding them if preferred.
+    // Sort all of the variables before adding them, if preferred.
     if (Prefs.variablesSortingEnabled) {
       variableNames.sort();
     }
-    // Add the sorted variables to the specified scope.
+    // Add the variables to the specified scope.
     for (let name of variableNames) {
       let varRef = aScope.addVar(name, aVariables[name]);
       let varVal = aVariables[name].value;
@@ -879,26 +904,27 @@ StackFrames.prototype = {
    *
    * @param Variable aVar
    *        The variable where the properties will be placed into.
-   * @param any aGrip
-   *        The grip of the variable.
    */
-  _fetchVarProperties: function SF__fetchVarProperties(aVar, aGrip) {
-    // Retrieve the properties only once.
-    if (aVar.fetched) {
+  _fetchVarProperties: function SF__fetchVarProperties(aVar) {
+    // Fetch the properties only once.
+    if (aVar._fetched) {
       return;
     }
-    aVar.fetched = true;
+    aVar._fetched = true;
+    let grip = aVar._sourceGrip;
 
-    this.activeThread.pauseGrip(aGrip).getPrototypeAndProperties(function(aResponse) {
+    this.activeThread.pauseGrip(grip).getPrototypeAndProperties(function(aResponse) {
       let { ownProperties, prototype } = aResponse;
+      let sortable = VARIABLES_VIEW_NON_SORTABLE.indexOf(grip.class) == -1;
 
       // Add all the variable properties.
       if (ownProperties) {
-        aVar.addProperties(ownProperties);
-        // Expansion handlers must be set after the properties are added.
-        for (let name in ownProperties) {
-          this._addVarExpander(aVar.get(name), ownProperties[name].value);
-        }
+        aVar.addProperties(ownProperties, {
+          // Not all variables need to force sorted properties.
+          sorted: sortable,
+          // Expansion handlers must be set after the properties are added.
+          callback: this._addVarExpander
+        });
       }
 
       // Add the variable's __proto__.
@@ -908,6 +934,7 @@ StackFrames.prototype = {
         this._addVarExpander(aVar.get("__proto__"), prototype);
       }
 
+      // Mark the variable as having retrieved all its properties.
       aVar._retrieved = true;
 
       // Signal that properties have been fetched.
@@ -980,17 +1007,37 @@ StackFrames.prototype = {
   syncWatchExpressions: function SF_syncWatchExpressions() {
     let list = DebuggerView.WatchExpressions.getExpressions();
 
-    if (list.length) {
+    // Sanity check all watch expressions before syncing them. To avoid
+    // having the whole watch expressions array throw because of a single
+    // faulty expression, simply convert it to a string describing the error.
+    // There's no other information necessary to be offered in such cases.
+    let sanitizedExpressions = list.map(function(str) {
+      // Reflect.parse throws when encounters a syntax error.
+      try {
+        Reflect.parse(str);
+        return str; // Watch expression can be executed safely.
+      } catch (e) {
+        return "\"" + e.name + ": " + e.message + "\""; // Syntax error.
+      }
+    });
+
+    if (sanitizedExpressions.length) {
       this.syncedWatchExpressions =
-        this.currentWatchExpressions = "[" + list.map(function(str)
-          // Avoid yielding an empty pseudo-array when evaluating `arguments`,
-          // since they're overridden by the expression's closure scope.
-          "(function(arguments) {" +
-            // Make sure all the quotes are escaped in the expression's syntax.
-            "try { return eval(\"" + str.replace(/"/g, "\\$&") + "\"); }" +
-            "catch(e) { return e.name + ': ' + e.message; }" +
-          "})(arguments)"
-        ).join(",") + "]";
+        this.currentWatchExpressions =
+          "[" +
+            sanitizedExpressions.map(function(str)
+              "eval(\"" +
+                "try {" +
+                  // Make sure all quotes are escaped in the expression's syntax,
+                  // and add a newline after the statement to avoid comments
+                  // breaking the code integrity inside the eval block.
+                  str.replace(/"/g, "\\$&") + "\" + " + "'\\n'" + " + \"" +
+                "} catch (e) {" +
+                  "e.name + ': ' + e.message;" + // FIXME: bug 812765, 812764
+                "}" +
+              "\")"
+            ).join(",") +
+          "]";
     } else {
       this.syncedWatchExpressions =
         this.currentWatchExpressions = null;
@@ -1637,6 +1684,7 @@ Prefs.map("Int", "windowWidth", "devtools.debugger.ui.win-width");
 Prefs.map("Int", "windowHeight", "devtools.debugger.ui.win-height");
 Prefs.map("Int", "stackframesWidth", "devtools.debugger.ui.stackframes-width");
 Prefs.map("Int", "variablesWidth", "devtools.debugger.ui.variables-width");
+Prefs.map("Bool", "pauseOnExceptions", "devtools.debugger.ui.pause-on-exceptions");
 Prefs.map("Bool", "panesVisibleOnStartup", "devtools.debugger.ui.panes-visible-on-startup");
 Prefs.map("Bool", "variablesSortingEnabled", "devtools.debugger.ui.variables-sorting-enabled");
 Prefs.map("Bool", "variablesOnlyEnumVisible", "devtools.debugger.ui.variables-only-enum-visible");

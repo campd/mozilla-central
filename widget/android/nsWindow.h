@@ -154,8 +154,8 @@ public:
                               mozilla::layers::CompositorParent* aCompositorParent,
                               mozilla::layers::CompositorChild* aCompositorChild);
     static void ScheduleComposite();
-    static void SchedulePauseComposition();
     static void ScheduleResumeComposition(int width, int height);
+    static void ForceIsFirstPaint();
     static float ComputeRenderIntegrity();
 
     virtual bool WidgetPaintsBackground();

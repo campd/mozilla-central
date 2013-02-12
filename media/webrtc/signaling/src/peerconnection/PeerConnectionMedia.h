@@ -49,11 +49,10 @@ class Fake_AudioGenerator {
  public:
 Fake_AudioGenerator(nsDOMMediaStream* aStream) : mStream(aStream), mCount(0) {
     mTimer = do_CreateInstance("@mozilla.org/timer;1");
-    PR_ASSERT(mTimer);
+    MOZ_ASSERT(mTimer);
 
     // Make a track
     mozilla::AudioSegment *segment = new mozilla::AudioSegment();
-    segment->Init(1); // 1 Channel
     mStream->GetStream()->AsSourceStream()->AddTrack(1, 16000, 0, segment);
 
     // Set the timer
@@ -71,7 +70,6 @@ Fake_AudioGenerator(nsDOMMediaStream* aStream) : mStream(aStream), mCount(0) {
     }
 
     mozilla::AudioSegment segment;
-    segment.Init(1);
     nsAutoTArray<const int16_t*,1> channelData;
     channelData.AppendElement(data);
     segment.AppendFrames(samples.forget(), channelData, 1600);
@@ -92,7 +90,7 @@ class Fake_VideoGenerator {
     mStream = aStream;
     mCount = 0;
     mTimer = do_CreateInstance("@mozilla.org/timer;1");
-    PR_ASSERT(mTimer);
+    MOZ_ASSERT(mTimer);
 
     // Make a track
     mozilla::VideoSegment *segment = new mozilla::VideoSegment();
@@ -161,7 +159,9 @@ class Fake_VideoGenerator {
 class LocalSourceStreamInfo {
 public:
   LocalSourceStreamInfo(nsDOMMediaStream* aMediaStream)
-    : mMediaStream(aMediaStream) {}
+    : mMediaStream(aMediaStream) {
+      MOZ_ASSERT(aMediaStream);
+    }
   ~LocalSourceStreamInfo() {
     mMediaStream = NULL;
   }
@@ -198,15 +198,19 @@ class RemoteSourceStreamInfo {
  public:
   RemoteSourceStreamInfo(nsDOMMediaStream* aMediaStream) :
     mMediaStream(already_AddRefed<nsDOMMediaStream>(aMediaStream)),
-    mPipelines() {}
+    mPipelines() {
+      MOZ_ASSERT(aMediaStream);
+    }
 
   nsDOMMediaStream* GetMediaStream() {
     return mMediaStream;
   }
-  void StorePipeline(int aTrack, mozilla::RefPtr<mozilla::MediaPipeline> aPipeline);
+  void StorePipeline(int aTrack, bool aIsVideo,
+                     mozilla::RefPtr<mozilla::MediaPipeline> aPipeline);
 
   void Detach() {
     // walk through all the MediaPipelines and disconnect them.
+    // XXX we should clear the mTypes map
     for (std::map<int, mozilla::RefPtr<mozilla::MediaPipeline> >::iterator it =
            mPipelines.begin(); it != mPipelines.end();
          ++it) {
@@ -219,6 +223,7 @@ class RemoteSourceStreamInfo {
  private:
   nsRefPtr<nsDOMMediaStream> mMediaStream;
   std::map<int, mozilla::RefPtr<mozilla::MediaPipeline> > mPipelines;
+  std::map<int, bool> mTypes;
 };
 
 class PeerConnectionMedia : public sigslot::has_slots<> {
@@ -232,7 +237,7 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
     PR_DestroyLock(mLocalSourceStreamsLock);
   }
 
-  nsresult Init();
+  nsresult Init(const std::vector<mozilla::NrIceStunServer>& stun_servers);
 
   // WARNING: This destroys the object!
   void SelfDestruct();
@@ -289,7 +294,26 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
                         mozilla::RefPtr<mozilla::TransportFlow> aFlow) {
     int index_inner = aIndex * 2 + (aRtcp ? 1 : 0);
 
+    MOZ_ASSERT(!mTransportFlows[index_inner]);
     mTransportFlows[index_inner] = aFlow;
+  }
+
+  mozilla::RefPtr<mozilla::AudioSessionConduit> GetConduit(int aStreamIndex, bool aReceive) {
+    int index_inner = aStreamIndex * 2 + (aReceive ? 0 : 1);
+
+    if (mAudioConduits.find(index_inner) == mAudioConduits.end())
+      return NULL;
+
+    return mAudioConduits[index_inner];
+  }
+
+  // Add a conduit
+  void AddConduit(int aIndex, bool aReceive,
+                  const mozilla::RefPtr<mozilla::AudioSessionConduit> &aConduit) {
+    int index_inner = aIndex * 2 + (aReceive ? 0 : 1);
+
+    MOZ_ASSERT(!mAudioConduits[index_inner]);
+    mAudioConduits[index_inner] = aConduit;
   }
 
   // ICE state signals
@@ -326,6 +350,10 @@ class PeerConnectionMedia : public sigslot::has_slots<> {
 
   // Transport flows: even is RTP, odd is RTCP
   std::map<int, mozilla::RefPtr<mozilla::TransportFlow> > mTransportFlows;
+
+  // Conduits: even is receive, odd is transmit (for easier correlation with
+  // flows)
+  std::map<int, mozilla::RefPtr<mozilla::AudioSessionConduit> > mAudioConduits;
 
   NS_INLINE_DECL_THREADSAFE_REFCOUNTING(PeerConnectionMedia)
 };

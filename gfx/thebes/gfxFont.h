@@ -56,6 +56,7 @@ typedef struct hb_blob_t hb_blob_t;
 #define NO_FONT_LANGUAGE_OVERRIDE      0
 
 struct FontListSizes;
+struct gfxTextRunDrawCallbacks;
 
 struct THEBES_API gfxFontStyle {
     gfxFontStyle();
@@ -977,7 +978,7 @@ public:
         uint32_t     *mInitialBreaks;
         uint32_t      mInitialBreakCount;
         // The ratio to use to convert device pixels to application layout units
-        uint32_t      mAppUnitsPerDevUnit;
+        int32_t       mAppUnitsPerDevUnit;
     };
 
     virtual ~gfxTextRunFactory() {}
@@ -998,7 +999,7 @@ public:
  */
 class THEBES_API gfxGlyphExtents {
 public:
-    gfxGlyphExtents(uint32_t aAppUnitsPerDevUnit) :
+    gfxGlyphExtents(int32_t aAppUnitsPerDevUnit) :
         mAppUnitsPerDevUnit(aAppUnitsPerDevUnit) {
         MOZ_COUNT_CTOR(gfxGlyphExtents);
         mTightGlyphExtents.Init();
@@ -1035,7 +1036,7 @@ public:
     }
     void SetTightGlyphExtents(uint32_t aGlyphID, const gfxRect& aExtentsAppUnits);
 
-    uint32_t GetAppUnitsPerDevUnit() { return mAppUnitsPerDevUnit; }
+    int32_t GetAppUnitsPerDevUnit() { return mAppUnitsPerDevUnit; }
 
     size_t SizeOfExcludingThis(nsMallocSizeOfFun aMallocSizeOf) const;
     size_t SizeOfIncludingThis(nsMallocSizeOfFun aMallocSizeOf) const;
@@ -1097,7 +1098,7 @@ private:
 
     GlyphWidths             mContainedGlyphWidths;
     nsTHashtable<HashEntry> mTightGlyphExtents;
-    uint32_t                mAppUnitsPerDevUnit;
+    int32_t                 mAppUnitsPerDevUnit;
 };
 
 /**
@@ -1432,7 +1433,8 @@ public:
      */
     virtual void Draw(gfxTextRun *aTextRun, uint32_t aStart, uint32_t aEnd,
                       gfxContext *aContext, DrawMode aDrawMode, gfxPoint *aBaselineOrigin,
-                      Spacing *aSpacing, gfxTextObjectPaint *aObjectPaint);
+                      Spacing *aSpacing, gfxTextObjectPaint *aObjectPaint,
+                      gfxTextRunDrawCallbacks *aCallbacks);
 
     /**
      * Measure a run of characters. See gfxTextRun::Metrics.
@@ -1475,7 +1477,7 @@ public:
     // Get the glyphID of a space
     virtual uint32_t GetSpaceGlyph() = 0;
 
-    gfxGlyphExtents *GetOrCreateGlyphExtents(uint32_t aAppUnitsPerDevUnit);
+    gfxGlyphExtents *GetOrCreateGlyphExtents(int32_t aAppUnitsPerDevUnit);
 
     // You need to call SetupCairoFont on the aCR just before calling this
     virtual void SetupGlyphExtents(gfxContext *aContext, uint32_t aGlyphID,
@@ -1768,6 +1770,10 @@ protected:
 
     bool RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint, DrawMode aDrawMode,
                         uint32_t aGlyphId, gfxTextObjectPaint *aObjectPaint);
+    bool RenderSVGGlyph(gfxContext *aContext, gfxPoint aPoint, DrawMode aDrawMode,
+                        uint32_t aGlyphId, gfxTextObjectPaint *aObjectPaint,
+                        gfxTextRunDrawCallbacks *aCallbacks,
+                        bool& aEmittedGlyphs);
 
     // Bug 674909. When synthetic bolding text by drawing twice, need to
     // render using a pixel offset in device pixels, otherwise text
@@ -1805,7 +1811,7 @@ class gfxShapedText
 {
 public:
     gfxShapedText(uint32_t aLength, uint32_t aFlags,
-                  uint32_t aAppUnitsPerDevUnit)
+                  int32_t aAppUnitsPerDevUnit)
         : mLength(aLength)
         , mFlags(aFlags)
         , mAppUnitsPerDevUnit(aAppUnitsPerDevUnit)
@@ -2105,7 +2111,7 @@ public:
         return (Flags() & gfxTextRunFactory::TEXT_IS_8BIT) != 0;
     }
 
-    uint32_t GetAppUnitsPerDevUnit() const {
+    int32_t GetAppUnitsPerDevUnit() const {
         return mAppUnitsPerDevUnit;
     }
 
@@ -2248,7 +2254,7 @@ protected:
     // Shaping flags (direction, ligature-suppression)
     uint32_t                        mFlags;
 
-    uint32_t                        mAppUnitsPerDevUnit;
+    int32_t                         mAppUnitsPerDevUnit;
 };
 
 /*
@@ -2400,6 +2406,45 @@ private:
     // The original text, in either 8-bit or 16-bit form, will be stored
     // immediately following the CompressedGlyphs.
     CompressedGlyph  mCharGlyphsStorage[1];
+};
+
+/**
+ * Callback for Draw() to use when drawing text with mode
+ * gfxFont::GLYPH_PATH.
+ */
+struct gfxTextRunDrawCallbacks {
+
+    /**
+     * Constructs a new DrawCallbacks object.
+     *
+     * @param aShouldPaintSVGGlyphs If true, SVG glyphs will be
+     *   painted and the NotifyBeforeSVGGlyphPainted/NotifyAfterSVGGlyphPainted
+     *   callbacks will be invoked for each SVG glyph.  If false, SVG glyphs
+     *   will not be painted; fallback plain glyphs are not emitted either.
+     */
+    gfxTextRunDrawCallbacks(bool aShouldPaintSVGGlyphs = false)
+      : mShouldPaintSVGGlyphs(aShouldPaintSVGGlyphs)
+    {
+    }
+
+    /**
+     * Called when a path has been emitted to the gfxContext when
+     * painting a text run.  This can be called any number of times,
+     * due to partial ligatures and intervening SVG glyphs.
+     */
+    virtual void NotifyGlyphPathEmitted() = 0;
+
+    /**
+     * Called just before an SVG glyph has been painted to the gfxContext.
+     */
+    virtual void NotifyBeforeSVGGlyphPainted() { }
+
+    /**
+     * Called just after an SVG glyph has been painted to the gfxContext.
+     */
+    virtual void NotifyAfterSVGGlyphPainted() { }
+
+    bool mShouldPaintSVGGlyphs;
 };
 
 /**
@@ -2556,22 +2601,6 @@ public:
     };
 
     /**
-     * Callback for Draw() to use when drawing text with mode
-     * gfxFont::GLYPH_PATH.
-     */
-    struct DrawCallbacks {
-
-        /**
-         * Called when a path has been emitted to the gfxContext when
-         * painting a text run.  This can be called up to three times:
-         * once for any partial ligature at the beginning of the text run,
-         * once for the main run of glyphs, and once for any partial ligature
-         * at the end of the text run.
-         */
-        virtual void NotifyGlyphPathEmitted() = 0;
-    };
-
-    /**
      * Draws a substring. Uses only GetSpacing from aBreakProvider.
      * The provided point is the baseline origin on the left of the string
      * for LTR, on the right of the string for RTL.
@@ -2597,7 +2626,7 @@ public:
               uint32_t aStart, uint32_t aLength,
               PropertyProvider *aProvider,
               gfxFloat *aAdvanceWidth, gfxTextObjectPaint *aObjectPaint,
-              DrawCallbacks *aCallbacks = nullptr);
+              gfxTextRunDrawCallbacks *aCallbacks = nullptr);
 
     /**
      * Computes the ReflowMetrics for a substring.
@@ -2991,7 +3020,7 @@ private:
     void DrawPartialLigature(gfxFont *aFont, gfxContext *aCtx,
                              uint32_t aStart, uint32_t aEnd, gfxPoint *aPt,
                              PropertyProvider *aProvider,
-                             DrawCallbacks *aCallbacks);
+                             gfxTextRunDrawCallbacks *aCallbacks);
     // Advance aStart to the start of the nearest ligature; back up aEnd
     // to the nearest ligature end; may result in *aStart == *aEnd
     void ShrinkToLigatureBoundaries(uint32_t *aStart, uint32_t *aEnd);
@@ -3017,7 +3046,8 @@ private:
                     gfxFont::DrawMode aDrawMode, gfxPoint *aPt,
                     gfxTextObjectPaint *aObjectPaint, uint32_t aStart,
                     uint32_t aEnd, PropertyProvider *aProvider,
-                    uint32_t aSpacingStart, uint32_t aSpacingEnd);
+                    uint32_t aSpacingStart, uint32_t aSpacingEnd,
+                    gfxTextRunDrawCallbacks *aCallbacks);
 
     // XXX this should be changed to a GlyphRun plus a maybe-null GlyphRun*,
     // for smaller size especially in the super-common one-glyphrun case
@@ -3133,7 +3163,7 @@ public:
     template<typename T>
     gfxTextRun *MakeTextRun(const T *aString, uint32_t aLength,
                             gfxContext *aRefContext,
-                            uint32_t aAppUnitsPerDevUnit,
+                            int32_t aAppUnitsPerDevUnit,
                             uint32_t aFlags)
     {
         gfxTextRunFactory::Parameters params = {

@@ -120,10 +120,10 @@ typedef struct CapturingContentInfo {
   nsIContent* mContent;
 } CapturingContentInfo;
 
-// a43e26cd-9573-44c7-8fe5-859549eff814
+// da75e297-2c23-43c4-8d7f-96a668e96ba9
 #define NS_IPRESSHELL_IID \
-  {0xb0f585b5, 0x199b, 0x4cd7, \
-    {0x9c, 0xee, 0xea, 0xfd, 0x40, 0xc4, 0x88, 0x6f}}
+{ 0xda75e297, 0x2c23, 0x43c4, \
+  { 0x8d, 0x7f, 0x96, 0xa6, 0x68, 0xe9, 0x6b, 0xa9 } }
 
 // debug VerifyReflow flags
 #define VERIFY_REFLOW_ON                    0x01
@@ -192,6 +192,18 @@ public:
   virtual NS_HIDDEN_(void) Destroy() = 0;
 
   bool IsDestroying() { return mIsDestroying; }
+
+  /**
+   * Make a one-way transition into a "zombie" state.  In this state,
+   * no reflow is done, no painting is done, and no refresh driver
+   * ticks are processed.  This is a dangerous state: it can leave
+   * areas of the composition target unpainted if callers aren't
+   * careful.  (Don't let your zombie presshell out of the shed.)
+   *
+   * This is used in cases where a presshell is created for reasons
+   * other than reflow/painting.
+   */
+  virtual NS_HIDDEN_(void) MakeZombie() = 0;
 
   /**
    * All frames owned by the shell are allocated from an arena.  They
@@ -1236,7 +1248,6 @@ public:
     PAINT_LAYERS = 0x01,
     /* Composite layers to the window. */
     PAINT_COMPOSITE = 0x02,
-    PAINT_WILL_SEND_DID_PAINT = 0x80
   };
   virtual void Paint(nsView* aViewToPaint, const nsRegion& aDirtyRegion,
                      uint32_t aFlags) = 0;
@@ -1252,13 +1263,13 @@ public:
    * painted widget). This is issued at a time when it's safe to modify
    * widget geometry.
    */
-  virtual void WillPaint(bool aWillSendDidPaint) = 0;
+  virtual void WillPaint() = 0;
   /**
    * Notify that we're going to call Paint with PAINT_COMPOSITE.
    * Fires on the presshell for the painted widget.
    * This is issued at a time when it's safe to modify widget geometry.
    */
-  virtual void WillPaintWindow(bool aWillSendDidPaint) = 0;
+  virtual void WillPaintWindow() = 0;
   /**
    * Notify that we called Paint with PAINT_COMPOSITE.
    * Fires on the presshell for the painted widget.
@@ -1432,6 +1443,7 @@ protected:
   bool                      mStylesHaveChanged : 1;
   bool                      mDidInitialize : 1;
   bool                      mIsDestroying : 1;
+  bool                      mIsZombie : 1;
   bool                      mIsReflowing : 1;
 
   // For all documents we initially lock down painting.

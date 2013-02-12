@@ -636,6 +636,19 @@ protected:
   bool IsValidTime(const nsAString& aValue) const;
 
   /**
+   * Returns the time expressed in milliseconds of |aValue| being parsed as a
+   * time following the HTML specifications:
+   * http://www.whatwg.org/specs/web-apps/current-work/#parse-a-time-string
+   *
+   * Note: |aResult| can be null.
+   *
+   * @param aValue  the string to be parsed.
+   * @param aResult the time expressed in milliseconds representing the time [out]
+   * @return Whether the parsing was successful.
+   */
+  static bool ParseTime(const nsAString& aValue, uint32_t* aResult);
+
+  /**
    * Sets the value of the element to the string representation of the double.
    *
    * @param aValue The double that will be used to set the value.
@@ -648,16 +661,24 @@ protected:
   void UpdateHasRange();
 
   /**
-   * Returns the min attribute as a double.
-   * Returns NaN if the min attribute isn't a valid floating point number.
+   * Returns the input's "minimum" (as defined by the HTML5 spec) as a double.
+   * Note this takes account of any default minimum that the type may have.
+   * Returns NaN if the min attribute isn't a valid floating point number and
+   * the input's type does not have a default minimum.
+   *
+   * NOTE: Only call this if you know DoesMinMaxApply() returns true.
    */
-  double GetMinAsDouble() const;
+  double GetMinimum() const;
 
   /**
-   * Returns the max attribute as a double.
-   * Returns NaN if the max attribute isn't a valid floating point number.
+   * Returns the input's "maximum" (as defined by the HTML5 spec) as a double.
+   * Note this takes account of any default maximum that the type may have.
+   * Returns NaN if the max attribute isn't a valid floating point number and
+   * the input's type does not have a default maximum.
+   *
+   * NOTE:Only call this if you know DoesMinMaxApply() returns true.
    */
-  double GetMaxAsDouble() const;
+  double GetMaximum() const;
 
    /**
     * Get the step scale value for the current type.
@@ -683,12 +704,27 @@ protected:
   double GetStepBase() const;
 
   /**
+   * Returns the default step for the current type.
+   * @return the default step for the current type.
+   */
+  double GetDefaultStep() const;
+
+  /**
    * Apply a step change from stepUp or stepDown by multiplying aStep by the
    * current step value.
    *
    * @param aStep The value used to be multiplied against the step value.
    */
   nsresult ApplyStep(int32_t aStep);
+
+  /**
+   * Returns if the current type is an experimental mobile type.
+   */
+  static bool IsExperimentalMobileType(uint8_t aType)
+  {
+    return aType == NS_FORM_INPUT_NUMBER || aType == NS_FORM_INPUT_DATE ||
+           aType == NS_FORM_INPUT_TIME;
+  }
 
   nsCOMPtr<nsIControllers> mControllers;
 
@@ -738,10 +774,16 @@ protected:
   // Step scale factor values, for input types that have one.
   static const double kStepScaleFactorDate;
   static const double kStepScaleFactorNumber;
+  static const double kStepScaleFactorTime;
 
   // Default step base value when a type do not have specific one.
   static const double kDefaultStepBase;
-  // Float alue returned by GetStep() when the step attribute is set to 'any'.
+
+  // Default step used when there is no specified step.
+  static const double kDefaultStep;
+  static const double kDefaultStepTime;
+
+  // Float value returned by GetStep() when the step attribute is set to 'any'.
   static const double kStepAny;
 
   /**

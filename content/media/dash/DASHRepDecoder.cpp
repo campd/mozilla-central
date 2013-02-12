@@ -125,9 +125,11 @@ DASHRepDecoder::NotifyDownloadEnded(nsresult aStatus)
   NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
 
   if (!mMainDecoder) {
-    LOG("Error! Main Decoder is reported as null: mMainDecoder [%p]",
-        mMainDecoder.get());
-    DecodeError();
+    if (!mShuttingDown) {
+      LOG("Error! Main Decoder is null before shutdown: mMainDecoder [%p] ",
+          mMainDecoder.get());
+      DecodeError();
+    }
     return;
   }
 
@@ -153,7 +155,8 @@ DASHRepDecoder::NotifyDownloadEnded(nsresult aStatus)
       mMainDecoder->NotifyDownloadEnded(this, aStatus, mSubsegmentIdx);
     }
   } else if (aStatus == NS_BINDING_ABORTED) {
-    LOG("MPD download has been cancelled by the user: aStatus [%x].", aStatus);
+    LOG("Media download has been cancelled by the user: aStatus [%x].",
+        aStatus);
     if (mMainDecoder) {
       mMainDecoder->LoadAborted();
     }
@@ -277,23 +280,6 @@ DASHRepDecoder::LoadNextByteRange()
   }
 }
 
-void
-DASHRepDecoder::CancelByteRangeLoad()
-{
-  NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
-  NS_ASSERTION(mResource, "Error: resource is reported as null!");
-
-  if (mCurrentByteRange.IsNull() || mSubsegmentIdx < 0) {
-    LOG1("Canceling current byte range load: none to cancel.");
-    return;
-  }
-  LOG("Canceling current byte range load: [%lld] to [%lld] subsegment "
-      "[%lld]", mCurrentByteRange.mStart, mCurrentByteRange.mEnd,
-      mSubsegmentIdx);
-
-  mResource->CancelByteRangeOpen();
-}
-
 bool
 DASHRepDecoder::IsSubsegmentCached(int32_t aSubsegmentIdx)
 {
@@ -413,7 +399,8 @@ DASHRepDecoder::SetInfinite(bool aInfinite)
 void
 DASHRepDecoder::SetMediaSeekable(bool aMediaSeekable)
 {
-  NS_ASSERTION(NS_IsMainThread(), "Should be on main thread.");
+  NS_ASSERTION(NS_IsMainThread() || OnDecodeThread(),
+               "Should be on main thread or decode thread.");
   if (mMainDecoder) { mMainDecoder->SetMediaSeekable(aMediaSeekable); }
 }
 
@@ -514,6 +501,18 @@ DASHRepDecoder::ReleaseStateMachine()
   mReader = nullptr;
 
   MediaDecoder::ReleaseStateMachine();
+}
+
+void DASHRepDecoder::StopProgressUpdates()
+{
+  NS_ENSURE_TRUE_VOID(mMainDecoder);
+  MediaDecoder::StopProgressUpdates();
+}
+
+void DASHRepDecoder::StartProgressUpdates()
+{
+  NS_ENSURE_TRUE_VOID(mMainDecoder);
+  MediaDecoder::StartProgressUpdates();
 }
 
 } // namespace mozilla

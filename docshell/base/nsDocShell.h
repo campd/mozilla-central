@@ -745,6 +745,10 @@ protected:
     nsCOMPtr<nsIChannel>       mFailedChannel;
     uint32_t                   mFailedLoadType;
 
+    // Set in DoURILoad when the LOAD_RELOAD_ALLOW_MIXED_CONTENT flag is set.
+    // Checked in nsMixedContentBlocker, to see if the channels match.
+    nsCOMPtr<nsIChannel>       mMixedContentChannel;
+
     // WEAK REFERENCES BELOW HERE.
     // Note these are intentionally not addrefd.  Doing so will create a cycle.
     // For that reasons don't use nsCOMPtr.
@@ -842,6 +846,7 @@ protected:
 #ifdef DEBUG
     bool                       mInEnsureScriptEnv;
 #endif
+    bool                       mAffectPrivateSessionLifetime;
     uint64_t                   mHistoryID;
 
     static nsIURIFixup *sURIFixup;

@@ -630,21 +630,24 @@ add_test(function test_delete_remote_data_in_progress_upload() {
 
 add_test(function test_polling() {
   let [policy, policyPrefs, hrPrefs, listener] = getPolicy("polling");
+  let intended = 500;
 
   // Ensure checkStateAndTrigger is called at a regular interval.
-  let now = new Date();
+  let then = Date.now();
+  print("Starting run: " + then);
   Object.defineProperty(policy, "POLL_INTERVAL_MSEC", {
-    value: 500,
+    value: intended,
   });
   let count = 0;
 
   Object.defineProperty(policy, "checkStateAndTrigger", {
     value: function fakeCheckStateAndTrigger() {
-      let now2 = new Date();
+      let now = Date.now();
+      let after = now - then;
       count++;
 
-      do_check_true(now2.getTime() - now.getTime() >= 500);
-      now = now2;
+      print("Polled at " + now + " after " + after + "ms, intended " + intended);
+      do_check_true(after >= intended);
       DataReportingPolicy.prototype.checkStateAndTrigger.call(policy);
 
       if (count >= 2) {
@@ -655,6 +658,14 @@ add_test(function test_polling() {
 
         run_next_test();
       }
+
+      // "Specified timer period will be at least the time between when
+      // processing for last firing the callback completes and when the next
+      // firing occurs."
+      //
+      // That means we should set 'then' at the *end* of our handler, not
+      // earlier.
+      then = Date.now();
     }
   });
   policy.startPolling();
@@ -720,5 +731,32 @@ add_test(function test_polling_implicit_acceptance() {
   policy.firstRunDate = new Date(Date.now() - 4 * 24 * 60 * 60 * 1000);
   policy.nextDataSubmissionDate = new Date(Date.now());
   policy.startPolling();
+});
+
+add_test(function test_record_health_report_upload_enabled() {
+  let [policy, policyPrefs, hrPrefs, listener] = getPolicy("record_health_report_upload_enabled");
+
+  // Preconditions.
+  do_check_false(policy.pendingDeleteRemoteData);
+  do_check_true(policy.healthReportUploadEnabled);
+  do_check_eq(listener.requestRemoteDeleteCount, 0);
+
+  // User intent to disable should immediately result in a pending
+  // delete request.
+  policy.recordHealthReportUploadEnabled(false, "testing 1 2 3");
+  do_check_false(policy.healthReportUploadEnabled);
+  do_check_true(policy.pendingDeleteRemoteData);
+  do_check_eq(listener.requestRemoteDeleteCount, 1);
+
+  // Fulfilling it should make it go away.
+  listener.lastRemoteDeleteRequest.onNoDataAvailable();
+  do_check_false(policy.pendingDeleteRemoteData);
+
+  // User intent to enable should get us back to default state.
+  policy.recordHealthReportUploadEnabled(true, "testing 1 2 3");
+  do_check_false(policy.pendingDeleteRemoteData);
+  do_check_true(policy.healthReportUploadEnabled);
+
+  run_next_test();
 });
 

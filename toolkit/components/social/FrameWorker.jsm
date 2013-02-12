@@ -202,6 +202,10 @@ FrameWorker.prototype = {
         return;
       }
 
+      // now that we've got the script text, remove it from the DOM;
+      // no need for it to keep occupying memory there
+      workerWindow.document.body.textContent = "";
+
       // the iframe has loaded the js file as text - first inject the magic
       // port-handling code into the sandbox.
       try {
@@ -220,7 +224,7 @@ FrameWorker.prototype = {
       }
       catch (e) {
         Cu.reportError("FrameWorker: Error setting up event listener for chrome side of the worker: " + e + "\n" + e.stack);
-        notifyWorkerError();
+        notifyWorkerError(worker);
         return;
       }
 
@@ -316,6 +320,8 @@ function makeHiddenFrame() {
   iframe.setAttribute("mozframetype", "content");
   // allow-same-origin is necessary for localStorage to work in the sandbox.
   iframe.setAttribute("sandbox", "allow-same-origin");
+  // don't create text frames and runs for the JS source!
+  iframe.style.display = "none";
 
   hiddenDoc.documentElement.appendChild(iframe);
 

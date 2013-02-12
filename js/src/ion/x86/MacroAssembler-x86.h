@@ -328,6 +328,13 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     }
 
     void branchTestValue(Condition cond, const ValueOperand &value, const Value &v, Label *label);
+    void branchTestValue(Condition cond, const Address &valaddr, const ValueOperand &value,
+                         Label *label)
+    {
+        JS_ASSERT(cond == Equal || cond == NotEqual);
+        branchPtr(cond, tagOf(valaddr), value.typeReg(), label);
+        branchPtr(cond, payloadOf(valaddr), value.payloadReg(), label);
+    }
 
     void cmpPtr(Register lhs, const ImmWord rhs) {
         cmpl(lhs, Imm32(rhs.value));
@@ -339,6 +346,9 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
         cmpl(lhs, rhs);
     }
     void cmpPtr(const Operand &lhs, const ImmGCPtr rhs) {
+        cmpl(lhs, rhs);
+    }
+    void cmpPtr(const Operand &lhs, const Imm32 rhs) {
         cmpl(lhs, rhs);
     }
     void cmpPtr(const Address &lhs, Register rhs) {
@@ -758,7 +768,7 @@ class MacroAssemblerX86 : public MacroAssemblerX86Shared
     // ThreadData::ionTop.
     void linkExitFrame() {
         JSCompartment *compartment = GetIonContext()->compartment;
-        movl(StackPointer, Operand(&compartment->rt->ionTop));
+        movl(StackPointer, Operand(&compartment->rt->mainThread.ionTop));
     }
 
     void callWithExitFrame(IonCode *target, Register dynStack) {

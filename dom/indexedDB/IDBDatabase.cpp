@@ -419,8 +419,6 @@ IDBDatabase::CreateObjectStoreInternal(IDBTransaction* aTransaction,
   return NS_OK;
 }
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(IDBDatabase)
-
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(IDBDatabase, IDBWrapperCache)
   NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mFactory)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
@@ -507,7 +505,7 @@ IDBDatabase::CreateObjectStore(const nsAString& aName,
 
   DatabaseInfo* databaseInfo = transaction->DBInfo();
 
-  mozilla::dom::IDBObjectStoreParameters params;
+  mozilla::idl::IDBObjectStoreParameters params;
   KeyPath keyPath(0);
 
   nsresult rv;

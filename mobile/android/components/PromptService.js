@@ -747,7 +747,7 @@ let PromptUtils = {
   },
 
   sendMessageToJava: function(aMsg) {
-    let data = Cc["@mozilla.org/android/bridge;1"].getService(Ci.nsIAndroidBridge).handleGeckoMessage(JSON.stringify({ gecko: aMsg }));
+    let data = Cc["@mozilla.org/android/bridge;1"].getService(Ci.nsIAndroidBridge).handleGeckoMessage(JSON.stringify(aMsg));
     return JSON.parse(data);
   },
 
@@ -758,7 +758,9 @@ let PromptUtils = {
         return;
       let event = aDomWin.document.createEvent("Events");
       event.initEvent(aEventName, true, true);
-      aDomWin.dispatchEvent(event);
+      let winUtils = aDomWin.QueryInterface(Ci.nsIInterfaceRequestor)
+                           .getInterface(Ci.nsIDOMWindowUtils);
+      winUtils.dispatchEventToChromeOnly(aDomWin, event);
     } catch(ex) {
     }
   }

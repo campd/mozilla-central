@@ -12,6 +12,8 @@
 #include "nricemediastream.h"
 #include "PeerConnectionImpl.h"
 #include "PeerConnectionMedia.h"
+#include "AudioConduit.h"
+#include "VideoConduit.h"
 #include "runnable_utils.h"
 
 #ifdef MOZILLA_INTERNAL_API
@@ -68,7 +70,7 @@ PeerConnectionImpl* PeerConnectionImpl::CreatePeerConnection()
 }
 
 
-nsresult PeerConnectionMedia::Init()
+nsresult PeerConnectionMedia::Init(const std::vector<NrIceStunServer>& stun_servers)
 {
   // TODO(ekr@rtfm.com): need some way to set not offerer later
   // Looks like a bug in the NrIceCtx API.
@@ -77,7 +79,10 @@ nsresult PeerConnectionMedia::Init()
     CSFLogErrorS(logTag, __FUNCTION__ << ": Failed to create Ice Context");
     return NS_ERROR_FAILURE;
   }
-
+  nsresult rv = mIceCtx->SetStunServers(stun_servers);
+  if (NS_FAILED(rv)) {
+    return rv;
+  }
   mIceCtx->SignalGatheringCompleted.connect(this,
                                             &PeerConnectionMedia::IceGatheringCompleted);
   mIceCtx->SignalCompleted.connect(this,
@@ -326,16 +331,39 @@ LocalSourceStreamInfo::StorePipeline(int aTrack,
 
 void
 RemoteSourceStreamInfo::StorePipeline(int aTrack,
-  mozilla::RefPtr<mozilla::MediaPipeline> aPipeline)
+                                      bool aIsVideo,
+                                      mozilla::RefPtr<mozilla::MediaPipeline> aPipeline)
 {
   MOZ_ASSERT(mPipelines.find(aTrack) == mPipelines.end());
   if (mPipelines.find(aTrack) != mPipelines.end()) {
-    CSFLogErrorS(logTag, __FUNCTION__ << ": Storing duplicate track");
+    CSFLogErrorS(logTag, __FUNCTION__ << ": Request to store duplicate track " << aTrack);
     return;
+  }
+  CSFLogDebug(logTag, "%s track %d %s = %p", __FUNCTION__, aTrack, aIsVideo ? "video" : "audio",
+              aPipeline.get());
+  // See if we have both audio and video here, and if so cross the streams and sync them
+  // XXX Needs to be adjusted when we support multiple streams of the same type
+  for (std::map<int, bool>::iterator it = mTypes.begin(); it != mTypes.end(); ++it) {
+    if (it->second != aIsVideo) {
+      // Ok, we have one video, one non-video - cross the streams!
+      mozilla::WebrtcAudioConduit *audio_conduit = static_cast<mozilla::WebrtcAudioConduit*>
+                                                   (aIsVideo ?
+                                                    mPipelines[it->first]->Conduit() :
+                                                    aPipeline->Conduit());
+      mozilla::WebrtcVideoConduit *video_conduit = static_cast<mozilla::WebrtcVideoConduit*>
+                                                   (aIsVideo ?
+                                                    aPipeline->Conduit() :
+                                                    mPipelines[it->first]->Conduit());
+      video_conduit->SyncTo(audio_conduit);
+      CSFLogDebug(logTag, "Syncing %p to %p, %d to %d", video_conduit, audio_conduit,
+                  aTrack, it->first);
+    }
   }
   //TODO: Revisit once we start supporting multiple streams or multiple tracks
   // of same type
   mPipelines[aTrack] = aPipeline;
+  //TODO: move to attribute on Pipeline
+  mTypes[aTrack] = aIsVideo;
 }
 
 

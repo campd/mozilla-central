@@ -5,7 +5,7 @@
 
 const {utils: Cu} = Components;
 
-Cu.import("resource://gre/modules/commonjs/promise/core.js");
+Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 Cu.import("resource://gre/modules/Metrics.jsm");
 Cu.import("resource://services-common/utils.js");
 
@@ -354,6 +354,41 @@ add_task(function test_enqueue_operation_reject_promise() {
 
   let count = yield backend.getDailyCounterCountFromFieldID(fID, now);
   do_check_eq(count, 1);
+  yield backend.close();
+});
+
+add_task(function test_enqueue_transaction() {
+  let backend = yield Metrics.Storage("enqueue_transaction");
+
+  let mID = yield backend.registerMeasurement("foo", "bar", 1);
+  let fID = yield backend.registerField(mID, "baz", backend.FIELD_DAILY_COUNTER);
+  let now = new Date();
+
+  yield backend.incrementDailyCounterFromFieldID(fID, now);
+
+  yield backend.enqueueTransaction(function transaction() {
+    yield backend.incrementDailyCounterFromFieldID(fID, now);
+  });
+
+  let count = yield backend.getDailyCounterCountFromFieldID(fID, now);
+  do_check_eq(count, 2);
+
+  let errored = false;
+  try {
+    yield backend.enqueueTransaction(function aborted() {
+      yield backend.incrementDailyCounterFromFieldID(fID, now);
+
+      throw new Error("Some error.");
+    });
+  } catch (ex) {
+    errored = true;
+  } finally {
+    do_check_true(errored);
+  }
+
+  count = yield backend.getDailyCounterCountFromFieldID(fID, now);
+  do_check_eq(count, 2);
+
   yield backend.close();
 });
 

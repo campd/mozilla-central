@@ -83,7 +83,6 @@ user_pref("dom.mozBrowserFramesEnabled", %s);
 user_pref("dom.ipc.tabs.disabled", false);
 user_pref("dom.ipc.browser_frames.oop_by_default", false);
 user_pref("dom.mozBrowserFramesWhitelist","app://test-container.gaiamobile.org,http://mochi.test:8888");
-user_pref("marionette.loadearly", true);
 user_pref("marionette.force-local", true);
 """ % OOP_pref)
         f.close()
@@ -118,7 +117,7 @@ class B2GOptions(MochitestOptions):
         self.add_option("--sdcard", action="store",
                         type="string", dest="sdcard",
                         help="Define size of sdcard: 1MB, 50MB...etc")
-        defaults["sdcard"] = None
+        defaults["sdcard"] = "10MB"
 
         self.add_option("--no-window", action="store_true",
                         dest="noWindow",
@@ -230,6 +229,16 @@ class B2GOptions(MochitestOptions):
         # Only reset the xrePath if it wasn't provided
         if options.xrePath == None:
             options.xrePath = options.utilityPath
+
+        if not os.path.isdir(options.xrePath):
+            self.error("--xre-path '%s' is not a directory" % options.xrePath)
+        xpcshell = os.path.join(options.xrePath, 'xpcshell')
+        if not os.access(xpcshell, os.F_OK):
+            self.error('xpcshell not found at %s' % xpcshell)
+        if automation.elf_arm(xpcshell):
+            self.error('--xre-path points to an ARM version of xpcshell; it '
+                       'should instead point to a version that can run on '
+                       'your desktop')
 
         if options.pidFile != "":
             f = open(options.pidFile, 'w')

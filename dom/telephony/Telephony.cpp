@@ -7,26 +7,23 @@
 #include "Telephony.h"
 
 #include "nsIURI.h"
-#include "nsIURL.h"
+#include "nsIDOMCallEvent.h"
 #include "nsPIDOMWindow.h"
-
-#include "jsapi.h"
 #include "nsIPermissionManager.h"
+
+#include "GeneratedEvents.h"
+#include "jsapi.h"
 #include "nsCharSeparatedTokenizer.h"
 #include "nsContentUtils.h"
 #include "nsDOMClassInfo.h"
-#include "nsIInterfaceRequestorUtils.h"
 #include "nsNetUtil.h"
-#include "nsServiceManagerUtils.h"
-#include "SystemWorkerManager.h"
 #include "nsRadioInterfaceLayer.h"
+#include "nsServiceManagerUtils.h"
 #include "nsTArrayHelpers.h"
 
-#include "CallEvent.h"
 #include "TelephonyCall.h"
 
 USING_TELEPHONY_NAMESPACE
-using namespace mozilla::dom::gonk;
 
 namespace {
 
@@ -124,9 +121,6 @@ Telephony::NoteDialedCallFromOtherInstance(const nsAString& aNumber)
 nsresult
 Telephony::NotifyCallsChanged(TelephonyCall* aCall)
 {
-  nsRefPtr<CallEvent> event = CallEvent::Create(aCall);
-  NS_ASSERTION(event, "This should never fail!");
-
   if (aCall->CallState() == nsIRadioInterfaceLayer::CALL_STATE_DIALING ||
       aCall->CallState() == nsIRadioInterfaceLayer::CALL_STATE_ALERTING ||
       aCall->CallState() == nsIRadioInterfaceLayer::CALL_STATE_CONNECTED) {
@@ -136,11 +130,7 @@ Telephony::NotifyCallsChanged(TelephonyCall* aCall)
     mActiveCall = nullptr;
   }
 
-  nsresult rv =
-    event->Dispatch(ToIDOMEventTarget(), NS_LITERAL_STRING("callschanged"));
-  NS_ENSURE_SUCCESS(rv, rv);
-
-  return NS_OK;
+  return DispatchCallEvent(NS_LITERAL_STRING("callschanged"), aCall);
 }
 
 nsresult
@@ -183,8 +173,6 @@ Telephony::DialInternal(bool isEmergency,
   call.forget(aResult);
   return NS_OK;
 }
-
-NS_IMPL_CYCLE_COLLECTION_CLASS(Telephony)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(Telephony,
                                                   nsDOMEventTargetHelper)
@@ -416,12 +404,7 @@ Telephony::CallStateChanged(uint32_t aCallIndex, uint16_t aCallState,
   NS_ASSERTION(mCalls.Contains(call), "Should have auto-added new call!");
 
   if (aCallState == nsIRadioInterfaceLayer::CALL_STATE_INCOMING) {
-    // Dispatch incoming event.
-    nsRefPtr<CallEvent> event = CallEvent::Create(call);
-    NS_ASSERTION(event, "This should never fail!");
-
-    nsresult rv =
-      event->Dispatch(ToIDOMEventTarget(), NS_LITERAL_STRING("incoming"));
+    nsresult rv = DispatchCallEvent(NS_LITERAL_STRING("incoming"), call);
     NS_ENSURE_SUCCESS(rv, rv);
   }
 
@@ -487,6 +470,24 @@ Telephony::NotifyError(int32_t aCallIndex,
   callToNotify->NotifyError(aError);
 
   return NS_OK;
+}
+
+nsresult
+Telephony::DispatchCallEvent(const nsAString& aType,
+                             nsIDOMTelephonyCall* aCall)
+{
+  MOZ_ASSERT(aCall);
+
+  nsCOMPtr<nsIDOMEvent> event;
+  NS_NewDOMCallEvent(getter_AddRefs(event), nullptr, nullptr);
+  NS_ASSERTION(event, "This should never fail!");
+
+  nsCOMPtr<nsIDOMCallEvent> callEvent = do_QueryInterface(event);
+  MOZ_ASSERT(callEvent);
+  nsresult rv = callEvent->InitCallEvent(aType, false, false, aCall);
+  NS_ENSURE_SUCCESS(rv, rv);
+
+  return DispatchTrustedEvent(callEvent);
 }
 
 nsresult

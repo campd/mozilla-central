@@ -125,6 +125,10 @@ public class BrowserToolbar implements ViewSwitcher.ViewFactory,
             layout.setVisibility(mLayout.getVisibility());
         }
         mLayout = layout;
+        mLayout.setOnClickListener(new View.OnClickListener() {
+            public void onClick(View v) {
+            }
+        });
 
         mShowSiteSecurity = false;
         mShowReader = false;
@@ -212,12 +216,22 @@ public class BrowserToolbar implements ViewSwitcher.ViewFactory,
                 Tabs.getInstance().getSelectedTab().doBack();
             }
         });
+        mBack.setOnLongClickListener(new Button.OnLongClickListener() {
+            public boolean onLongClick(View view) {
+                return Tabs.getInstance().getSelectedTab().showBackHistory();
+            }
+        });
 
         mForward = (ImageButton) mLayout.findViewById(R.id.forward);
         mForward.setEnabled(false); // initialize the forward button to not be enabled
         mForward.setOnClickListener(new Button.OnClickListener() {
             public void onClick(View view) {
                 Tabs.getInstance().getSelectedTab().doForward();
+            }
+        });
+        mForward.setOnLongClickListener(new Button.OnLongClickListener() {
+            public boolean onLongClick(View view) {
+                return Tabs.getInstance().getSelectedTab().showForwardHistory();
             }
         });
 
@@ -990,7 +1004,10 @@ public class BrowserToolbar implements ViewSwitcher.ViewFactory,
     }
 
     public void updateBackButton(boolean enabled) {
-         mBack.setColorFilter(enabled ? 0 : 0xFF999999);
+         Drawable drawable = mBack.getDrawable();
+         if (drawable != null)
+             drawable.setAlpha(enabled ? 255 : 77);
+
          mBack.setEnabled(enabled);
     }
 
@@ -1161,10 +1178,8 @@ public class BrowserToolbar implements ViewSwitcher.ViewFactory,
         }
     }
 
-    public void destroy() {
-        // The action-items views are reused on rotation.
-        // Remove them from their parent, so they can be re-attached to new parent.
-        mActionItemBar.removeAllViews();
+    public void onDestroy() {
+        Tabs.unregisterOnTabsChangedListener(this);
     }
 
     public boolean openOptionsMenu() {

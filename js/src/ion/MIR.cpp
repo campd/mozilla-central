@@ -248,43 +248,70 @@ MDefinition::removeUse(MUseIterator use)
 }
 
 MUseIterator
-MNode::replaceOperand(MUseIterator use, MDefinition *ins)
+MNode::replaceOperand(MUseIterator use, MDefinition *def)
 {
-    MDefinition *used = getOperand(use->index());
-    if (used == ins)
+    JS_ASSERT(def != NULL);
+    uint32_t index = use->index();
+    MDefinition *prev = use->producer();
+
+    JS_ASSERT(use->index() < numOperands());
+    JS_ASSERT(use->producer() == getOperand(index));
+    JS_ASSERT(use->consumer() == this);
+
+    if (prev == def)
         return use;
 
-    MUse *save = *use;
-    MUseIterator result(used->removeUse(use));
-    if (ins) {
-        setOperand(save->index(), ins);
-        ins->linkUse(save);
-    }
+    MUseIterator result(prev->removeUse(use));
+    setOperand(index, def);
     return result;
 }
 
 void
 MNode::replaceOperand(size_t index, MDefinition *def)
 {
-    MDefinition *d = getOperand(index);
-    for (MUseIterator i(d->usesBegin()); i != d->usesEnd(); i++) {
-        if (i->index() == index && i->node() == this) {
-            replaceOperand(i, def);
-            return;
-        }
-    }
+    JS_ASSERT(def != NULL);
+    MUse *use = getUseFor(index);
+    MDefinition *prev = use->producer();
 
-    JS_NOT_REACHED("could not find use");
+    JS_ASSERT(use->index() == index);
+    JS_ASSERT(use->index() < numOperands());
+    JS_ASSERT(use->producer() == getOperand(index));
+    JS_ASSERT(use->consumer() == this);
+
+    if (prev == def)
+        return;
+
+    prev->removeUse(use);
+    setOperand(index, def);
+}
+
+void
+MNode::discardOperand(size_t index)
+{
+    MUse *use = getUseFor(index);
+
+    JS_ASSERT(use->index() == index);
+    JS_ASSERT(use->producer() == getOperand(index));
+    JS_ASSERT(use->consumer() == this);
+
+    use->producer()->removeUse(use);
+
+#ifdef DEBUG
+    // Causes any producer/consumer lookups to trip asserts.
+    use->set(NULL, NULL, index);
+#endif
 }
 
 void
 MDefinition::replaceAllUsesWith(MDefinition *dom)
 {
-    for (MUseIterator i(uses_.begin()); i != uses_.end(); ) {
-        MUse *use = *i;
-        i = uses_.removeAt(i);
-        use->node()->setOperand(use->index(), dom);
-        dom->linkUse(use);
+    JS_ASSERT(dom != NULL);
+    if (dom == this)
+        return;
+
+    for (MUseIterator i(usesBegin()); i != usesEnd(); ) {
+        JS_ASSERT(i->producer() == this);
+        i = i->consumer()->replaceOperand(i, dom);
     }
 }
 
@@ -305,6 +332,18 @@ MConstant::MConstant(const js::Value &vp)
 {
     setResultType(MIRTypeFromValue(vp));
     setMovable();
+}
+
+void
+MConstant::analyzeTruncateBackward()
+{
+    if (js::ion::EdgeCaseAnalysis::AllUsesTruncate(this) &&
+        value_.isDouble() && isBigIntOutput())
+    {
+        // Truncate the double to int, since all uses truncates it.
+        value_.setInt32(ToInt32(value_.toDouble()));
+        setResultType(MIRType_Int32);
+    }
 }
 
 HashNumber
@@ -344,6 +383,22 @@ MConstant::printOpcode(FILE *fp)
         fprintf(fp, "%f", value().toDouble());
         break;
       case MIRType_Object:
+        if (value().toObject().isFunction()) {
+            JSFunction *fun = value().toObject().toFunction();
+            if (fun->displayAtom()) {
+                fputs("function ", fp);
+                FileEscapedString(fp, fun->displayAtom(), 0);
+            } else {
+                fputs("unnamed function", fp);
+            }
+            if (fun->hasScript()) {
+                UnrootedScript script = fun->nonLazyScript();
+                fprintf(fp, " (%s:%u)",
+                        script->filename ? script->filename : "", script->lineno);
+            }
+            fprintf(fp, " at %p", (void *) fun);
+            break;
+        }
         fprintf(fp, "object %p (%s)", (void *)&value().toObject(),
                 value().toObject().getClass()->name);
         break;
@@ -458,18 +513,27 @@ MPhi::New(uint32_t slot)
 void
 MPhi::removeOperand(size_t index)
 {
+    MUse *use = getUseFor(index);
+
     JS_ASSERT(index < inputs_.length());
     JS_ASSERT(inputs_.length() > 1);
+
+    JS_ASSERT(use->index() == index);
+    JS_ASSERT(use->producer() == getOperand(index));
+    JS_ASSERT(use->consumer() == this);
+
+    // Remove use from producer's use chain.
+    use->producer()->removeUse(use);
 
     // If we have phi(..., a, b, c, d, ..., z) and we plan
     // on removing a, then first shift downward so that we have
     // phi(..., b, c, d, ..., z, z):
     size_t length = inputs_.length();
-    for (size_t i = index + 1; i < length; i++)
-        replaceOperand(i - 1, getOperand(i));
-
-    // remove the final operand that now appears twice:
-    replaceOperand(length - 1, NULL);
+    for (size_t i = index; i < length - 1; i++) {
+        MUse *next = MPhi::getUseFor(i + 1);
+        next->producer()->removeUse(next);
+        MPhi::setOperand(i, next->producer());
+    }
 
     // truncate the inputs_ list:
     inputs_.shrinkBy(1);
@@ -507,17 +571,56 @@ MPhi::congruentTo(MDefinition *const &ins) const
 }
 
 bool
-MPhi::addInput(MDefinition *ins)
+MPhi::initLength(size_t length)
 {
-    ins->addUse(this, inputs_.length());
-    return inputs_.append(ins);
+    // Initializes a new MPhi to have an Operand vector of at least the given
+    // length. This permits use of setOperand() instead of addInputSlow(), the
+    // latter of which may call realloc().
+    JS_ASSERT(numOperands() == 0);
+    return inputs_.resizeUninitialized(length);
+}
+
+bool
+MPhi::addInputSlow(MDefinition *ins)
+{
+    // The list of inputs to an MPhi is given as a vector of MUse nodes,
+    // each of which is in the list of the producer MDefinition.
+    // Because appending to a vector may reallocate the vector, it is possible
+    // that this operation may cause the producers' linked lists to reference
+    // invalid memory. Therefore, in the event of moving reallocation, each
+    // MUse must be removed and reinserted from/into its producer's use chain.
+    uint32_t index = inputs_.length();
+    bool performingRealloc = !inputs_.canAppendWithoutRealloc(1);
+
+    // Remove all MUses from all use lists, in case realloc() moves.
+    if (performingRealloc) {
+        for (uint32_t i = 0; i < index; i++) {
+            MUse *use = &inputs_[i];
+            use->producer()->removeUse(use);
+        }
+    }
+
+    // Insert the new input.
+    if (!inputs_.append(MUse()))
+        return false;
+    MPhi::setOperand(index, ins);
+
+    // Add all previously-removed MUses back.
+    if (performingRealloc) {
+        for (uint32_t i = 0; i < index; i++) {
+            MUse *use = &inputs_[i];
+            use->producer()->addUse(use);
+        }
+    }
+
+    return true;
 }
 
 uint32_t
 MPrepareCall::argc() const
 {
     JS_ASSERT(useCount() == 1);
-    MCall *call = usesBegin()->node()->toDefinition()->toCall();
+    MCall *call = usesBegin()->consumer()->toDefinition()->toCall();
     return call->numStackArgs();
 }
 
@@ -539,7 +642,7 @@ MCall::addArg(size_t argnum, MPassArg *arg)
     // The operand vector is initialized in reverse order by the IonBuilder.
     // It cannot be checked for consistency until all arguments are added.
     arg->setArgnum(argnum);
-    MNode::initOperand(argnum + NumNonArgumentOperands, arg->toDefinition());
+    setOperand(argnum + NumNonArgumentOperands, arg->toDefinition());
 }
 
 void
@@ -631,10 +734,10 @@ NeedNegativeZeroCheck(MDefinition *def)
 {
     // Test if all uses have the same semantics for -0 and 0
     for (MUseIterator use = def->usesBegin(); use != def->usesEnd(); use++) {
-        if (use->node()->isResumePoint())
+        if (use->consumer()->isResumePoint())
             continue;
 
-        MDefinition *use_def = use->node()->toDefinition();
+        MDefinition *use_def = use->consumer()->toDefinition();
         switch (use_def->op()) {
           case MDefinition::Op_Add: {
             // If add is truncating -0 and 0 are observed as the same.
@@ -786,16 +889,16 @@ MDiv::analyzeEdgeCasesForward()
 
     // Try removing divide by zero check
     if (rhs()->isConstant() && !rhs()->toConstant()->value().isInt32(0))
-        canBeDivideByZero_ =  false;
+        canBeDivideByZero_ = false;
 
     // If lhs is a constant int != INT32_MIN, then
     // negative overflow check can be skipped.
     if (lhs()->isConstant() && !lhs()->toConstant()->value().isInt32(INT32_MIN))
-        setCanBeNegativeZero(false);
+        canBeNegativeOverflow_ = false;
 
     // If rhs is a constant int != -1, likewise.
     if (rhs()->isConstant() && !rhs()->toConstant()->value().isInt32(-1))
-        setCanBeNegativeZero(false);
+        canBeNegativeOverflow_ = false;
 
     // If lhs is != 0, then negative zero check can be skipped.
     if (lhs()->isConstant() && !lhs()->toConstant()->value().isInt32(0))
@@ -837,6 +940,12 @@ MDiv::updateForReplacement(MDefinition *ins_)
     return true;
 }
 
+bool
+MDiv::fallible()
+{
+    return !isTruncated();
+}
+
 static inline MDefinition *
 TryFold(MDefinition *original, MDefinition *replacement)
 {
@@ -858,11 +967,35 @@ MMod::foldsTo(bool useValueNumbers)
 }
 
 void
+MMod::analyzeTruncateBackward()
+{
+    if (!isTruncated())
+        setTruncated(js::ion::EdgeCaseAnalysis::AllUsesTruncate(this));
+}
+
+bool
+MMod::updateForReplacement(MDefinition *ins_)
+{
+    JS_ASSERT(ins_->isMod());
+    MMod *ins = ins_->toMod();
+    if (isTruncated() && ins->isTruncated())
+        setTruncated(Max(isTruncated(), ins->isTruncated()));
+    else
+        setTruncated(0);
+    return true;
+}
+
+bool
+MMod::fallible()
+{
+    return !isTruncated();
+}
+
+void
 MAdd::analyzeTruncateBackward()
 {
-    if (!isTruncated()) {
+    if (!isTruncated())
         setTruncated(js::ion::EdgeCaseAnalysis::AllUsesTruncate(this));
-    }
     if (isTruncated() && isTruncated() < 20) {
         // Super obvious optimization... If this operation is a double
         // BUT it happens to look like a large precision int that eventually
@@ -1094,16 +1227,14 @@ CanDoValueBitwiseCmp(JSContext *cx, types::StackTypeSet *lhs, types::StackTypeSe
         return false;
     }
 
-    // Objects with special equality or that emulates undefined are not supported.
+    // Objects that emulate undefined are not supported.
     if (lhs->maybeObject() &&
-        (lhs->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY) ||
-         lhs->hasObjectFlags(cx, types::OBJECT_FLAG_EMULATES_UNDEFINED)))
+        lhs->hasObjectFlags(cx, types::OBJECT_FLAG_EMULATES_UNDEFINED))
     {
         return false;
     }
     if (rhs->maybeObject() &&
-        (rhs->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY) ||
-         rhs->hasObjectFlags(cx, types::OBJECT_FLAG_EMULATES_UNDEFINED)))
+        rhs->hasObjectFlags(cx, types::OBJECT_FLAG_EMULATES_UNDEFINED))
     {
         return false;
     }
@@ -1161,6 +1292,7 @@ MCompare::inputType()
       case Compare_Double:
         return MIRType_Double;
       case Compare_String:
+      case Compare_StrictString:
         return MIRType_String;
       case Compare_Object:
         return MIRType_Object;
@@ -1225,12 +1357,6 @@ MCompare::infer(const TypeOracle::BinaryTypes &b, JSContext *cx)
 
     // Handle object comparison.
     if (!relationalEq && lhs == MIRType_Object && rhs == MIRType_Object) {
-        if (b.lhsTypes->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY) ||
-            b.rhsTypes->hasObjectFlags(cx, types::OBJECT_FLAG_SPECIAL_EQUALITY))
-        {
-            return;
-        }
-
         compareType_ = Compare_Object;
         return;
     }
@@ -1238,6 +1364,18 @@ MCompare::infer(const TypeOracle::BinaryTypes &b, JSContext *cx)
     // Handle string comparisons. (Relational string compares are still unsupported).
     if (!relationalEq && lhs == MIRType_String && rhs == MIRType_String) {
         compareType_ = Compare_String;
+        return;
+    }
+
+    if (strictEq && lhs == MIRType_String) {
+        // Lowering expects the rhs to be definitly string.
+        compareType_ = Compare_StrictString;
+        swapOperands();
+        return;
+    }
+
+    if (strictEq && rhs == MIRType_String) {
+        compareType_ = Compare_StrictString;
         return;
     }
 
@@ -1380,7 +1518,7 @@ MResumePoint *
 MResumePoint::New(MBasicBlock *block, jsbytecode *pc, MResumePoint *parent, Mode mode)
 {
     MResumePoint *resume = new MResumePoint(block, pc, parent, mode);
-    if (!resume->init(block))
+    if (!resume->init())
         return NULL;
     resume->inherit(block);
     return resume;
@@ -1397,15 +1535,6 @@ MResumePoint::MResumePoint(MBasicBlock *block, jsbytecode *pc, MResumePoint *cal
 {
 }
 
-bool
-MResumePoint::init(MBasicBlock *block)
-{
-    operands_ = block->graph().allocate<MDefinition *>(stackDepth());
-    if (!operands_)
-        return false;
-    return true;
-}
-
 void
 MResumePoint::inherit(MBasicBlock *block)
 {
@@ -1415,7 +1544,7 @@ MResumePoint::inherit(MBasicBlock *block)
         // and LStackArg does not define a value.
         if (def->isPassArg())
             def = def->toPassArg()->getArgument();
-        initOperand(i, def);
+        setOperand(i, def);
     }
 }
 
@@ -1545,6 +1674,31 @@ MCompare::tryFold(bool *result)
             return true;
           case MIRType_Boolean:
             // Int32 specialization should handle this.
+            JS_NOT_REACHED("Wrong specialization");
+            return false;
+          default:
+            JS_NOT_REACHED("Unexpected type");
+            return false;
+        }
+    }
+
+    if (compareType_ == Compare_StrictString) {
+        JS_ASSERT(op == JSOP_STRICTEQ || op == JSOP_STRICTNE);
+        JS_ASSERT(rhs()->type() == MIRType_String);
+
+        switch (lhs()->type()) {
+          case MIRType_Value:
+            return false;
+          case MIRType_Boolean:
+          case MIRType_Int32:
+          case MIRType_Double:
+          case MIRType_Object:
+          case MIRType_Null:
+          case MIRType_Undefined:
+            *result = (op == JSOP_STRICTNE);
+            return true;
+          case MIRType_String:
+            // Compare_String specialization should handle this.
             JS_NOT_REACHED("Wrong specialization");
             return false;
           default:
@@ -1718,6 +1872,29 @@ MBeta::computeRange()
 }
 
 bool
+MNewObject::shouldUseVM() const
+{
+    return templateObject()->hasSingletonType() ||
+           templateObject()->hasDynamicSlots();
+}
+
+bool
+MNewArray::shouldUseVM() const
+{
+    JS_ASSERT(count() < JSObject::NELEMENTS_LIMIT);
+
+    size_t maxArraySlots =
+        gc::GetGCKindSlots(gc::FINALIZE_OBJECT_LAST) - ObjectElements::VALUES_PER_HEADER;
+
+    // Allocate space using the VMCall
+    // when mir hints it needs to get allocated immediatly,
+    // but only when data doesn't fit the available array slots.
+    bool allocating = isAllocating() && count() > maxArraySlots;
+
+    return templateObject()->hasSingletonType() || allocating;
+}
+
+bool
 MLoadFixedSlot::mightAlias(MDefinition *store)
 {
     if (store->isStoreFixedSlot() && store->toStoreFixedSlot()->slot() != slot())
@@ -1731,4 +1908,34 @@ MLoadSlot::mightAlias(MDefinition *store)
     if (store->isStoreSlot() && store->toStoreSlot()->slot() != slot())
         return false;
     return true;
+}
+
+void
+InlinePropertyTable::trimToAndMaybePatchTargets(AutoObjectVector &targets,
+                                                AutoObjectVector &originals)
+{
+    IonSpew(IonSpew_Inlining, "Got inlineable property cache with %d cases",
+            (int)numEntries());
+
+    size_t i = 0;
+    while (i < numEntries()) {
+        bool foundFunc = false;
+        // Compare using originals, but if we find a matching function,
+        // patch it to the target, which might be a clone.
+        for (size_t j = 0; j < originals.length(); j++) {
+            if (entries_[i]->func == originals[j]) {
+                if (entries_[i]->func != targets[j])
+                    entries_[i] = new Entry(entries_[i]->typeObj, targets[j]->toFunction());
+                foundFunc = true;
+                break;
+            }
+        }
+        if (!foundFunc)
+            entries_.erase(&(entries_[i]));
+        else
+            i++;
+    }
+
+    IonSpew(IonSpew_Inlining, "%d inlineable cases left after trimming to %d targets",
+            (int)numEntries(), (int)targets.length());
 }

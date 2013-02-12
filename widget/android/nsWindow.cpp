@@ -131,6 +131,7 @@ nsWindow::TopWindow()
 void
 nsWindow::LogWindow(nsWindow *win, int index, int indent)
 {
+#if defined(DEBUG) || defined(FORCE_ALOG)
     char spaces[] = "                    ";
     spaces[indent < 20 ? indent : 20] = 0;
     ALOG("%s [% 2d] 0x%08x [parent 0x%08x] [% 3d,% 3dx% 3d,% 3d] vis %d type %d",
@@ -138,6 +139,7 @@ nsWindow::LogWindow(nsWindow *win, int index, int indent)
          win->mBounds.x, win->mBounds.y,
          win->mBounds.width, win->mBounds.height,
          win->mIsVisible, win->mWindowType);
+#endif
 }
 
 void
@@ -1011,8 +1013,9 @@ nsWindow::DrawTo(gfxASurface *targetSurface, const nsIntRect &invalidRect)
 
     // If we have no covering child, then we need to render this.
     if (coveringChildIndex == -1) {
-        bool painted = false;
         nsIntRegion region = invalidRect;
+
+        mWidgetListener->WillPaintWindow(this);
 
         switch (GetLayerManager(nullptr)->GetBackendType()) {
             case mozilla::layers::LAYERS_BASIC: {
@@ -1024,18 +1027,8 @@ nsWindow::DrawTo(gfxASurface *targetSurface, const nsIntRect &invalidRect)
                     AutoLayerManagerSetup
                       setupLayerManager(this, ctx, mozilla::layers::BUFFER_NONE);
 
-                    painted = mWidgetListener->PaintWindow(this, region, 0);
+                    mWidgetListener->PaintWindow(this, region, 0);
                 }
-
-                // XXX uhh.. we can't just ignore this because we no longer have
-                // what we needed before, but let's keep drawing the children anyway?
-#if 0
-                if (!painted)
-                    return false;
-#endif
-
-                // XXX if we got an ignore for the parent, do we still want to draw the children?
-                // We don't really have a good way not to...
                 break;
             }
 
@@ -1044,13 +1037,15 @@ nsWindow::DrawTo(gfxASurface *targetSurface, const nsIntRect &invalidRect)
                 static_cast<mozilla::layers::LayerManagerOGL*>(GetLayerManager(nullptr))->
                     SetClippingRegion(nsIntRegion(boundsRect));
 
-                painted = mWidgetListener->PaintWindow(this, region, 0);
+                mWidgetListener->PaintWindow(this, region, 0);
                 break;
             }
 
             default:
                 NS_ERROR("Invalid layer manager");
         }
+
+        mWidgetListener->DidPaintWindow();
 
         // We had no covering child, so make sure we draw all the children,
         // starting from index 0.
@@ -1430,7 +1425,9 @@ static unsigned int ConvertAndroidKeyCodeToDOMKeyCode(int androidKeyCode)
         case AndroidKeyEvent::KEYCODE_DPAD_LEFT:          return NS_VK_LEFT;
         case AndroidKeyEvent::KEYCODE_DPAD_RIGHT:         return NS_VK_RIGHT;
         case AndroidKeyEvent::KEYCODE_DPAD_CENTER:        return NS_VK_RETURN;
-        // KEYCODE_VOLUME_UP (24) ... KEYCODE_Z (54)
+        case AndroidKeyEvent::KEYCODE_VOLUME_UP:          return NS_VK_VOLUME_UP;
+        case AndroidKeyEvent::KEYCODE_VOLUME_DOWN:        return NS_VK_VOLUME_DOWN;
+        // KEYCODE_VOLUME_POWER (26) ... KEYCODE_Z (54)
         case AndroidKeyEvent::KEYCODE_COMMA:              return NS_VK_COMMA;
         case AndroidKeyEvent::KEYCODE_PERIOD:             return NS_VK_PERIOD;
         case AndroidKeyEvent::KEYCODE_ALT_LEFT:           return NS_VK_ALT;
@@ -1451,7 +1448,8 @@ static unsigned int ConvertAndroidKeyCodeToDOMKeyCode(int androidKeyCode)
         case AndroidKeyEvent::KEYCODE_SEMICOLON:          return NS_VK_SEMICOLON;
         // KEYCODE_APOSTROPHE (75)
         case AndroidKeyEvent::KEYCODE_SLASH:              return NS_VK_SLASH;
-        // KEYCODE_AT (77) ... KEYCODE_MUTE (91)
+        // KEYCODE_AT (77) ... KEYCODE_MEDIA_FAST_FORWARD (90)
+        case AndroidKeyEvent::KEYCODE_MUTE:               return NS_VK_VOLUME_MUTE;
         case AndroidKeyEvent::KEYCODE_PAGE_UP:            return NS_VK_PAGE_UP;
         case AndroidKeyEvent::KEYCODE_PAGE_DOWN:          return NS_VK_PAGE_DOWN;
         // KEYCODE_PICTSYMBOLS (94) ... KEYCODE_BUTTON_MODE (110)
@@ -1591,14 +1589,6 @@ nsWindow::HandleSpecialKey(AndroidGeckoEvent *ae)
                     doCommand = true;
                 }
                 break;
-            case AndroidKeyEvent::KEYCODE_VOLUME_UP:
-                command = nsGkAtoms::VolumeUp;
-                doCommand = true;
-                break;
-            case AndroidKeyEvent::KEYCODE_VOLUME_DOWN:
-                command = nsGkAtoms::VolumeDown;
-                doCommand = true;
-                break;
             case AndroidKeyEvent::KEYCODE_MENU:
                 gMenu = true;
                 gMenuConsumed = isLongPress;
@@ -1672,8 +1662,6 @@ nsWindow::OnKeyEvent(AndroidGeckoEvent *ae)
     case AndroidKeyEvent::KEYCODE_BACK:
     case AndroidKeyEvent::KEYCODE_MENU:
     case AndroidKeyEvent::KEYCODE_SEARCH:
-    case AndroidKeyEvent::KEYCODE_VOLUME_UP:
-    case AndroidKeyEvent::KEYCODE_VOLUME_DOWN:
         HandleSpecialKey(ae);
         return;
     }
@@ -1703,7 +1691,7 @@ nsWindow::OnKeyEvent(AndroidGeckoEvent *ae)
 #ifdef DEBUG_ANDROID_IME
 #define ALOGIME(args...) ALOG(args)
 #else
-#define ALOGIME(args...)
+#define ALOGIME(args...) ((void)0)
 #endif
 
 static nscolor
@@ -1771,6 +1759,19 @@ nsWindow::OnIMEEvent(AndroidGeckoEvent *ae)
     if (ae->Action() == AndroidGeckoEvent::IME_ACKNOWLEDGE_FOCUS) {
         MOZ_ASSERT(mIMEMaskEventsCount > 0);
         mIMEMaskEventsCount--;
+        if (!mIMEMaskEventsCount) {
+            // The focusing handshake sequence is complete, and Java is waiting
+            // on Gecko. Now we can notify Java of the newly focused content
+            mIMETextChanges.Clear();
+            mIMESelectionChanged = false;
+            // OnIMETextChange also notifies selection
+            // Use 'INT32_MAX / 2' here because subsequent text changes might
+            // combine with this text change, and overflow might occur if
+            // we just use INT32_MAX
+            OnIMETextChange(0, INT32_MAX / 2, INT32_MAX / 2);
+            FlushIMEChanges();
+        }
+        AndroidBridge::NotifyIME(AndroidBridge::NOTIFY_IME_REPLY_EVENT, 0);
         return;
     }
     if (mIMEMaskEventsCount > 0) {
@@ -2074,16 +2075,7 @@ nsWindow::OnIMEFocusChange(bool aFocus)
 {
     ALOGIME("IME: OnIMEFocusChange: f=%d", aFocus);
 
-    if (aFocus) {
-        mIMETextChanges.Clear();
-        mIMESelectionChanged = false;
-        // OnIMETextChange also notifies selection
-        // Use 'INT32_MAX / 2' here because subsequent text changes might
-        // combine with this text change, and overflow might occur if
-        // we just use INT32_MAX
-        OnIMETextChange(0, INT32_MAX / 2, INT32_MAX / 2);
-        FlushIMEChanges();
-    } else {
+    if (!aFocus) {
         // Mask events because we lost focus. On the next focus event, Gecko will notify
         // Java, and Java will send an acknowledge focus event back to Gecko. That is
         // where we unmask event handling
@@ -2316,18 +2308,18 @@ nsWindow::ScheduleComposite()
 }
 
 void
-nsWindow::SchedulePauseComposition()
-{
-    if (sCompositorParent) {
-        sCompositorParent->SchedulePauseOnCompositorThread();
-    }
-}
-
-void
 nsWindow::ScheduleResumeComposition(int width, int height)
 {
     if (sCompositorParent && sCompositorParent->ScheduleResumeOnCompositorThread(width, height)) {
         sCompositorPaused = false;
+    }
+}
+
+void
+nsWindow::ForceIsFirstPaint()
+{
+    if (sCompositorParent) {
+        sCompositorParent->ForceIsFirstPaint();
     }
 }
 
@@ -2367,10 +2359,7 @@ nsWindow::NeedsPaint()
   if (sCompositorPaused || FindTopLevel() != nsWindow::TopWindow()) {
     return false;
   }
-  nsIntRect bounds;
-  nsresult rv = GetBounds(bounds);
-  NS_ENSURE_SUCCESS(rv, false);
-  return !bounds.IsEmpty();
+  return nsIWidget::NeedsPaint();
 }
 
 

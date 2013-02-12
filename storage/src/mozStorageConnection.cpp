@@ -834,7 +834,10 @@ Connection::stepStatement(sqlite3_stmt *aStatement)
 
   // Report very slow SQL statements to Telemetry
   TimeDuration duration = TimeStamp::Now() - startTime;
-  if (duration.ToMilliseconds() >= Telemetry::kSlowStatementThreshold) {
+  const uint32_t threshold =
+    NS_IsMainThread() ? Telemetry::kSlowSQLThresholdForMainThread
+                      : Telemetry::kSlowSQLThresholdForHelperThreads;
+  if (duration.ToMilliseconds() >= threshold) {
     nsDependentCString statementString(::sqlite3_sql(aStatement));
     Telemetry::RecordSlowSQLStatement(statementString, getFilename(),
                                       duration.ToMilliseconds());
@@ -910,7 +913,10 @@ Connection::executeSql(const char *aSqlString)
 
   // Report very slow SQL statements to Telemetry
   TimeDuration duration = TimeStamp::Now() - startTime;
-  if (duration.ToMilliseconds() >= Telemetry::kSlowStatementThreshold) {
+  const uint32_t threshold =
+    NS_IsMainThread() ? Telemetry::kSlowSQLThresholdForMainThread
+                      : Telemetry::kSlowSQLThresholdForHelperThreads;
+  if (duration.ToMilliseconds() >= threshold) {
     nsDependentCString statementString(aSqlString);
     Telemetry::RecordSlowSQLStatement(statementString, getFilename(),
                                       duration.ToMilliseconds());
@@ -1048,6 +1054,7 @@ Connection::Clone(bool aReadOnly,
   }
 
   // Copy any functions that have been added to this connection.
+  SQLiteMutexAutoLock lockedScope(sharedDBMutex);
   (void)mFunctions.EnumerateRead(copyFunctionEnumerator, clone);
 
   NS_ADDREF(*_connection = clone);

@@ -26,7 +26,7 @@ extern PRLogModuleInfo* GetDataChannelLog();
 #include "nsDOMClassInfo.h"
 #include "nsDOMEventTargetHelper.h"
 
-#include "jsval.h"
+#include "js/Value.h"
 
 #include "nsError.h"
 #include "nsAutoPtr.h"
@@ -101,8 +101,6 @@ private:
 };
 
 DOMCI_DATA(DataChannel, nsDOMDataChannel)
-
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsDOMDataChannel)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsDOMDataChannel,
                                                   nsDOMEventTargetHelper)

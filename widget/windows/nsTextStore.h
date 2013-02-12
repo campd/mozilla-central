@@ -17,6 +17,13 @@
 #include <msctf.h>
 #include <textstor.h>
 
+// GUID_PROP_INPUTSCOPE is declared in inputscope.h using INIT_GUID.
+// With initguid.h, we get its instance instead of extern declaration.
+#ifdef INPUTSCOPE_INIT_GUID
+#include <initguid.h>
+#endif
+#include <inputscope.h>
+
 struct ITfThreadMgr;
 struct ITfDocumentMgr;
 struct ITfDisplayAttributeMgr;
@@ -101,6 +108,7 @@ public:
   static void     SetInputContext(const InputContext& aContext)
   {
     if (!sTsfTextStore) return;
+    sTsfTextStore->SetInputScope(aContext.mHTMLInputType);
     sTsfTextStore->SetInputContextInternal(aContext.mIMEState.mEnabled);
   }
 
@@ -197,6 +205,10 @@ protected:
   HRESULT  SendTextEventForCompositionString();
   HRESULT  SaveTextEvent(const nsTextEvent* aEvent);
   nsresult OnCompositionTimer();
+  HRESULT  ProcessScopeRequest(DWORD dwFlags,
+                               ULONG cFilterAttrs,
+                               const TS_ATTRID *paFilterAttrs);
+  void     SetInputScope(const nsString& aHTMLInputType);
 
   // Holds the pointer to our current win32 or metro widget
   nsRefPtr<nsWindowBase>       mWidget;
@@ -242,6 +254,10 @@ protected:
   // Timer for calling ITextStoreACPSink::OnLayoutChange. This is only used
   // during composing.
   nsCOMPtr<nsITimer>           mCompositionTimer;
+  // The input scopes for this context, defaults to IS_DEFAULT.
+  nsTArray<InputScope>         mInputScopes;
+  bool                         mInputScopeDetected;
+  bool                         mInputScopeRequested;
 
   // TSF thread manager object for the current application
   static ITfThreadMgr*  sTsfThreadMgr;

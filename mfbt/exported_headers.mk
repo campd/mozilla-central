@@ -9,11 +9,13 @@
 EXPORTS_NAMESPACES += mozilla
 
 EXPORTS_mozilla += \
+  ASan.h \
   Assertions.h \
   Attributes.h \
   BloomFilter.h \
   Char16.h \
   CheckedInt.h \
+  Compiler.h \
   Constants.h \
   DebugOnly.h \
   EnumSet.h \
@@ -33,8 +35,9 @@ EXPORTS_mozilla += \
   SplayTree.h \
   StandardInteger.h \
   ThreadLocal.h \
-  TypeTraits.h \
+  TypedEnum.h \
   Types.h \
+  TypeTraits.h \
   Util.h \
   WeakPtr.h \
   $(NULL)

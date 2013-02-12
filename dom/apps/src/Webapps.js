@@ -184,6 +184,10 @@ WebappsRegistry.prototype = {
   },
 
   get mgmt() {
+    if (!this.hasMgmtPrivilege) {
+      return null;
+    }
+
     if (!this._mgmt)
       this._mgmt = new WebappsApplicationMgmt(this._window);
     return this._mgmt;
@@ -241,26 +245,25 @@ WebappsRegistry.prototype = {
                               "Webapps:GetSelf:Return:OK",
                               "Webapps:CheckInstalled:Return:OK" ]);
 
-    let util = this._window.QueryInterface(Ci.nsIInterfaceRequestor).getInterface(Ci.nsIDOMWindowUtils);
+    let util = this._window.QueryInterface(Ci.nsIInterfaceRequestor)
+                           .getInterface(Ci.nsIDOMWindowUtils);
     this._id = util.outerWindowID;
     cpmm.sendAsyncMessage("Webapps:RegisterForMessages",
                           ["Webapps:Install:Return:OK"]);
+
+    let principal = aWindow.document.nodePrincipal;
+    let perm = Services.perms
+               .testExactPermissionFromPrincipal(principal, "webapps-manage");
+
+    // Only pages with the webapps-manage permission set can get access to
+    // the mgmt object.
+    this.hasMgmtPrivilege = perm == Ci.nsIPermissionManager.ALLOW_ACTION;
   },
 
   classID: Components.ID("{fff440b3-fae2-45c1-bf03-3b5a2e432270}"),
 
   QueryInterface: XPCOMUtils.generateQI([Ci.mozIDOMApplicationRegistry,
-#ifdef MOZ_PHOENIX
-# Firefox Desktop: installPackage not implemented
-#elifdef ANDROID
-#ifndef MOZ_WIDGET_GONK
-# Firefox Android (Fennec): installPackage not implemented
-#else
-# B2G Gonk: installPackage implemented
-                                         Ci.mozIDOMApplicationRegistry2,
-#endif
-#else
-# B2G Desktop and others: installPackage implementation status varies
+#ifdef MOZ_B2G
                                          Ci.mozIDOMApplicationRegistry2,
 #endif
                                          Ci.nsIDOMGlobalPropertyInitializer]),
@@ -268,17 +271,7 @@ WebappsRegistry.prototype = {
   classInfo: XPCOMUtils.generateCI({classID: Components.ID("{fff440b3-fae2-45c1-bf03-3b5a2e432270}"),
                                     contractID: "@mozilla.org/webapps;1",
                                     interfaces: [Ci.mozIDOMApplicationRegistry,
-#ifdef MOZ_PHOENIX
-# Firefox Desktop: installPackage not implemented
-#elifdef ANDROID
-#ifndef MOZ_WIDGET_GONK
-# Firefox Android (Fennec): installPackage not implemented
-#else
-# B2G Gonk: installPackage implemented
-                                                 Ci.mozIDOMApplicationRegistry2,
-#endif
-#else
-# B2G Desktop and others: installPackage implementation status varies
+#ifdef MOZ_B2G
                                                  Ci.mozIDOMApplicationRegistry2,
 #endif
                                                  ],
@@ -319,6 +312,39 @@ DOMError.prototype = {
 /**
   * mozIDOMApplication object
   */
+
+// A simple cache for the wrapped manifests.
+let manifestCache = {
+  _cache: { },
+
+  // Gets an entry from the cache, and populates the cache if needed.
+  get: function mcache_get(aManifestURL, aManifest, aWindow, aInnerWindowID) {
+    if (!(aManifestURL in this._cache)) {
+      this._cache[aManifestURL] = { };
+    }
+
+    let winObjs = this._cache[aManifestURL];
+    if (!(aInnerWindowID in winObjs)) {
+      winObjs[aInnerWindowID] = ObjectWrapper.wrap(aManifest, aWindow);
+    }
+
+    return winObjs[aInnerWindowID];
+  },
+
+  // Invalidates an entry in the cache.
+  evict: function mcache_evict(aManifestURL, aInnerWindowID) {
+    if (aManifestURL in this._cache) {
+      let winObjs = this._cache[aManifestURL];
+      if (aInnerWindowID in winObjs) {
+        delete winObjs[aInnerWindowID];
+      }
+
+      if (Object.keys(winObjs).length == 0) {
+        delete this._cache[aManifestURL];
+      }
+    }
+  }
+};
 
 function createApplicationObject(aWindow, aApp) {
   let app = Cc["@mozilla.org/webapps/application;1"].createInstance(Ci.mozIDOMApplication);
@@ -374,7 +400,10 @@ WebappsApplication.prototype = {
   },
 
   get manifest() {
-    return this.manifest = ObjectWrapper.wrap(this._manifest, this._window);
+    return manifestCache.get(this.manifestURL,
+                             this._manifest,
+                             this._window,
+                             this.innerWindowID);
   },
 
   get updateManifest() {
@@ -452,6 +481,7 @@ WebappsApplication.prototype = {
                                               manifestURL: this.manifestURL,
                                               startPoint: aStartPoint || "",
                                               oid: this._id,
+                                              timestamp: Date.now(),
                                               requestID: this.getRequestId(request) });
     return request;
   },
@@ -470,6 +500,8 @@ WebappsApplication.prototype = {
                           ["Webapps:OfflineCache",
                            "Webapps:PackageEvent",
                            "Webapps:CheckForUpdate:Return:OK"]);
+
+    manifestCache.evict(this.manifestURL, this.innerWindowID);
   },
 
   _fireEvent: function(aName, aHandler) {
@@ -527,6 +559,7 @@ WebappsApplication.prototype = {
             this._fireEvent("downloadsuccess", this._ondownloadsuccess);
             this._fireEvent("downloadapplied", this._ondownloadapplied);
           } else {
+            this.downloading = true;
             this._fireEvent("downloadprogress", this._onprogress);
           }
         } else if (msg.error) {
@@ -559,15 +592,23 @@ WebappsApplication.prototype = {
             this._fireEvent("downloadprogress", this._onprogress);
             break;
           case "installed":
+            manifestCache.evict(this.manifestURL, this.innerWindowID);
             this._manifest = msg.manifest;
             this._fireEvent("downloadsuccess", this._ondownloadsuccess);
             this._fireEvent("downloadapplied", this._ondownloadapplied);
             break;
           case "downloaded":
-            this._manifest = msg.manifest;
+            // We don't update the packaged apps manifests until they
+            // are installed or until the update is unstaged.
+            if (msg.manifest) {
+              manifestCache.evict(this.manifestURL, this.innerWindowID);
+              this._manifest = msg.manifest;
+            }
             this._fireEvent("downloadsuccess", this._ondownloadsuccess);
             break;
           case "applied":
+            manifestCache.evict(this.manifestURL, this.innerWindowID);
+            this._manifest = msg.manifest;
             this._fireEvent("downloadapplied", this._ondownloadapplied);
             break;
         }
@@ -590,16 +631,6 @@ WebappsApplication.prototype = {
   * mozIDOMApplicationMgmt object
   */
 function WebappsApplicationMgmt(aWindow) {
-  let principal = aWindow.document.nodePrincipal;
-  let secMan = Cc["@mozilla.org/scriptsecuritymanager;1"].getService(Ci.nsIScriptSecurityManager);
-
-  let perm = principal == secMan.getSystemPrincipal()
-               ? Ci.nsIPermissionManager.ALLOW_ACTION
-               : Services.perms.testExactPermissionFromPrincipal(principal, "webapps-manage");
-
-  //only pages with perm set can use some functions
-  this.hasPrivileges = perm == Ci.nsIPermissionManager.ALLOW_ACTION;
-
   this.initHelper(aWindow, ["Webapps:GetAll:Return:OK",
                             "Webapps:GetAll:Return:KO",
                             "Webapps:Uninstall:Return:OK",
@@ -646,6 +677,7 @@ WebappsApplicationMgmt.prototype = {
   },
 
   uninstall: function(aApp) {
+    dump("-- webapps.js uninstall " + aApp.manifestURL + "\n");
     let request = this.createRequest();
     cpmm.sendAsyncMessage("Webapps:Uninstall", { origin: aApp.origin,
                                                  oid: this._id,
@@ -656,8 +688,7 @@ WebappsApplicationMgmt.prototype = {
   getAll: function() {
     let request = this.createRequest();
     cpmm.sendAsyncMessage("Webapps:GetAll", { oid: this._id,
-                                              requestID: this.getRequestId(request),
-                                              hasPrivileges: this.hasPrivileges });
+                                              requestID: this.getRequestId(request) });
     return request;
   },
 
@@ -677,17 +708,11 @@ WebappsApplicationMgmt.prototype = {
   },
 
   set oninstall(aCallback) {
-    if (this.hasPrivileges)
-      this._oninstall = aCallback;
-    else
-      throw new Components.Exception("Denied", Cr.NS_ERROR_FAILURE);
+    this._oninstall = aCallback;
   },
 
   set onuninstall(aCallback) {
-    if (this.hasPrivileges)
-      this._onuninstall = aCallback;
-    else
-      throw new Components.Exception("Denied", Cr.NS_ERROR_FAILURE);
+    this._onuninstall = aCallback;
   },
 
   receiveMessage: function(aMessage) {

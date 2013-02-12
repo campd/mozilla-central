@@ -281,8 +281,6 @@ NS_NewXULDocument(nsIXULDocument** result)
 // nsISupports interface
 //
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXULDocument)
-
 static PLDHashOperator
 TraverseTemplateBuilders(nsISupports* aKey, nsIXULTemplateBuilder* aData,
                          void* aContext)
@@ -2371,7 +2369,7 @@ nsXULDocument::PrepareToWalk()
 
     if (mState == eState_Master) {
         // Add the root element
-        rv = CreateElementFromPrototype(proto, getter_AddRefs(root));
+        rv = CreateElementFromPrototype(proto, getter_AddRefs(root), true);
         if (NS_FAILED(rv)) return rv;
 
         rv = AppendChildTo(root, false);
@@ -2876,7 +2874,8 @@ nsXULDocument::ResumeWalk()
 
                 if (!processingOverlayHookupNodes) {
                     rv = CreateElementFromPrototype(protoele,
-                                                    getter_AddRefs(child));
+                                                    getter_AddRefs(child),
+                                                    false);
                     if (NS_FAILED(rv)) return rv;
 
                     // ...and append it to the content model.
@@ -3542,7 +3541,7 @@ nsXULDocument::ExecuteScript(nsIScriptContext * aContext, JSScript* aScriptObjec
 
     // Execute the precompiled script with the given version
     JSObject* global = mScriptGlobalObject->GetGlobalJSObject();
-    return aContext->ExecuteScript(aScriptObject, global, nullptr, nullptr);
+    return aContext->ExecuteScript(aScriptObject, global);
 }
 
 nsresult
@@ -3571,7 +3570,8 @@ nsXULDocument::ExecuteScript(nsXULPrototypeScript *aScript)
 
 nsresult
 nsXULDocument::CreateElementFromPrototype(nsXULPrototypeElement* aPrototype,
-                                          Element** aResult)
+                                          Element** aResult,
+                                          bool aIsRoot)
 {
     // Create a content model element from a prototype element.
     NS_PRECONDITION(aPrototype != nullptr, "null ptr");
@@ -3594,7 +3594,7 @@ nsXULDocument::CreateElementFromPrototype(nsXULPrototypeElement* aPrototype,
     if (aPrototype->mNodeInfo->NamespaceEquals(kNameSpaceID_XUL)) {
         // If it's a XUL element, it'll be lightweight until somebody
         // monkeys with it.
-        rv = nsXULElement::Create(aPrototype, this, true, getter_AddRefs(result));
+        rv = nsXULElement::Create(aPrototype, this, true, aIsRoot, getter_AddRefs(result));
         if (NS_FAILED(rv)) return rv;
     }
     else {
@@ -3633,7 +3633,7 @@ nsXULDocument::CreateOverlayElement(nsXULPrototypeElement* aPrototype,
     nsresult rv;
 
     nsRefPtr<Element> element;
-    rv = CreateElementFromPrototype(aPrototype, getter_AddRefs(element));
+    rv = CreateElementFromPrototype(aPrototype, getter_AddRefs(element), false);
     if (NS_FAILED(rv)) return rv;
 
     OverlayForwardReference* fwdref =

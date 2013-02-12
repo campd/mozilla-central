@@ -445,6 +445,10 @@ pref("media.volume.steps", 10);
 //Enable/disable marionette server, set listening port
 pref("marionette.defaultPrefs.enabled", true);
 pref("marionette.defaultPrefs.port", 2828);
+#ifndef MOZ_WIDGET_GONK
+// On desktop builds, we need to force the socket to listen on localhost only
+pref("marionette.force-local", true);
+#endif
 #endif
 
 #ifdef MOZ_UPDATER
@@ -543,7 +547,8 @@ pref("ui.showHideScrollbars", 1);
 // documents a 1s grace period before they're eligible to be marked as
 // background.
 pref("dom.ipc.processPriorityManager.enabled", true);
-pref("dom.ipc.processPriorityManager.gracePeriodMS", 1000);
+pref("dom.ipc.processPriorityManager.backgroundGracePeriodMS", 1000);
+pref("dom.ipc.processPriorityManager.temporaryPriorityMS", 5000);
 
 // Kernel parameters for how processes are killed on low-memory.
 pref("gonk.systemMemoryPressureRecoveryPollMS", 5000);
@@ -552,7 +557,7 @@ pref("hal.processPriorityManager.gonk.masterKillUnderMB", 1);
 pref("hal.processPriorityManager.gonk.foregroundOomScoreAdjust", 67);
 pref("hal.processPriorityManager.gonk.foregroundKillUnderMB", 4);
 pref("hal.processPriorityManager.gonk.backgroundPerceivableOomScoreAdjust", 134);
-pref("hal.processPriorityManager.gonk.backgroundPerceivebleKillUnderMB", 5);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenOomScoreAdjust", 200);
 pref("hal.processPriorityManager.gonk.backgroundHomescreenKillUnderMB", 5);
 pref("hal.processPriorityManager.gonk.backgroundOomScoreAdjust", 400);
@@ -560,16 +565,18 @@ pref("hal.processPriorityManager.gonk.backgroundKillUnderMB", 8);
 pref("hal.processPriorityManager.gonk.notifyLowMemUnderMB", 10);
 
 // Niceness values (i.e., CPU priorities) for B2G processes.
-pref("hal.processPriorityManager.gonk.masterNice", -1);
-pref("hal.processPriorityManager.gonk.foregroundNice", 0);
-pref("hal.processPriorityManager.gonk.backgroundNice", 10);
+pref("hal.processPriorityManager.gonk.masterNice", 0);
+pref("hal.processPriorityManager.gonk.foregroundNice", 1);
+pref("hal.processPriorityManager.gonk.backgroundPerceivableNice", 10);
+pref("hal.processPriorityManager.gonk.backgroundHomescreenNice", 20);
+pref("hal.processPriorityManager.gonk.backgroundNice", 20);
 
 #ifndef DEBUG
 // Enable pre-launching content processes for improved startup time
 // (hiding latency).
 pref("dom.ipc.processPrelaunch.enabled", true);
 // Wait this long before pre-launching a new subprocess.
-pref("dom.ipc.processPrelaunch.delayMs", 1000);
+pref("dom.ipc.processPrelaunch.delayMs", 5000);
 #endif
 
 // Ignore the "dialog=1" feature in window.open.
@@ -636,3 +643,9 @@ pref("webgl.can-lose-context-in-foreground", false);
 // this fifo to trigger about:memory dumps, among other things.
 pref("memory_info_dumper.watch_fifo.enabled", true);
 pref("memory_info_dumper.watch_fifo.directory", "/data/local");
+
+// <input type='file'> implementation is not complete. We have to disable the
+// type to web content to help them do feature detection.
+pref("dom.disable_input_file", true);
+
+pref("general.useragent.enable_overrides", true);

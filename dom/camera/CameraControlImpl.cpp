@@ -10,6 +10,7 @@
 
 using namespace mozilla;
 using namespace mozilla::dom;
+using namespace mozilla::idl;
 
 CameraControlImpl::CameraControlImpl(uint32_t aCameraId, nsIThread* aCameraThread, uint64_t aWindowId)
   : mCameraId(aCameraId)
@@ -333,7 +334,7 @@ CameraControlImpl::AutoFocus(nsICameraAutoFocusCallback* onSuccess, nsICameraErr
 }
 
 nsresult
-CameraControlImpl::TakePicture(CameraSize aSize, int32_t aRotation, const nsAString& aFileFormat, CameraPosition aPosition, nsICameraTakePictureCallback* onSuccess, nsICameraErrorCallback* onError)
+CameraControlImpl::TakePicture(CameraSize aSize, int32_t aRotation, const nsAString& aFileFormat, CameraPosition aPosition, uint64_t aDateTime, nsICameraTakePictureCallback* onSuccess, nsICameraErrorCallback* onError)
 {
   MOZ_ASSERT(NS_IsMainThread());
   bool cancel = false;
@@ -349,7 +350,7 @@ CameraControlImpl::TakePicture(CameraSize aSize, int32_t aRotation, const nsAStr
     cancel = true;
   }
 
-  nsCOMPtr<nsIRunnable> takePictureTask = new TakePictureTask(this, cancel, aSize, aRotation, aFileFormat, aPosition, onSuccess, onError);
+  nsCOMPtr<nsIRunnable> takePictureTask = new TakePictureTask(this, cancel, aSize, aRotation, aFileFormat, aPosition, aDateTime, onSuccess, onError);
   return mCameraThread->Dispatch(takePictureTask, NS_DISPATCH_NORMAL);
 }
 
@@ -420,7 +421,7 @@ GetPreviewStreamResult::Run()
 
   nsCOMPtr<nsICameraPreviewStreamCallback> onSuccess = mOnSuccessCb.get();
   if (onSuccess && nsDOMCameraManager::IsWindowStillActive(mWindowId)) {
-    nsCOMPtr<nsIDOMMediaStream> stream = new DOMCameraPreview(mCameraControl, mWidth, mHeight, mFramesPerSecond);
+    nsCOMPtr<nsIDOMMediaStream> stream = new DOMCameraPreview(mCameraControl, mWidth, mHeight, mWindowId, mFramesPerSecond);
     onSuccess->HandleEvent(stream);
   }
   return NS_OK;

@@ -85,9 +85,12 @@ TabParent::TabParent(const TabContext& aContext)
   , mIMECompositionStart(0)
   , mIMESeqno(0)
   , mEventCaptureDepth(0)
+  , mRect(0, 0, 0, 0)
   , mDimensions(0, 0)
+  , mOrientation(0)
   , mDPI(0)
   , mShown(false)
+  , mUpdatedDimensions(false)
   , mMarkedDestroying(false)
   , mIsDestroyed(false)
 {
@@ -265,12 +268,20 @@ TabParent::UpdateDimensions(const nsRect& rect, const nsIntSize& size)
   }
   hal::ScreenConfiguration config;
   hal::GetCurrentScreenConfiguration(&config);
+  ScreenOrientation orientation = config.orientation();
 
-  unused << SendUpdateDimensions(rect, size, config.orientation());
-  if (RenderFrameParent* rfp = GetRenderFrame()) {
-    rfp->NotifyDimensionsChanged(size.width, size.height);
+  if (!mUpdatedDimensions || mOrientation != orientation ||
+      mDimensions != size || !mRect.IsEqualEdges(rect)) {
+    mUpdatedDimensions = true;
+    mRect = rect;
+    mDimensions = size;
+    mOrientation = orientation;
+
+    unused << SendUpdateDimensions(mRect, mDimensions, mOrientation);
+    if (RenderFrameParent* rfp = GetRenderFrame()) {
+      rfp->NotifyDimensionsChanged(mDimensions.width, mDimensions.height);
+    }
   }
-  mDimensions = size;
 }
 
 void
@@ -509,22 +520,7 @@ TabParent::RecvSyncMessage(const nsString& aMessage,
                            const ClonedMessageData& aData,
                            InfallibleTArray<nsString>* aJSONRetVal)
 {
-  const SerializedStructuredCloneBuffer& buffer = aData.data();
-  const InfallibleTArray<PBlobParent*>& blobParents = aData.blobsParent();
-  StructuredCloneData cloneData;
-  cloneData.mData = buffer.data;
-  cloneData.mDataLength = buffer.dataLength;
-  if (!blobParents.IsEmpty()) {
-    uint32_t length = blobParents.Length();
-    cloneData.mClosure.mBlobs.SetCapacity(length);
-    for (uint32_t i = 0; i < length; ++i) {
-      BlobParent* blobParent = static_cast<BlobParent*>(blobParents[i]);
-      MOZ_ASSERT(blobParent);
-      nsCOMPtr<nsIDOMBlob> blob = blobParent->GetBlob();
-      MOZ_ASSERT(blob);
-      cloneData.mClosure.mBlobs.AppendElement(blob);
-    }
-  }
+  StructuredCloneData cloneData = ipc::UnpackClonedMessageDataForParent(aData);
   return ReceiveMessage(aMessage, true, &cloneData, aJSONRetVal);
 }
 
@@ -532,24 +528,7 @@ bool
 TabParent::RecvAsyncMessage(const nsString& aMessage,
                                   const ClonedMessageData& aData)
 {
-    const SerializedStructuredCloneBuffer& buffer = aData.data();
-  const InfallibleTArray<PBlobParent*>& blobParents = aData.blobsParent();
-
-    StructuredCloneData cloneData;
-    cloneData.mData = buffer.data;
-    cloneData.mDataLength = buffer.dataLength;
-
-  if (!blobParents.IsEmpty()) {
-    uint32_t length = blobParents.Length();
-      cloneData.mClosure.mBlobs.SetCapacity(length);
-    for (uint32_t i = 0; i < length; ++i) {
-      BlobParent* blobParent = static_cast<BlobParent*>(blobParents[i]);
-      MOZ_ASSERT(blobParent);
-      nsCOMPtr<nsIDOMBlob> blob = blobParent->GetBlob();
-        MOZ_ASSERT(blob);
-        cloneData.mClosure.mBlobs.AppendElement(blob);
-      }
-    }
+  StructuredCloneData cloneData = ipc::UnpackClonedMessageDataForParent(aData);
   return ReceiveMessage(aMessage, false, &cloneData, nullptr);
 }
 

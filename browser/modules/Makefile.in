@@ -21,15 +21,17 @@ EXTRA_JS_MODULES = \
 	NewTabUtils.jsm \
 	offlineAppCache.jsm \
 	SignInToWebsite.jsm \
-	TelemetryTimestamps.jsm \
-	Social.jsm \
 	webappsUI.jsm \
 	webrtcUI.jsm \
 	KeywordURLResetPrompter.jsm \
+	Social.jsm \
 	SharedFrame.jsm \
 	$(NULL)
 
-EXTRA_PP_JS_MODULES = RecentWindow.jsm
+EXTRA_PP_JS_MODULES = \
+	RecentWindow.jsm \
+	$(NULL)
+
 
 ifeq ($(MOZ_WIDGET_TOOLKIT),windows)
 EXTRA_JS_MODULES += \

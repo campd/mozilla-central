@@ -109,19 +109,6 @@ nsImageLoadingContent::~nsImageLoadingContent()
                "Observers still registered?");
 }
 
-// Macro to call some func on each observer.  This handles observers
-// removing themselves.
-#define LOOP_OVER_OBSERVERS(func_)                                       \
-  PR_BEGIN_MACRO                                                         \
-    for (ImageObserver* observer = &mObserverList, *next; observer;      \
-         observer = next) {                                              \
-      next = observer->mNext;                                            \
-      if (observer->mObserver) {                                         \
-        observer->mObserver->func_;                                      \
-      }                                                                  \
-    }                                                                    \
-  PR_END_MACRO
-
 /*
  * imgINotificationObserver impl
  */
@@ -142,7 +129,17 @@ nsImageLoadingContent::Notify(imgIRequest* aRequest,
                     "Unknown request");
   }
 
-  LOOP_OVER_OBSERVERS(Notify(aRequest, aType, aData));
+  {
+    nsAutoScriptBlocker scriptBlocker;
+
+    for (ImageObserver* observer = &mObserverList, *next; observer;
+         observer = next) {
+      next = observer->mNext;
+      if (observer->mObserver) {
+        observer->mObserver->Notify(aRequest, aType, aData);
+      }
+    }
+  }
 
   if (aType == imgINotificationObserver::SIZE_AVAILABLE) {
     // Have to check for state changes here, since we might have been in
@@ -1247,4 +1244,17 @@ CORSMode
 nsImageLoadingContent::GetCORSMode()
 {
   return CORS_NONE;
+}
+
+nsImageLoadingContent::ImageObserver::ImageObserver(imgINotificationObserver* aObserver)
+  : mObserver(aObserver)
+  , mNext(nullptr)
+{
+  MOZ_COUNT_CTOR(ImageObserver);
+}
+
+nsImageLoadingContent::ImageObserver::~ImageObserver()
+{
+  MOZ_COUNT_DTOR(ImageObserver);
+  NS_CONTENT_DELETE_LIST_MEMBER(ImageObserver, this, mNext);
 }

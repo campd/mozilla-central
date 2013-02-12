@@ -36,7 +36,6 @@
 class mozIApplication;
 class nsConsoleService;
 class nsIDOMBlob;
-class nsDOMFileBase;
 
 namespace mozilla {
 
@@ -133,9 +132,8 @@ public:
         return mSendPermissionUpdates;
     }
 
-    bool GetParamsForBlob(nsDOMFileBase* aBlob,
-                          BlobConstructorParams* aOutParams);
     BlobParent* GetOrCreateActorForBlob(nsIDOMBlob* aBlob);
+
     /**
      * Kill our subprocess and make sure it dies.  Should only be used
      * in emergency situations since it bypasses the normal shutdown
@@ -150,8 +148,6 @@ protected:
     virtual void ActorDestroy(ActorDestroyReason why);
 
 private:
-    typedef base::ChildPrivileges ChildOSPrivileges;
-
     static nsDataHashtable<nsStringHashKey, ContentParent*> *gAppContentParents;
     static nsTArray<ContentParent*>* gNonAppContentParents;
     static nsTArray<ContentParent*>* gPrivateContent;
@@ -162,7 +158,14 @@ private:
     static void PreallocateAppProcess();
     static void DelayedPreallocateAppProcess();
     static void ScheduleDelayedPreallocateAppProcess();
-    static already_AddRefed<ContentParent> MaybeTakePreallocatedAppProcess();
+
+    // Take the preallocated process and transform it into a "real" app process,
+    // for the specified manifest URL.  If there is no preallocated process (or
+    // if it's dead), this returns false.
+    static already_AddRefed<ContentParent>
+    MaybeTakePreallocatedAppProcess(const nsAString& aAppManifestURL,
+                                    ChildPrivileges aPrivs);
+
     static void FirstIdle();
 
     // Hide the raw constructor methods since we don't want client code
@@ -171,14 +174,16 @@ private:
     using PContentParent::SendPTestShellConstructor;
 
     ContentParent(const nsAString& aAppManifestURL, bool aIsForBrowser,
-                  ChildOSPrivileges aOSPrivileges = base::PRIVILEGES_DEFAULT);
+                  base::ChildPrivileges aOSPrivileges = base::PRIVILEGES_DEFAULT);
     virtual ~ContentParent();
 
     void Init();
 
     // Transform a pre-allocated app process into a "real" app
-    // process, for the specified manifest URL.
-    void SetManifestFromPreallocated(const nsAString& aAppManifestURL);
+    // process, for the specified manifest URL.  If this returns false, the
+    // child process has died.
+    bool TransformPreallocatedIntoApp(const nsAString& aAppManifestURL,
+                                      ChildPrivileges aPrivs);
 
     /**
      * Mark this ContentParent as dead for the purposes of Get*().
@@ -202,7 +207,6 @@ private:
                       base::ProcessId aOtherProcess) MOZ_OVERRIDE;
 
     virtual bool RecvGetProcessAttributes(uint64_t* aId,
-                                          bool* aStartBackground,
                                           bool* aIsForApp,
                                           bool* aIsForBrowser) MOZ_OVERRIDE;
     virtual bool RecvGetXPCOMProcessAttributes(bool* aIsOffline) MOZ_OVERRIDE;
@@ -343,10 +347,12 @@ private:
 
     virtual bool RecvBroadcastVolume(const nsString& aVolumeName);
 
+    virtual bool RecvRecordingDeviceEvents(const nsString& aRecordingStatus);
+
     virtual void ProcessingError(Result what) MOZ_OVERRIDE;
 
     GeckoChildProcessHost* mSubprocess;
-    ChildOSPrivileges mOSPrivileges;
+    base::ChildPrivileges mOSPrivileges;
 
     uint64_t mChildID;
     int32_t mGeolocationWatchID;

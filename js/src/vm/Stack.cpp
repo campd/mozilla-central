@@ -16,6 +16,7 @@
 #include "ion/Bailouts.h"
 #endif
 #include "Stack.h"
+#include "ForkJoin.h"
 
 #include "jsgcinlines.h"
 #include "jsobjinlines.h"
@@ -50,24 +51,34 @@ using mozilla::DebugOnly;
 /*****************************************************************************/
 
 void
-StackFrame::initExecuteFrame(UnrootedScript script, StackFrame *prev, FrameRegs *regs,
-                             const Value &thisv, JSObject &scopeChain, ExecuteType type)
+StackFrame::initExecuteFrame(UnrootedScript script, StackFrame *prevLink, AbstractFramePtr prev,
+                             FrameRegs *regs, const Value &thisv, JSObject &scopeChain,
+                             ExecuteType type)
 {
+     /*
+     * If |prev| is an interpreter frame, we can always prev-link to it.
+     * If |prev| is a baseline JIT frame, we prev-link to its entry frame.
+     */
+    JS_ASSERT_IF(prev.isStackFrame(), prev.asStackFrame() == prevLink);
+    JS_ASSERT_IF(prev, prevLink != NULL);
+
     /*
      * See encoding of ExecuteType. When GLOBAL isn't set, we are executing a
      * script in the context of another frame and the frame type is determined
      * by the context.
      */
     flags_ = type | HAS_SCOPECHAIN | HAS_BLOCKCHAIN | HAS_PREVPC;
-    if (!(flags_ & GLOBAL))
-        flags_ |= (prev->flags_ & (FUNCTION | GLOBAL));
+    if (!(flags_ & GLOBAL)) {
+        JS_ASSERT(prev.isFunctionFrame() || prev.isGlobalFrame());
+        flags_ |= prev.isFunctionFrame() ? FUNCTION : GLOBAL;
+    }
 
     Value *dstvp = (Value *)this - 2;
     dstvp[1] = thisv;
 
     if (isFunctionFrame()) {
-        dstvp[0] = prev->calleev();
-        exec = prev->exec;
+        dstvp[0] = prev.calleev();
+        exec.fun = prev.fun();
         u.evalScript = script;
     } else {
         JS_ASSERT(isGlobalFrame());
@@ -79,7 +90,7 @@ StackFrame::initExecuteFrame(UnrootedScript script, StackFrame *prev, FrameRegs 
     }
 
     scopeChain_ = &scopeChain;
-    prev_ = prev;
+    prev_ = prevLink;
     prevpc_ = regs ? regs->pc : (jsbytecode *)0xbad;
     prevInline_ = regs ? regs->inlined() : NULL;
     blockChain_ = NULL;
@@ -88,11 +99,7 @@ StackFrame::initExecuteFrame(UnrootedScript script, StackFrame *prev, FrameRegs 
     ncode_ = (void *)0xbad;
     Debug_SetValueRangeToCrashOnTouch(&rval_, 1);
     hookData_ = (void *)0xbad;
-    annotation_ = (void *)0xbad;
 #endif
-
-    if (prev && prev->annotation())
-        setAnnotation(prev->annotation());
 }
 
 template <StackFrame::TriggerPostBarriers doPostBarrier>
@@ -185,7 +192,8 @@ StackFrame::prevpcSlow(InlinedSite **pinlined)
     JS_ASSERT(!(flags_ & HAS_PREVPC));
 #if defined(JS_METHODJIT) && defined(JS_MONOIC)
     StackFrame *p = prev();
-    mjit::JITScript *jit = p->script()->getJIT(p->isConstructing(), p->compartment()->compileBarriers());
+    mjit::JITScript *jit = p->script()->getJIT(p->isConstructing(),
+                                               p->compartment()->zone()->compileBarriers());
     prevpc_ = jit->nativeToPC(ncode_, &prevInline_);
     flags_ |= HAS_PREVPC;
     if (pinlined)
@@ -313,7 +321,7 @@ StackFrame::prologue(JSContext *cx, bool newType)
 
     if (isConstructing()) {
         RootedObject callee(cx, &this->callee());
-        JSObject *obj = js_CreateThisForFunction(cx, callee, newType);
+        JSObject *obj = CreateThisForFunction(cx, callee, newType);
         if (!obj)
             return false;
         functionThis() = ObjectValue(*obj);
@@ -642,8 +650,14 @@ StackSpace::containingSegment(const StackFrame *target) const
 void
 StackSpace::markFrame(JSTracer *trc, StackFrame *fp, Value *slotsEnd)
 {
+    /*
+     * JM may leave values with object/string type but a null payload on the
+     * stack. This can happen if the script was initially compiled by Ion,
+     * which replaced dead values with undefined, and later ran under JM which
+     * assumed values were of the original type.
+     */
     Value *slotsBegin = fp->slots();
-    gc::MarkValueRootRange(trc, slotsBegin, slotsEnd, "vm_stack");
+    gc::MarkValueRootRangeMaybeNullPayload(trc, slotsEnd - slotsBegin, slotsBegin, "vm_stack");
 }
 
 void
@@ -845,20 +859,6 @@ ContextStack::~ContextStack()
     JS_ASSERT(!seg_);
 }
 
-ptrdiff_t
-ContextStack::spIndexOf(const Value *vp)
-{
-    if (!hasfp())
-        return JSDVG_SEARCH_STACK;
-
-    Value *base = fp()->base();
-    Value *sp = regs().sp;
-    if (vp < base || vp >= sp)
-        return JSDVG_SEARCH_STACK;
-
-    return vp - sp;
-}
-
 bool
 ContextStack::onTop() const
 {
@@ -1045,7 +1045,7 @@ ContextStack::pushInvokeFrame(JSContext *cx, const CallArgs &args,
 bool
 ContextStack::pushExecuteFrame(JSContext *cx, JSScript *script, const Value &thisv,
                                JSObject &scopeChain, ExecuteType type,
-                               StackFrame *evalInFrame, ExecuteFrameGuard *efg)
+                               AbstractFramePtr evalInFrame, ExecuteFrameGuard *efg)
 {
     AssertCanGC();
 
@@ -1059,24 +1059,35 @@ ContextStack::pushExecuteFrame(JSContext *cx, JSScript *script, const Value &thi
      * Eval-in-frame is the exception since it prev-links to an arbitrary frame
      * (possibly in the middle of some previous segment). Thus pass CANT_EXTEND
      * (to start a new segment) and link the frame and call chain manually
-     * below.
+     * below. If |evalInFrame| is a baseline JIT frame, prev-link to its entry
+     * frame.
      */
     CallArgsList *evalInFrameCalls = NULL;  /* quell overwarning */
     MaybeExtend extend;
+    StackFrame *prevLink;
     if (evalInFrame) {
-        /* Though the prev-frame is given, need to search for prev-call. */
-        StackSegment &seg = cx->stack.space().containingSegment(evalInFrame);
+        /* First, find the right segment. */
+        AllFramesIter frameIter(cx->runtime);
+        while (frameIter.isIon() || frameIter.abstractFramePtr() != evalInFrame)
+            ++frameIter;
+        JS_ASSERT(frameIter.abstractFramePtr() == evalInFrame);
+
+        StackSegment &seg = *frameIter.seg();
+
         StackIter iter(cx->runtime, seg);
         /* Debug-mode currently disables Ion compilation. */
-        JS_ASSERT(!evalInFrame->runningInIon());
-        JS_ASSERT_IF(evalInFrame->compartment() == iter.compartment(), !iter.isIon());
-        while (!iter.isScript() || iter.isIon() || iter.interpFrame() != evalInFrame) {
+        JS_ASSERT_IF(evalInFrame.isStackFrame(), !evalInFrame.asStackFrame()->runningInIon());
+        JS_ASSERT_IF(evalInFrame.compartment() == iter.compartment(), !iter.isIon());
+        while (!iter.isScript() || iter.isIon() || iter.abstractFramePtr() != evalInFrame) {
             ++iter;
-            JS_ASSERT_IF(evalInFrame->compartment() == iter.compartment(), !iter.isIon());
+            JS_ASSERT_IF(evalInFrame.compartment() == iter.compartment(), !iter.isIon());
         }
+        JS_ASSERT(iter.abstractFramePtr() == evalInFrame);
         evalInFrameCalls = iter.data_.calls_;
+        prevLink = iter.data_.fp_;
         extend = CANT_EXTEND;
     } else {
+        prevLink = maybefp();
         extend = CAN_EXTEND;
     }
 
@@ -1085,9 +1096,9 @@ ContextStack::pushExecuteFrame(JSContext *cx, JSScript *script, const Value &thi
     if (!firstUnused)
         return false;
 
-    StackFrame *prev = evalInFrame ? evalInFrame : maybefp();
+    AbstractFramePtr prev = evalInFrame ? evalInFrame : maybefp();
     StackFrame *fp = reinterpret_cast<StackFrame *>(firstUnused + 2);
-    fp->initExecuteFrame(script, prev, seg_->maybeRegs(), thisv, scopeChain, type);
+    fp->initExecuteFrame(script, prevLink, prev, seg_->maybeRegs(), thisv, scopeChain, type);
     fp->initVarsToUndefined();
     efg->regs_.prepareToRun(*fp, script);
 
@@ -1348,7 +1359,9 @@ StackIter::settleOnNewState()
             containsCall = data_.seg_->contains(data_.calls_);
 
             /* Eval-in-frame allows jumping into the middle of a segment. */
-            if (containsFrame && data_.seg_->fp() != data_.fp_) {
+            if (containsFrame &&
+                (data_.seg_->fp() != data_.fp_ || data_.seg_->maybeCalls() != data_.calls_))
+            {
                 /* Avoid duplicating logic; seg_ contains fp_, so no iloop. */
                 StackIter tmp = *this;
                 tmp.startOnSegment(data_.seg_);
@@ -1392,7 +1405,7 @@ StackIter::settleOnNewState()
                 }
 
                 data_.state_ = ION;
-                ionInlineFrames_ = ion::InlineFrameIterator(&data_.ionFrames_);
+                ionInlineFrames_.resetOn(&data_.ionFrames_);
                 data_.pc_ = ionInlineFrames_.pc();
                 return;
             }
@@ -1426,7 +1439,7 @@ StackIter::settleOnNewState()
 
 StackIter::Data::Data(JSContext *cx, PerThreadData *perThread, SavedOption savedOption)
   : perThread_(perThread),
-    maybecx_(cx),
+    cx_(cx),
     savedOption_(savedOption),
     poppedCallDuringSettle_(false)
 #ifdef JS_ION
@@ -1436,9 +1449,9 @@ StackIter::Data::Data(JSContext *cx, PerThreadData *perThread, SavedOption saved
 {
 }
 
-StackIter::Data::Data(JSRuntime *rt, StackSegment *seg)
+StackIter::Data::Data(JSContext *cx, JSRuntime *rt, StackSegment *seg)
   : perThread_(&rt->mainThread),
-    maybecx_(NULL),
+    cx_(cx),
     savedOption_(STOP_AT_SAVED),
     poppedCallDuringSettle_(false)
 #ifdef JS_ION
@@ -1450,7 +1463,7 @@ StackIter::Data::Data(JSRuntime *rt, StackSegment *seg)
 
 StackIter::Data::Data(const StackIter::Data &other)
   : perThread_(other.perThread_),
-    maybecx_(other.maybecx_),
+    cx_(other.cx_),
     savedOption_(other.savedOption_),
     state_(other.state_),
     fp_(other.fp_),
@@ -1469,7 +1482,7 @@ StackIter::Data::Data(const StackIter::Data &other)
 StackIter::StackIter(JSContext *cx, SavedOption savedOption)
   : data_(cx, &cx->runtime->mainThread, savedOption)
 #ifdef JS_ION
-    , ionInlineFrames_((js::ion::IonFrameIterator*) NULL)
+    , ionInlineFrames_(cx, (js::ion::IonFrameIterator*) NULL)
 #endif
 {
 #ifdef JS_METHODJIT
@@ -1487,9 +1500,9 @@ StackIter::StackIter(JSContext *cx, SavedOption savedOption)
 }
 
 StackIter::StackIter(JSRuntime *rt, StackSegment &seg)
-  : data_(rt, &seg)
+  : data_(seg.cx(), rt, &seg)
 #ifdef JS_ION
-    , ionInlineFrames_((js::ion::IonFrameIterator*) NULL)
+    , ionInlineFrames_(seg.cx(), (js::ion::IonFrameIterator*) NULL)
 #endif
 {
 #ifdef JS_METHODJIT
@@ -1504,7 +1517,7 @@ StackIter::StackIter(JSRuntime *rt, StackSegment &seg)
 StackIter::StackIter(const StackIter &other)
   : data_(other.data_)
 #ifdef JS_ION
-    , ionInlineFrames_(other.ionInlineFrames_)
+    , ionInlineFrames_(other.data_.seg_->cx(), &other.ionInlineFrames_)
 #endif
 {
 }
@@ -1512,9 +1525,10 @@ StackIter::StackIter(const StackIter &other)
 StackIter::StackIter(const Data &data)
   : data_(data)
 #ifdef JS_ION
-    , ionInlineFrames_(data_.ionFrames_.isScripted() ? &data_.ionFrames_ : NULL)
+    , ionInlineFrames_(data.cx_, data_.ionFrames_.isScripted() ? &data_.ionFrames_ : NULL)
 #endif
 {
+    JS_ASSERT(data.cx_);
 }
 
 #ifdef JS_ION
@@ -1533,7 +1547,7 @@ StackIter::popIonFrame()
             ++data_.ionFrames_;
 
         if (!data_.ionFrames_.done()) {
-            ionInlineFrames_ = ion::InlineFrameIterator(&data_.ionFrames_);
+            ionInlineFrames_.resetOn(&data_.ionFrames_);
             data_.pc_ = ionInlineFrames_.pc();
             return;
         }
@@ -1608,7 +1622,7 @@ StackIter::copyData() const
      */
     JS_ASSERT(data_.ionFrames_.type() != ion::IonFrame_OptimizedJS);
 #endif
-    return data_.maybecx_->new_<Data>(data_);
+    return data_.cx_->new_<Data>(data_);
 }
 
 JSCompartment *
@@ -1755,7 +1769,7 @@ StackIter::abstractFramePtr() const
         break;
     }
     JS_NOT_REACHED("Unexpected state");
-    return AbstractFramePtr();
+    return NullFramePtr();
 }
 
 void
@@ -1765,7 +1779,7 @@ StackIter::updatePcQuadratic()
       case DONE:
         break;
       case SCRIPTED:
-        data_.pc_ = interpFrame()->pcQuadratic(data_.maybecx_);
+        data_.pc_ = interpFrame()->pcQuadratic(data_.cx_);
         return;
       case ION:
         break;
@@ -1933,8 +1947,8 @@ bool
 StackIter::computeThis() const
 {
     if (isScript() && !isIon()) {
-        JS_ASSERT(data_.maybecx_);
-        return ComputeThis(data_.maybecx_, interpFrame());
+        JS_ASSERT(data_.cx_);
+        return ComputeThis(data_.cx_, interpFrame());
     }
     return true;
 }
@@ -2008,9 +2022,9 @@ StackIter::numFrameSlots() const
         break;
 #endif
       case SCRIPTED:
-        JS_ASSERT(data_.maybecx_);
-        JS_ASSERT(data_.maybecx_->regs().spForStackDepth(0) == interpFrame()->base());
-        return data_.maybecx_->regs().sp - interpFrame()->base();
+        JS_ASSERT(data_.cx_);
+        JS_ASSERT(data_.cx_->regs().spForStackDepth(0) == interpFrame()->base());
+        return data_.cx_->regs().sp - interpFrame()->base();
     }
     JS_NOT_REACHED("Unexpected state");
     return 0;
@@ -2148,5 +2162,5 @@ AllFramesIter::abstractFramePtr() const
         break;
     }
     JS_NOT_REACHED("Unexpected state");
-    return AbstractFramePtr();
+    return NullFramePtr();
 }

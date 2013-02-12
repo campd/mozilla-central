@@ -50,12 +50,8 @@ MOCHITEST_FILES += \
 		audio.ogg \
 		test_contextmenu.html \
 		subtst_contextmenu.html \
-		$(NULL)
-ifdef MOZ_PER_WINDOW_PRIVATE_BROWSING
-MOCHITEST_FILES += \
 		privateBrowsingMode.js \
 		$(NULL)
-endif
 endif
 
 # The following tests are disabled because they are unreliable:
@@ -76,7 +72,6 @@ _BROWSER_FILES = \
                  head.js \
                  browser_typeAheadFind.js \
                  browser_keywordSearch.js \
-                 browser_allTabsPanel.js \
                  browser_alltabslistener.js \
                  browser_bug304198.js \
                  title_test.svg \
@@ -163,8 +158,12 @@ _BROWSER_FILES = \
                  browser_bug735471.js \
                  browser_bug743421.js \
                  browser_bug749738.js \
+                 browser_bug763468_perwindowpb.js \
+                 browser_bug767836_perwindowpb.js \
                  browser_bug783614.js \
                  browser_bug797677.js \
+                 browser_bug816527.js \
+                 browser_bug832435.js \
                  browser_canonizeURL.js \
                  browser_customize.js \
                  browser_findbarClose.js \
@@ -187,8 +186,9 @@ _BROWSER_FILES = \
                  browser_plainTextLinks.js \
                  browser_pluginnotification.js \
                  browser_plugins_added_dynamically.js \
-                 browser_clickToPlayPluginScriptAccessPopup.js \
+                 browser_CTPScriptPlugin.js \
                  browser_pluginplaypreview.js \
+                 browser_private_browsing_window.js \
                  browser_relatedTabs.js \
                  browser_sanitize-passwordDisabledHosts.js \
                  browser_sanitize-sitepermissions.js \
@@ -198,7 +198,11 @@ _BROWSER_FILES = \
                  browser_clearplugindata_noage.html \
                  browser_popupUI.js \
                  browser_sanitizeDialog.js \
+                 browser_save_link-perwindowpb.js \
+                 browser_save_private_link_perwindowpb.js \
                  browser_save_video.js \
+                 browser_tabMatchesInAwesomebar_perwindowpb.js \
+                 browser_tab_drag_drop_perwindow.js \
                  bug564387.html \
                  bug564387_video1.ogv \
                  bug564387_video1.ogv^headers^ \
@@ -253,6 +257,7 @@ _BROWSER_FILES = \
                  plugin_add_dynamically.html \
                  plugin_clickToPlayAllow.html \
                  plugin_clickToPlayDeny.html \
+                 plugin_bug744745.html \
                  plugin_bug749455.html \
                  plugin_bug797677.html \
                  plugin_bug818009.html \
@@ -282,6 +287,7 @@ _BROWSER_FILES = \
                  browser_tabDrop.js \
                  browser_lastAccessedTab.js \
                  browser_bug734076.js \
+                 browser_bug744745.js \
                  browser_bug812562.js \
                  browser_bug818009.js \
                  browser_bug818118.js \
@@ -294,6 +300,7 @@ _BROWSER_FILES = \
                  download_page.html \
                  browser_URLBarSetURI.js \
                  browser_bookmark_titles.js \
+                 browser_pageInfo_plugins.js \
                  $(NULL)
 
 ifneq (cocoa,$(MOZ_WIDGET_TOOLKIT))
@@ -313,27 +320,6 @@ ifneq ($(OS_ARCH),WINNT)
 _BROWSER_FILES += \
                  browser_bug561636.js \
                  $(NULL)
-endif
-
-ifdef MOZ_PER_WINDOW_PRIVATE_BROWSING
-_BROWSER_FILES += \
-                browser_bug763468_perwindowpb.js \
-                browser_bug767836_perwindowpb.js \
-                browser_bug816527.js \
-                browser_private_browsing_window.js \
-                browser_save_link-perwindowpb.js \
-                browser_save_private_link_perwindowpb.js \
-                browser_tabMatchesInAwesomebar_perwindowpb.js \
-                browser_tab_drag_drop_perwindow.js \
-                $(NULL)
-else
-_BROWSER_FILES += \
-                browser_bug763468.js \
-                browser_bug767836.js \
-                browser_save_link.js \
-                browser_save_private_link.js \
-                browser_tabMatchesInAwesomebar.js \
-                $(NULL)
 endif
 
 include $(topsrcdir)/config/rules.mk

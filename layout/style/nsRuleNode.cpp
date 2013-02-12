@@ -4387,24 +4387,28 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
       NS_ABORT_IF_FALSE(!canStoreInRuleTree,
                         "should have made canStoreInRuleTree false above");
       transition->CopyPropertyFrom(parentDisplay->mTransitions[i]);
-    } else if (property.unit == eCSSUnit_Initial ||
-               property.unit == eCSSUnit_All) {
+    } else if (property.unit == eCSSUnit_Initial) {
       transition->SetProperty(eCSSPropertyExtra_all_properties);
     } else if (property.unit == eCSSUnit_None) {
       transition->SetProperty(eCSSPropertyExtra_no_properties);
     } else if (property.list) {
-      NS_ABORT_IF_FALSE(property.list->mValue.GetUnit() == eCSSUnit_Ident,
-                        nsPrintfCString("Invalid transition property unit %d",
-                                        property.list->mValue.GetUnit()).get());
+      const nsCSSValue &val = property.list->mValue;
 
-      nsDependentString
-        propertyStr(property.list->mValue.GetStringBufferValue());
-      nsCSSProperty prop = nsCSSProps::LookupProperty(propertyStr,
-                                                      nsCSSProps::eEnabled);
-      if (prop == eCSSProperty_UNKNOWN) {
-        transition->SetUnknownProperty(propertyStr);
+      if (val.GetUnit() == eCSSUnit_Ident) {
+        nsDependentString
+          propertyStr(property.list->mValue.GetStringBufferValue());
+        nsCSSProperty prop = nsCSSProps::LookupProperty(propertyStr,
+                                                        nsCSSProps::eEnabled);
+        if (prop == eCSSProperty_UNKNOWN) {
+          transition->SetUnknownProperty(propertyStr);
+        } else {
+          transition->SetProperty(prop);
+        }
       } else {
-        transition->SetProperty(prop);
+        NS_ABORT_IF_FALSE(val.GetUnit() == eCSSUnit_All,
+                          nsPrintfCString("Invalid transition property unit %d",
+                                          val.GetUnit()).get());
+        transition->SetProperty(eCSSPropertyExtra_all_properties);
       }
     }
 
@@ -5050,7 +5054,7 @@ nsRuleNode::ComputeDisplayData(void* aStartStruct,
   SetDiscrete(*aRuleData->ValueForOrient(),
               display->mOrient, canStoreInRuleTree,
               SETDSC_ENUMERATED, parentDisplay->mOrient,
-              NS_STYLE_ORIENT_HORIZONTAL, 0, 0, 0, 0);
+              NS_STYLE_ORIENT_AUTO, 0, 0, 0, 0);
 
   COMPUTE_END_RESET(Display, display)
 }
@@ -6611,12 +6615,6 @@ nsRuleNode::ComputeTableData(void* aStartStruct,
               table->mLayoutStrategy, canStoreInRuleTree,
               SETDSC_ENUMERATED, parentTable->mLayoutStrategy,
               NS_STYLE_TABLE_LAYOUT_AUTO, 0, 0, 0, 0);
-
-  // cols: enum, int (not a real CSS prop)
-  const nsCSSValue* colsValue = aRuleData->ValueForCols();
-  if (eCSSUnit_Enumerated == colsValue->GetUnit() ||
-      eCSSUnit_Integer == colsValue->GetUnit())
-    table->mCols = colsValue->GetIntValue();
 
   // span: pixels (not a real CSS prop)
   const nsCSSValue* spanValue = aRuleData->ValueForSpan();

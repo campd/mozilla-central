@@ -8,7 +8,7 @@
 #include "nsDOMEvent.h"
 #include "nsDOMString.h"
 #include "nsContentUtils.h"
-#include "nsIDOMSmsMessage.h"
+#include "nsIDOMMozSmsMessage.h"
 #include "nsIScriptGlobalObject.h"
 #include "nsPIDOMWindow.h"
 #include "SmsCursor.h"
@@ -30,8 +30,6 @@ namespace dom {
 namespace sms {
 
 NS_IMPL_ISUPPORTS1(SmsRequestForwarder, nsISmsRequest)
-
-NS_IMPL_CYCLE_COLLECTION_CLASS(SmsRequest)
 
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(SmsRequest,
                                                   nsDOMEventTargetHelper)
@@ -58,7 +56,6 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(SmsRequest)
   NS_INTERFACE_MAP_ENTRY(nsIDOMMozSmsRequest)
   NS_INTERFACE_MAP_ENTRY(nsIDOMDOMRequest)
   NS_INTERFACE_MAP_ENTRY(nsISmsRequest)
-  NS_INTERFACE_MAP_ENTRY_AMBIGUOUS(nsISupports, nsIDOMMozSmsRequest)
   NS_DOM_INTERFACE_MAP_ENTRY_CLASSINFO(MozSmsRequest)
 NS_INTERFACE_MAP_END_INHERITING(nsDOMEventTargetHelper)
 
@@ -479,7 +476,7 @@ SmsRequest::NotifyThreadList(const jsval& aThreadList, JSContext* aCx)
 
         MOZ_ASSERT(arrayEntry.isObject());
 
-        SmsThreadListItem item;
+        mozilla::idl::SmsThreadListItem item;
         nsresult rv = item.Init(aCx, &arrayEntry);
         NS_ENSURE_SUCCESS(rv, rv);
 

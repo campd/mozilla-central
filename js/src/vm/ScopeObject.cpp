@@ -7,10 +7,10 @@
 
 #include "jscompartment.h"
 #include "jsiter.h"
-#include "jsscope.h"
 
 #include "GlobalObject.h"
 #include "ScopeObject.h"
+#include "Shape.h"
 #include "Xdr.h"
 
 #include "jsatominlines.h"
@@ -146,7 +146,7 @@ CallObject::create(JSContext *cx, HandleShape shape, HandleTypeObject type, Heap
     JS_ASSERT(CanBeFinalizedInBackground(kind, &CallClass));
     kind = gc::GetBackgroundAllocKind(kind);
 
-    JSObject *obj = JSObject::create(cx, kind, shape, type, slots);
+    JSObject *obj = JSObject::create(cx, kind, gc::DefaultHeap, shape, type, slots);
     if (!obj)
         return NULL;
     return &obj->asCall();
@@ -161,8 +161,9 @@ CallObject *
 CallObject::createTemplateObject(JSContext *cx, HandleScript script)
 {
     RootedShape shape(cx, script->bindings.callObjShape());
+    JS_ASSERT(shape->getObjectClass() == &CallClass);
 
-    RootedTypeObject type(cx, cx->compartment->getNewType(cx, NULL));
+    RootedTypeObject type(cx, cx->compartment->getNewType(cx, &CallClass, NULL));
     if (!type)
         return NULL;
 
@@ -241,16 +242,17 @@ CallObject::createForFunction(JSContext *cx, AbstractFramePtr frame)
 }
 
 CallObject *
-CallObject::createForStrictEval(JSContext *cx, StackFrame *fp)
+CallObject::createForStrictEval(JSContext *cx, AbstractFramePtr frame)
 {
     AssertCanGC();
-    JS_ASSERT(fp->isStrictEvalFrame());
-    JS_ASSERT(cx->fp() == fp);
-    JS_ASSERT(cx->regs().pc == fp->script()->code);
+    JS_ASSERT(frame.isStrictEvalFrame());
+    JS_ASSERT_IF(frame.isStackFrame(), cx->fp() == frame.asStackFrame());
+    JS_ASSERT_IF(frame.isStackFrame(), cx->regs().pc == frame.script()->code);
 
     RootedFunction callee(cx);
-    RootedScript script(cx, fp->script());
-    return create(cx, script, fp->scopeChain(), callee);
+    RootedScript script(cx, frame.script());
+    RootedObject scopeChain(cx, frame.scopeChain());
+    return create(cx, script, scopeChain, callee);
 }
 
 JS_PUBLIC_DATA(Class) js::CallClass = {
@@ -286,7 +288,7 @@ Class js::DeclEnvClass = {
 DeclEnvObject *
 DeclEnvObject::createTemplateObject(JSContext *cx, HandleFunction fun)
 {
-    RootedTypeObject type(cx, cx->compartment->getNewType(cx, NULL));
+    RootedTypeObject type(cx, cx->compartment->getNewType(cx, &DeclEnvClass, NULL));
     if (!type)
         return NULL;
 
@@ -297,7 +299,7 @@ DeclEnvObject::createTemplateObject(JSContext *cx, HandleFunction fun)
     if (!emptyDeclEnvShape)
         return NULL;
 
-    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, emptyDeclEnvShape, type, NULL));
+    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, emptyDeclEnvShape, type, NULL));
     if (!obj)
         return NULL;
 
@@ -330,7 +332,7 @@ DeclEnvObject::create(JSContext *cx, HandleObject enclosing, HandleFunction call
 WithObject *
 WithObject::create(JSContext *cx, HandleObject proto, HandleObject enclosing, uint32_t depth)
 {
-    RootedTypeObject type(cx, proto->getNewType(cx));
+    RootedTypeObject type(cx, proto->getNewType(cx, &WithClass));
     if (!type)
         return NULL;
 
@@ -339,7 +341,7 @@ WithObject::create(JSContext *cx, HandleObject proto, HandleObject enclosing, ui
     if (!shape)
         return NULL;
 
-    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, shape, type, NULL));
+    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, shape, type, NULL));
     if (!obj)
         return NULL;
 
@@ -543,12 +545,6 @@ with_Enumerate(JSContext *cx, HandleObject obj, JSIterateOp enum_op,
     return JSObject::enumerate(cx, actual, enum_op, statep, idp);
 }
 
-static JSType
-with_TypeOf(JSContext *cx, HandleObject obj)
-{
-    return JSTYPE_OBJECT;
-}
-
 static JSObject *
 with_ThisObject(JSContext *cx, HandleObject obj)
 {
@@ -603,7 +599,6 @@ Class js::WithClass = {
         with_DeleteElement,
         with_DeleteSpecial,
         with_Enumerate,
-        with_TypeOf,
         with_ThisObject,
     }
 };
@@ -614,8 +609,9 @@ ClonedBlockObject *
 ClonedBlockObject::create(JSContext *cx, Handle<StaticBlockObject *> block, AbstractFramePtr frame)
 {
     assertSameCompartment(cx, frame);
+    JS_ASSERT(block->getClass() == &BlockClass);
 
-    RootedTypeObject type(cx, block->getNewType(cx));
+    RootedTypeObject type(cx, block->getNewType(cx, &BlockClass));
     if (!type)
         return NULL;
 
@@ -625,7 +621,7 @@ ClonedBlockObject::create(JSContext *cx, Handle<StaticBlockObject *> block, Abst
 
     RootedShape shape(cx, block->lastProperty());
 
-    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, shape, type, slots));
+    RootedObject obj(cx, JSObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, shape, type, slots));
     if (!obj)
         return NULL;
 
@@ -674,7 +670,7 @@ ClonedBlockObject::copyUnaliasedValues(AbstractFramePtr frame)
 StaticBlockObject *
 StaticBlockObject::create(JSContext *cx)
 {
-    RootedTypeObject type(cx, cx->compartment->getNewType(cx, NULL));
+    RootedTypeObject type(cx, cx->compartment->getNewType(cx, &BlockClass, NULL));
     if (!type)
         return NULL;
 
@@ -684,7 +680,7 @@ StaticBlockObject::create(JSContext *cx)
     if (!emptyBlockShape)
         return NULL;
 
-    JSObject *obj = JSObject::create(cx, FINALIZE_KIND, emptyBlockShape, type, NULL);
+    JSObject *obj = JSObject::create(cx, FINALIZE_KIND, gc::DefaultHeap, emptyBlockShape, type, NULL);
     if (!obj)
         return NULL;
 
@@ -881,7 +877,7 @@ js::CloneStaticBlockObject(JSContext *cx, HandleObject enclosingScope, Handle<St
 
 ScopeIter::ScopeIter(JSContext *cx
                      MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-  : frame_(),
+  : frame_(NullFramePtr()),
     cur_(cx, reinterpret_cast<JSObject *>(-1)),
     block_(cx, reinterpret_cast<StaticBlockObject *>(-1)),
     type_(Type(-1))
@@ -902,7 +898,7 @@ ScopeIter::ScopeIter(const ScopeIter &si, JSContext *cx
 
 ScopeIter::ScopeIter(JSObject &enclosingScope, JSContext *cx
                      MOZ_GUARD_OBJECT_NOTIFIER_PARAM_IN_IMPL)
-  : frame_(),
+  : frame_(NullFramePtr()),
     cur_(cx, &enclosingScope),
     block_(cx, reinterpret_cast<StaticBlockObject *>(-1)),
     type_(Type(-1))
@@ -986,7 +982,7 @@ ScopeIter::operator++()
             if (CallObjectLambdaName(*frame_.fun()))
                 cur_ = &cur_->asDeclEnv().enclosingScope();
         }
-        frame_ = AbstractFramePtr();
+        frame_ = NullFramePtr();
         break;
       case Block:
         block_ = block_->enclosingBlock();
@@ -1002,7 +998,7 @@ ScopeIter::operator++()
       case StrictEvalScope:
         if (hasScopeObject_)
             cur_ = &cur_->asCall().enclosingScope();
-        frame_ = AbstractFramePtr();
+        frame_ = NullFramePtr();
         break;
     }
     return *this;
@@ -1049,14 +1045,14 @@ ScopeIter::settle()
             type_ = Block;
             hasScopeObject_ = false;
         } else {
-            frame_ = AbstractFramePtr();
+            frame_ = NullFramePtr();
         }
     } else if (frame_.isNonEvalFunctionFrame() && !frame_.hasCallObj()) {
         JS_ASSERT(cur_ == frame_.fun()->environment());
-        frame_ = AbstractFramePtr();
+        frame_ = NullFramePtr();
     } else if (frame_.isStrictEvalFrame() && !frame_.hasCallObj()) {
         JS_ASSERT(cur_ == frame_.evalPrev().scopeChain());
-        frame_ = AbstractFramePtr();
+        frame_ = NullFramePtr();
     } else if (cur_->isWith()) {
         JS_ASSERT_IF(frame_.isFunctionFrame(), frame_.fun()->isHeavyweight());
         JS_ASSERT_IF(block_, block_->needsClone());
@@ -1075,7 +1071,7 @@ ScopeIter::settle()
     } else {
         JS_ASSERT(!cur_->isScope());
         JS_ASSERT(frame_.isGlobalFrame() || frame_.isDebuggerFrame());
-        frame_ = AbstractFramePtr();
+        frame_ = NullFramePtr();
     }
 }
 
@@ -1685,7 +1681,7 @@ DebugScopes::addDebugScope(JSContext *cx, ScopeObject &scope, DebugScopeObject &
         return false;
     }
 
-    HashTableWriteBarrierPost(cx->compartment, &scopes->proxiedScopes, &scope);
+    HashTableWriteBarrierPost(cx->runtime, &scopes->proxiedScopes, &scope);
     return true;
 }
 
@@ -1959,7 +1955,7 @@ DebugScopes::hasLiveFrame(ScopeObject &scope)
 {
     DebugScopes *scopes = scope.compartment()->debugScopes;
     if (!scopes)
-        return AbstractFramePtr();
+        return NullFramePtr();
 
     if (LiveScopeMap::Ptr p = scopes->liveScopes.lookup(&scope)) {
         AbstractFramePtr frame = p->value;
@@ -1980,7 +1976,7 @@ DebugScopes::hasLiveFrame(ScopeObject &scope)
 
         return frame;
     }
-    return AbstractFramePtr();
+    return NullFramePtr();
 }
 
 /*****************************************************************************/

@@ -72,6 +72,7 @@ public class AwesomeBar extends GeckoActivity {
     private ContentResolver mResolver;
     private ContextMenuSubject mContextMenuSubject;
     private boolean mIsUsingSwype;
+    private boolean mDelayRestartInput;
 
     @Override
     public void onCreate(Bundle savedInstanceState) {
@@ -318,7 +319,9 @@ public class AwesomeBar extends GeckoActivity {
         int imageResource = R.drawable.ic_awesomebar_go;
         String contentDescription = getString(R.string.go);
         int imeAction = EditorInfo.IME_ACTION_GO;
-        if (StringUtils.isSearchQuery(text)) {
+
+        int actionBits = mText.getImeOptions() & EditorInfo.IME_MASK_ACTION;
+        if (StringUtils.isSearchQuery(text, actionBits == EditorInfo.IME_ACTION_SEARCH)) {
             imageResource = R.drawable.ic_awesomebar_search;
             contentDescription = getString(R.string.search);
             imeAction = EditorInfo.IME_ACTION_SEARCH;
@@ -326,11 +329,24 @@ public class AwesomeBar extends GeckoActivity {
         mGoButton.setImageResource(imageResource);
         mGoButton.setContentDescription(contentDescription);
 
-        int actionBits = mText.getImeOptions() & EditorInfo.IME_MASK_ACTION;
+        InputMethodManager imm = InputMethods.getInputMethodManager(mText.getContext());
+        if (imm == null) {
+            return;
+        }
         if (actionBits != imeAction) {
-            InputMethodManager imm = (InputMethodManager) mText.getContext().getSystemService(Context.INPUT_METHOD_SERVICE);
             int optionBits = mText.getImeOptions() & ~EditorInfo.IME_MASK_ACTION;
             mText.setImeOptions(optionBits | imeAction);
+
+            mDelayRestartInput = (imeAction == EditorInfo.IME_ACTION_GO) &&
+                                 (InputMethods.shouldDelayAwesomebarUpdate(mText.getContext()));
+            if (!mDelayRestartInput) {
+                imm.restartInput(mText);
+            }
+        } else if (mDelayRestartInput) {
+            // Only call delayed restartInput when actionBits == imeAction
+            // so if there are two restarts in a row, the first restarts will
+            // be discarded and the second restart will be properly delayed
+            mDelayRestartInput = false;
             imm.restartInput(mText);
         }
     }
@@ -439,8 +455,13 @@ public class AwesomeBar extends GeckoActivity {
     @Override
     public void onResume() {
         super.onResume();
-        if (mText != null && mText.getText() != null)
+        if (mText != null && mText.getText() != null) {
             updateGoButton(mText.getText().toString());
+            if (mDelayRestartInput) {
+                // call updateGoButton again to force a restartInput call
+                updateGoButton(mText.getText().toString());
+            }
+        }
 
         // Invlidate the cached value that keeps track of whether or
         // not desktop bookmarks exist

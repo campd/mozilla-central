@@ -28,6 +28,10 @@ pref("general.useragent.compatMode.firefox", false);
 // overrides by default, don't initialize UserAgentOverrides.jsm.
 pref("general.useragent.site_specific_overrides", true);
 
+// This pref controls whether or not to enable UA overrides in the
+// product code that end users use (as opposed to testing code).
+pref("general.useragent.enable_overrides", false);
+
 pref("general.config.obscure_value", 13); // for MCD .cfg files
 
 pref("general.warnOnAboutConfig", true);
@@ -151,7 +155,7 @@ pref("media.cache_size", 512000);
 pref("media.volume_scale", "1.0");
 
 #ifdef MOZ_WMF
-pref("media.windows-media-foundation.enabled", false);
+pref("media.windows-media-foundation.enabled", true);
 #endif
 #ifdef MOZ_RAW
 pref("media.raw.enabled", true);
@@ -178,6 +182,15 @@ pref("media.gstreamer.enabled", true);
 pref("media.navigator.enabled", true);
 pref("media.peerconnection.enabled", false);
 pref("media.navigator.permission.disabled", false);
+// These values (aec, agc, and noice) are from media/webrtc/trunk/webrtc/common_types.h
+// kXxxUnchanged = 0, kXxxDefault = 1, and higher values are specific to each 
+// setting (for Xxx = Ec, Agc, or Ns).  Defaults are all set to kXxxDefault here.
+pref("media.peerconnection.aec_enabled", true);
+pref("media.peerconnection.aec", 1);
+pref("media.peerconnection.agc_enabled", false);
+pref("media.peerconnection.agc", 1);
+pref("media.peerconnection.noise_enabled", false);
+pref("media.peerconnection.noise", 1);
 #else
 #ifdef ANDROID
 pref("media.navigator.enabled", true);
@@ -211,7 +224,6 @@ pref("gfx.color_management.enablev4", false);
 
 pref("gfx.downloadable_fonts.enabled", true);
 pref("gfx.downloadable_fonts.fallback_delay", 3000);
-pref("gfx.downloadable_fonts.sanitize", true);
 
 pref("gfx.filter.nearest.force-enabled", false);
 
@@ -253,7 +265,7 @@ pref("gfx.font_rendering.opentype_svg.enabled", false);
 #ifdef XP_WIN
 // comma separated list of backends to use in order of preference
 // e.g., pref("gfx.canvas.azure.backends", "direct2d,skia,cairo");
-pref("gfx.canvas.azure.backends", "direct2d,cairo");
+pref("gfx.canvas.azure.backends", "direct2d,skia,cairo");
 pref("gfx.content.azure.backends", "direct2d");
 pref("gfx.content.azure.enabled", true);
 #else
@@ -694,8 +706,14 @@ pref("dom.min_background_timeout_value", 1000);
 // changed)
 pref("dom.experimental_bindings", true);
 
+// Run content XBL in a separate scope.
+pref("dom.xbl_scopes", false);
+
 // Don't use new input types
 pref("dom.experimental_forms", false);
+
+// Don't enable <input type=range> yet:
+pref("dom.experimental_forms_range", false);
 
 // Allocation Threshold for Workers
 pref("dom.workers.mem.gc_allocation_threshold_mb", 30);
@@ -713,6 +731,9 @@ pref("privacy.popups.disable_from_plugins", 2);
 
 // "do not track" HTTP header, disabled by default
 pref("privacy.donottrackheader.enabled",    false);
+//   0 = tracking is acceptable
+//   1 = tracking is unacceptable
+pref("privacy.donottrackheader.value",      1);
 
 pref("dom.event.contextmenu.enabled",       true);
 pref("dom.event.clipboardevents.enabled",   true);
@@ -729,8 +750,6 @@ pref("javascript.options.ion.parallel_compilation", true);
 pref("javascript.options.pccounts.content", false);
 pref("javascript.options.pccounts.chrome",  false);
 pref("javascript.options.methodjit_always", false);
-pref("javascript.options.xml.content", false);
-pref("javascript.options.xml.chrome", false);
 pref("javascript.options.jit_hardening", true);
 pref("javascript.options.typeinference", true);
 // This preference limits the memory usage of javascript.
@@ -946,6 +965,7 @@ pref("network.http.spdy.chunk-size", 4096);
 pref("network.http.spdy.timeout", 180);
 pref("network.http.spdy.coalesce-hostnames", true);
 pref("network.http.spdy.use-alternate-protocol", true);
+pref("network.http.spdy.persistent-settings", false);
 pref("network.http.spdy.ping-threshold", 58);
 pref("network.http.spdy.ping-timeout", 8);
 pref("network.http.spdy.send-buffer-size", 131072);
@@ -1764,7 +1784,7 @@ pref("dom.ipc.plugins.processLaunchTimeoutSecs", 45);
 #ifdef XP_WIN
 // How long a plugin is allowed to process a synchronous IPC message 
 // before we display the plugin hang UI
-pref("dom.ipc.plugins.hangUITimeoutSecs", 5);
+pref("dom.ipc.plugins.hangUITimeoutSecs", 11);
 // Minimum time that the plugin hang UI will be displayed
 pref("dom.ipc.plugins.hangUIMinDisplaySecs", 10);
 #endif
@@ -1794,8 +1814,6 @@ pref("dom.ipc.plugins.flash.subprocess.crashreporter.enabled", true);
 
 pref("dom.ipc.processCount", 1);
 
-pref("svg.smil.enabled", true);
-
 // Enable the use of display-lists for SVG hit-testing and painting.
 pref("svg.display-lists.hit-testing.enabled", true);
 pref("svg.display-lists.painting.enabled", true);
@@ -1806,6 +1824,9 @@ pref("svg.paint-order.enabled", false);
 #else
 pref("svg.paint-order.enabled", true);
 #endif
+
+// Is support for the new SVG text implementation enabled?
+pref("svg.text.css-frames.enabled", false);
 
 pref("font.minimum-size.ar", 0);
 pref("font.minimum-size.x-armn", 0);
@@ -1964,6 +1985,10 @@ pref("ui.mouse.radius.topmm", 12);
 pref("ui.mouse.radius.rightmm", 8);
 pref("ui.mouse.radius.bottommm", 4);
 pref("ui.mouse.radius.visitedWeight", 120);
+
+// When true, the ui.mouse.radius.* prefs will only affect simulated mouse events generated by touch input.
+// When false, the prefs will be used for all mouse events.
+pref("ui.mouse.radius.inputSource.touchOnly", true);
 
 #ifdef XP_WIN
 
@@ -3113,6 +3138,16 @@ pref("print.print_extra_margin", 0); // twips
 
 pref("font.alias-list", "sans,sans-serif,serif,monospace");
 
+// As we ship bundled Open Sans and Charis SIL Compact fonts on Android,
+// but not on B2G/Gonk, we give them separate default font preferences.
+
+#ifdef MOZ_WIDGET_GONK
+
+// TODO: this block is initially a copy of the ANDROID prefs as they were
+// prior to the switch to Open Sans and Charis SIL Compact (bug 831354).
+// We should review these in the light of what's actually present on the Gonk platform;
+// some entries could probably be cleaned up.
+
 // ar
 
 pref("font.name.serif.el", "Droid Serif");
@@ -3186,6 +3221,88 @@ pref("font.name.monospace.zh-HK", "Droid Sans Mono");
 pref("font.name.serif.zh-TW", "Droid Serif");
 pref("font.name.sans-serif.zh-TW", "Droid Sans");
 pref("font.name.monospace.zh-TW", "Droid Sans Mono");
+
+#else
+
+// not MOZ_WIDGET_GONK (i.e. this is Firefox for Android) - here, we use the bundled fonts
+
+// ar
+
+pref("font.name.serif.el", "Droid Serif"); // not Charis SIL Compact, only has a few Greek chars
+pref("font.name.sans-serif.el", "Open Sans");
+pref("font.name.monospace.el", "Droid Sans Mono");
+pref("font.name-list.sans-serif.el", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.he", "Droid Serif");
+pref("font.name.sans-serif.he", "Open Sans");
+pref("font.name.monospace.he", "Droid Sans Mono");
+pref("font.name-list.sans-serif.he", "Droid Sans Hebrew, Open Sans, Droid Sans");
+
+pref("font.name.serif.ja", "Charis SIL Compact");
+pref("font.name.sans-serif.ja", "Open Sans");
+pref("font.name.monospace.ja", "MotoyaLMaru");
+pref("font.name-list.sans-serif.ja", "Open Sans, Roboto, Droid Sans, MotoyaLMaru, MotoyaLCedar, Droid Sans Japanese");
+pref("font.name-list.monospace.ja", "MotoyaLMaru, MotoyaLCedar, Droid Sans Mono");
+
+pref("font.name.serif.ko", "Charis SIL Compact");
+pref("font.name.sans-serif.ko", "Open Sans");
+pref("font.name.monospace.ko", "Droid Sans Mono");
+
+pref("font.name.serif.th", "Charis SIL Compact");
+pref("font.name.sans-serif.th", "Open Sans");
+pref("font.name.monospace.th", "Droid Sans Mono");
+pref("font.name-list.sans-serif.th", "Droid Sans Thai, Open Sans, Droid Sans");
+
+pref("font.name.serif.tr", "Charis SIL Compact");
+pref("font.name.sans-serif.tr", "Open Sans");
+pref("font.name.monospace.tr", "Droid Sans Mono");
+pref("font.name-list.sans-serif.tr", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-baltic", "Charis SIL Compact");
+pref("font.name.sans-serif.x-baltic", "Open Sans");
+pref("font.name.monospace.x-baltic", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-baltic", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-central-euro", "Charis SIL Compact");
+pref("font.name.sans-serif.x-central-euro", "Open Sans");
+pref("font.name.monospace.x-central-euro", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-central-euro", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-cyrillic", "Charis SIL Compact");
+pref("font.name.sans-serif.x-cyrillic", "Open Sans");
+pref("font.name.monospace.x-cyrillic", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-cyrillic", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-unicode", "Charis SIL Compact");
+pref("font.name.sans-serif.x-unicode", "Open Sans");
+pref("font.name.monospace.x-unicode", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-unicode", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-user-def", "Charis SIL Compact");
+pref("font.name.sans-serif.x-user-def", "Open Sans");
+pref("font.name.monospace.x-user-def", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-user-def", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.x-western", "Charis SIL Compact");
+pref("font.name.sans-serif.x-western", "Open Sans");
+pref("font.name.monospace.x-western", "Droid Sans Mono");
+pref("font.name-list.sans-serif.x-western", "Open Sans, Roboto, Droid Sans");
+
+pref("font.name.serif.zh-CN", "Charis SIL Compact");
+pref("font.name.sans-serif.zh-CN", "Open Sans");
+pref("font.name.monospace.zh-CN", "Droid Sans Mono");
+
+pref("font.name.serif.zh-HK", "Charis SIL Compact");
+pref("font.name.sans-serif.zh-HK", "Open Sans");
+pref("font.name.monospace.zh-HK", "Droid Sans Mono");
+
+pref("font.name.serif.zh-TW", "Charis SIL Compact");
+pref("font.name.sans-serif.zh-TW", "Open Sans");
+pref("font.name.monospace.zh-TW", "Droid Sans Mono");
+
+// end ! MOZ_WIDGET_GONK
+
+#endif
 
 pref("font.default.ar", "sans-serif");
 pref("font.size.variable.ar", 16);
@@ -3669,6 +3786,17 @@ pref("toolkit.zoomManager.zoomValues", ".3,.5,.67,.8,.9,1,1.1,1.2,1.33,1.5,1.7,2
  */
 pref("browser.zoom.reflowOnZoom", false);
 
+/**
+ * Controls whether or not the reflow-on-zoom behavior happens on page load.
+ * This can be enabled in conjunction with the above preference (reflowOnZoom),
+ * but has no effect if browser.zoom.reflowOnZoom is disabled.
+ *
+ * Note that this should be turned off only in cases where debugging of the
+ * reflow-on-zoom feature is necessary, and enabling the feature during
+ * a page load inhbits this debugging.
+ */
+pref("browser.zoom.reflowZoom.reflowTextOnPageLoad", true);
+
 // Image-related prefs
 // The maximum size, in bytes, of the decoded images we cache
 pref("image.cache.size", 5242880);
@@ -3758,7 +3886,13 @@ pref("layers.acceleration.disabled", false);
 #endif
 
 // Whether to force acceleration on, ignoring blacklists.
+#ifdef ANDROID
+// bug 838603 -- on Android, accidentally blacklisting OpenGL layers
+// means a startup crash for everyone.
+pref("layers.acceleration.force-enabled", true);
+#else
 pref("layers.acceleration.force-enabled", false);
+#endif
 
 pref("layers.acceleration.draw-fps", false);
 
@@ -3968,7 +4102,7 @@ pref("wap.UAProf.tagname", "x-wap-profile");
 // might be executing a pan gesture, how long do we wait before
 // tentatively deciding the gesture is actually a tap and activating
 // the target element?
-pref("ui.touch_activation.delay_ms", 50);
+pref("ui.touch_activation.delay_ms", 100);
 
 // nsMemoryInfoDumper can watch a fifo in the temp directory and take various
 // actions when the fifo is written to.  Disable this in general.

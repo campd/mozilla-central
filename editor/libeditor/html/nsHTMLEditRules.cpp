@@ -511,8 +511,7 @@ nsHTMLEditRules::AfterEditInner(EditAction action,
       mHTMLEditor->mTypeInState->UpdateSelState(selection);
       res = ReapplyCachedStyles();
       NS_ENSURE_SUCCESS(res, res);
-      res = ClearCachedStyles();
-      NS_ENSURE_SUCCESS(res, res);
+      ClearCachedStyles();
     }    
   }
 
@@ -1241,8 +1240,7 @@ nsHTMLEditRules::WillInsert(nsISelection *aSelection, bool *aCancel)
   // For most actions we want to clear the cached styles, but there are
   // exceptions
   if (!IsStyleCachePreservingAction(mTheAction)) {
-    res = ClearCachedStyles();
-    NS_ENSURE_SUCCESS(res, res);
+    ClearCachedStyles();
   }
 
   return NS_OK;
@@ -6316,6 +6314,9 @@ nsHTMLEditRules::ReturnInHeader(nsISelection *aSelection,
     NS_ENSURE_SUCCESS(res, res);
     if (!sibling || !nsTextEditUtils::IsBreak(sibling))
     {
+      ClearCachedStyles();
+      mHTMLEditor->mTypeInState->ClearAllProps();
+
       // create a paragraph
       NS_NAMED_LITERAL_STRING(pType, "p");
       nsCOMPtr<nsIDOMNode> pNode;
@@ -6561,7 +6562,7 @@ nsHTMLEditRules::ReturnInListItem(nsISelection *aSelection,
       // otherwise kill this listitem
       res = mHTMLEditor->DeleteNode(aListItem);
       NS_ENSURE_SUCCESS(res, res);
-      
+
       // time to insert a paragraph
       NS_NAMED_LITERAL_STRING(pType, "p");
       nsCOMPtr<nsIDOMNode> pNode;
@@ -7241,18 +7242,14 @@ nsHTMLEditRules::ReapplyCachedStyles()
 }
 
 
-nsresult
+void
 nsHTMLEditRules::ClearCachedStyles()
 {
   // clear the mPresent bits in mCachedStyles array
-  
-  int32_t j;
-  for (j=0; j<SIZE_STYLE_TABLE; j++)
-  {
+  for (uint32_t j = 0; j < SIZE_STYLE_TABLE; j++) {
     mCachedStyles[j].mPresent = false;
-    mCachedStyles[j].value.Truncate(0);
+    mCachedStyles[j].value.Truncate();
   }
-  return NS_OK;
 }
 
 

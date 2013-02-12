@@ -226,10 +226,6 @@ CustomElf::Load(Mappable *mappable, const char *path, int flags)
 
 CustomElf::~CustomElf()
 {
-  /* While running the destructors, on-demand decompression may get new
-   * references on this object, and releasing these references would call
-   * the destructor again. Avoid this by always having the refcount > 0 */
-  AddRef();
   debug("CustomElf::~CustomElf(%p [\"%s\"])",
         reinterpret_cast<void *>(this), GetPath());
   CallFini();
@@ -592,6 +588,8 @@ CustomElf::InitDyn(const Phdr *pt_dyn)
                           * libraries. They are not supported anyways. */
       case UNSUPPORTED_RELOC(COUNT): /* This should error out, but it doesn't
                                       * really matter. */
+      case DT_FLAGS_1: /* Additional linker-internal flags that we don't care about. See
+                        * DF_1_* values in src/include/elf/common.h in binutils. */
       case DT_VERSYM: /* DT_VER* entries are used for symbol versioning, which */
       case DT_VERDEF: /* this linker doesn't support yet. */
       case DT_VERDEFNUM:

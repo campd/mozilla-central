@@ -10,9 +10,10 @@ import org.mozilla.gecko.db.BrowserDB;
 import org.mozilla.gecko.db.BrowserContract;
 import org.mozilla.gecko.gfx.Layer;
 import org.mozilla.gecko.gfx.LayerView;
+import org.mozilla.gecko.gfx.PanZoomController;
 import org.mozilla.gecko.gfx.PluginLayer;
 import org.mozilla.gecko.gfx.PointUtils;
-import org.mozilla.gecko.ui.PanZoomController;
+import org.mozilla.gecko.mozglue.GeckoLoader;
 import org.mozilla.gecko.util.GeckoAsyncTask;
 import org.mozilla.gecko.util.GeckoBackgroundThread;
 import org.mozilla.gecko.util.GeckoEventListener;
@@ -124,8 +125,7 @@ abstract public class GeckoApp
     private static enum StartupAction {
         NORMAL,     /* normal application start */
         URL,        /* launched with a passed URL */
-        PREFETCH,   /* launched with a passed URL that we prefetch */
-        REDIRECTOR  /* launched with a passed URL in our redirect list */
+        PREFETCH    /* launched with a passed URL that we prefetch */
     }
 
     public static final String ACTION_ALERT_CLICK   = "org.mozilla.gecko.ACTION_ALERT_CLICK";
@@ -187,36 +187,9 @@ abstract public class GeckoApp
 
     private String mPrivateBrowsingSession;
 
-    public enum LaunchState {Launching, WaitForDebugger,
-                             Launched, GeckoRunning, GeckoExiting};
-    private static LaunchState sLaunchState = LaunchState.Launching;
-
     abstract public int getLayout();
     abstract public boolean hasTabsSideBar();
     abstract protected String getDefaultProfileName();
-
-    public static boolean checkLaunchState(LaunchState checkState) {
-        synchronized(sLaunchState) {
-            return sLaunchState == checkState;
-        }
-    }
-
-    static void setLaunchState(LaunchState setState) {
-        synchronized(sLaunchState) {
-            sLaunchState = setState;
-        }
-    }
-
-    // if mLaunchState is equal to checkState this sets mLaunchState to setState
-    // and return true. Otherwise we return false.
-    static boolean checkAndSetLaunchState(LaunchState checkState, LaunchState setState) {
-        synchronized(sLaunchState) {
-            if (sLaunchState != checkState)
-                return false;
-            sLaunchState = setState;
-            return true;
-        }
-    }
 
     void toggleChrome(final boolean aShow) { }
 
@@ -550,7 +523,7 @@ abstract public class GeckoApp
     @Override
     public boolean onMenuOpened(int featureId, Menu menu) {
         // exit full-screen mode whenever the menu is opened
-        if (mLayerView.isFullScreen()) {
+        if (mLayerView != null && mLayerView.isFullScreen()) {
             GeckoAppShell.sendEventToGecko(GeckoEvent.createBroadcastEvent("FullScreen:Exit", null));
         }
 
@@ -574,13 +547,10 @@ abstract public class GeckoApp
     public boolean onOptionsItemSelected(MenuItem item) {
         switch (item.getItemId()) {
             case R.id.quit:
-                synchronized(sLaunchState) {
-                    if (sLaunchState == LaunchState.GeckoRunning)
-                        GeckoAppShell.notifyGeckoOfEvent(
-                            GeckoEvent.createBroadcastEvent("Browser:Quit", null));
-                    else
-                        System.exit(0);
-                    sLaunchState = LaunchState.GeckoExiting;
+                if (GeckoThread.checkAndSetLaunchState(GeckoThread.LaunchState.GeckoRunning, GeckoThread.LaunchState.GeckoExiting)) {
+                    GeckoAppShell.notifyGeckoOfEvent(GeckoEvent.createBroadcastEvent("Browser:Quit", null));
+                } else {
+                    System.exit(0);
                 }
                 return true;
             default:
@@ -859,8 +829,6 @@ abstract public class GeckoApp
                 handlePageShow(tabId);
             } else if (event.equals("Gecko:Ready")) {
                 mGeckoReadyStartupTimer.stop();
-                setLaunchState(GeckoApp.LaunchState.GeckoRunning);
-                GeckoAppShell.sendPendingEventsToGecko();
                 connectGeckoLayerClient();
             } else if (event.equals("ToggleChrome:Hide")) {
                 toggleChrome(false);
@@ -895,16 +863,6 @@ abstract public class GeckoApp
                 if (layerView != null && Tabs.getInstance().isSelectedTab(tab)) {
                     layerView.setZoomConstraints(tab.getZoomConstraints());
                 }
-            } else if (event.equals("Tab:HasTouchListener")) {
-                int tabId = message.getInt("tabID");
-                final Tab tab = Tabs.getInstance().getTab(tabId);
-                tab.setHasTouchListeners(true);
-                mMainHandler.post(new Runnable() {
-                    public void run() {
-                        if (Tabs.getInstance().isSelectedTab(tab))
-                            mLayerView.getTouchEventHandler().setWaitForTouchListeners(true);
-                    }
-                });
             } else if (event.equals("Session:StatePurged")) {
                 onStatePurged();
             } else if (event.equals("Bookmark:Insert")) {
@@ -931,23 +889,23 @@ abstract public class GeckoApp
                 final String type = message.getString("shortcutType");
                 GeckoAppShell.removeShortcut(title, url, origin, type);
             } else if (event.equals("WebApps:Open")) {
-                String url = message.getString("uri");
+                String manifestURL = message.getString("manifestURL");
                 String origin = message.getString("origin");
-                Intent intent = GeckoAppShell.getWebAppIntent(url, origin, "", null);
+                Intent intent = GeckoAppShell.getWebAppIntent(manifestURL, origin, "", null);
                 if (intent == null)
                     return;
                 startActivity(intent);
             } else if (event.equals("WebApps:Install")) {
                 String name = message.getString("name");
-                String launchPath = message.getString("launchPath");
+                String manifestURL = message.getString("manifestURL");
                 String iconURL = message.getString("iconURL");
-                String uniqueURI = message.getString("uniqueURI");
+                String origin = message.getString("origin");
 
                 // installWebapp will return a File object pointing to the profile directory of the webapp
-                mCurrentResponse = GeckoAppShell.installWebApp(name, launchPath, uniqueURI, iconURL).toString();
+                mCurrentResponse = GeckoAppShell.installWebApp(name, manifestURL, origin, iconURL).toString();
             } else if (event.equals("WebApps:Uninstall")) {
-                String uniqueURI = message.getString("uniqueURI");
-                GeckoAppShell.uninstallWebApp(uniqueURI);
+                String origin = message.getString("origin");
+                GeckoAppShell.uninstallWebApp(origin);
             } else if (event.equals("DesktopMode:Changed")) {
                 int tabId = message.getInt("tabId");
                 boolean desktopMode = message.getBoolean("desktopMode");
@@ -1284,6 +1242,9 @@ abstract public class GeckoApp
             @Override
             protected Boolean doInBackground(Void... params) {
                 WallpaperManager mgr = WallpaperManager.getInstance(mAppContext);
+                if (mgr == null) {
+                    return false;
+                }
 
                 // Determine the ideal width and height of the wallpaper
                 // for the device
@@ -1297,7 +1258,7 @@ abstract public class GeckoApp
                 // the ideal width and height from the device's display 
                 // resolution (excluding the decorated area)
 
-                if(idealWidth <= 0 || idealHeight <= 0) {
+                if (idealWidth <= 0 || idealHeight <= 0) {
                     int orientation;
                     Display defaultDisplay = getWindowManager().getDefaultDisplay();
                     if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.FROYO) {
@@ -1520,7 +1481,7 @@ abstract public class GeckoApp
             enableStrictMode();
         }
 
-        GeckoAppShell.loadMozGlue(this);
+        GeckoLoader.loadMozGlue(this);
         if (sGeckoThread != null) {
             // this happens when the GeckoApp activity is destroyed by android
             // without killing the entire application (see bug 769269)
@@ -1529,6 +1490,21 @@ abstract public class GeckoApp
         }
 
         mMainHandler = new Handler();
+
+        // Fix for bug 830557 on Tegra boards running Froyo.
+        // This fix must be done before doing layout.
+        // Assume the bug is fixed in Gingerbread and up.
+        if (Build.VERSION.SDK_INT < 9) {
+            try {
+                Class<?> inputBindResultClass =
+                    Class.forName("com.android.internal.view.InputBindResult");
+                java.lang.reflect.Field creatorField =
+                    inputBindResultClass.getField("CREATOR");
+                Log.i(LOGTAG, "froyo startup fix: " + String.valueOf(creatorField.get(null)));
+            } catch (Exception e) {
+                Log.w(LOGTAG, "froyo startup fix failed", e);
+            }
+        }
 
         LayoutInflater.from(this).setFactory(GeckoViewsFactory.getInstance());
 
@@ -1598,6 +1574,8 @@ abstract public class GeckoApp
             LayerView layerView = (LayerView) findViewById(R.id.layer_view);
             layerView.initializeView(GeckoAppShell.getEventDispatcher());
             mLayerView = layerView;
+            // bind the GeckoEditable instance to the new LayerView
+            GeckoAppShell.notifyIMEEnabled(GeckoEditableListener.IME_STATE_DISABLED, "", "", "", false);
         }
     }
 
@@ -1664,21 +1642,8 @@ abstract public class GeckoApp
 
         Uri data = intent.getData();
         if (data != null && "http".equals(data.getScheme())) {
-            Intent copy = new Intent(intent);
-            copy.setAction(ACTION_LOAD);
-            if (isHostOnRedirectWhitelist(data.getHost())) {
-                startupAction = StartupAction.REDIRECTOR;
-                GeckoAppShell.getHandler().post(new RedirectorRunnable(copy));
-                // We're going to handle this uri with the redirector, so setting
-                // the action to MAIN and clearing the uri data prevents us from
-                // loading it twice
-                intent.setAction(Intent.ACTION_MAIN);
-                intent.setData(null);
-                passedUri = null;
-            } else {
-                startupAction = StartupAction.PREFETCH;
-                GeckoAppShell.getHandler().post(new PrefetchRunnable(copy));
-            }
+            startupAction = StartupAction.PREFETCH;
+            GeckoAppShell.getHandler().post(new PrefetchRunnable(data.toString()));
         }
 
         Tabs.registerOnTabsChangedListener(this);
@@ -1767,13 +1732,13 @@ abstract public class GeckoApp
             sGeckoThread = new GeckoThread(intent, passedUri);
         }
         if (!ACTION_DEBUG.equals(action) &&
-            checkAndSetLaunchState(LaunchState.Launching, LaunchState.Launched)) {
+            GeckoThread.checkAndSetLaunchState(GeckoThread.LaunchState.Launching, GeckoThread.LaunchState.Launched)) {
             sGeckoThread.start();
         } else if (ACTION_DEBUG.equals(action) &&
-            checkAndSetLaunchState(LaunchState.Launching, LaunchState.WaitForDebugger)) {
+            GeckoThread.checkAndSetLaunchState(GeckoThread.LaunchState.Launching, GeckoThread.LaunchState.WaitForDebugger)) {
             mMainHandler.postDelayed(new Runnable() {
                 public void run() {
-                    setLaunchState(LaunchState.Launching);
+                    GeckoThread.setLaunchState(GeckoThread.LaunchState.Launching);
                     sGeckoThread.start();
                 }
             }, 1000 * 5 /* 5 seconds */);
@@ -1804,7 +1769,6 @@ abstract public class GeckoApp
         registerEventListener("ToggleChrome:Show");
         registerEventListener("ToggleChrome:Focus");
         registerEventListener("Permissions:Data");
-        registerEventListener("Tab:HasTouchListener");
         registerEventListener("Tab:ViewportMetadata");
         registerEventListener("Session:StatePurged");
         registerEventListener("Bookmark:Insert");
@@ -1870,14 +1834,14 @@ abstract public class GeckoApp
                     GeckoAppShell.setSelectedLocale(localeCode);
                 */
 
-                if (!checkLaunchState(LaunchState.Launched)) {
+                if (!GeckoThread.checkLaunchState(GeckoThread.LaunchState.Launched)) {
                     return;
                 }
             }
         }, 50);
 
         if (mIsRestoringActivity) {
-            setLaunchState(GeckoApp.LaunchState.GeckoRunning);
+            GeckoThread.setLaunchState(GeckoThread.LaunchState.GeckoRunning);
             Tab selectedTab = Tabs.getInstance().getSelectedTab();
             if (selectedTab != null)
                 Tabs.getInstance().notifyListeners(selectedTab, Tabs.TabEvents.SELECTED);
@@ -1955,92 +1919,35 @@ abstract public class GeckoApp
     abstract public String getUAStringForHost(String host);
 
     class PrefetchRunnable implements Runnable {
-        Intent mIntent;
-        protected HttpURLConnection mConnection = null;
-        PrefetchRunnable(Intent intent) {
-            mIntent = intent;
+        private String mPrefetchUrl;
+
+        PrefetchRunnable(String prefetchUrl) {
+            mPrefetchUrl = prefetchUrl;
         }
 
-        private void afterLoad() { }
-
+        @Override
         public void run() {
+            HttpURLConnection connection = null;
             try {
-                // this class should only be initialized with an intent with non-null data
-                URL url = new URL(mIntent.getData().toString());
+                URL url = new URL(mPrefetchUrl);
                 // data url should have an http scheme
-                mConnection = (HttpURLConnection) url.openConnection();
-                mConnection.setRequestProperty("User-Agent", getUAStringForHost(url.getHost()));
-                mConnection.setInstanceFollowRedirects(false);
-                mConnection.setRequestMethod("GET");
-                mConnection.connect();
-                afterLoad();
+                connection = (HttpURLConnection) url.openConnection();
+                connection.setRequestProperty("User-Agent", getUAStringForHost(url.getHost()));
+                connection.setInstanceFollowRedirects(false);
+                connection.setRequestMethod("GET");
+                connection.connect();
             } catch (Exception e) {
-                Log.w(LOGTAG, "unexpected exception, passing url directly to Gecko but we should explicitly catch this", e);
-                mIntent.putExtra("prefetched", 1);
+                Log.e(LOGTAG, "Exception prefetching URL", e);
             } finally {
-                if (mConnection != null)
-                    mConnection.disconnect();
+                if (connection != null)
+                    connection.disconnect();
             }
         }
-    }
-
-    class RedirectorRunnable extends PrefetchRunnable {
-        RedirectorRunnable(Intent intent) {
-            super(intent);
-        }
-        private void afterLoad() {
-            try {
-                int code = mConnection.getResponseCode();
-                if (code >= 300 && code < 400) {
-                    String location = mConnection.getHeaderField("Location");
-                    Uri data;
-                    if (location != null &&
-                        (data = Uri.parse(location)) != null &&
-                        !"about".equals(data.getScheme()) && 
-                        !"chrome".equals(data.getScheme())) {
-                        mIntent.setData(data);
-                    } else {
-                        mIntent.putExtra("prefetched", 1);
-                    }
-                } else {
-                    mIntent.putExtra("prefetched", 1);
-                }
-            } catch (IOException ioe) {
-                Log.w(LOGTAG, "Exception trying to pre-fetch redirected URL.", ioe);
-                mIntent.putExtra("prefetched", 1);
-            }
-        }
-        public void run() {
-            super.run();
-
-            mMainHandler.postAtFrontOfQueue(new Runnable() {
-                public void run() {
-                    onNewIntent(mIntent);
-                }
-            });
-        }
-    }
-
-    private final String kRedirectWhiteListArray[] = new String[] { 
-        "t.co",
-        "bit.ly",
-        "moz.la",
-        "aje.me",
-        "facebook.com",
-        "goo.gl",
-        "tinyurl.com"
-    };
-    
-    private final CopyOnWriteArrayList<String> kRedirectWhiteList =
-        new CopyOnWriteArrayList<String>(kRedirectWhiteListArray);
-
-    private boolean isHostOnRedirectWhitelist(String host) {
-        return kRedirectWhiteList.contains(host);
     }
 
     @Override
     protected void onNewIntent(Intent intent) {
-        if (checkLaunchState(LaunchState.GeckoExiting)) {
+        if (GeckoThread.checkLaunchState(GeckoThread.LaunchState.GeckoExiting)) {
             // We're exiting and shouldn't try to do anything else just incase
             // we're hung for some reason we'll force the process to exit
             System.exit(0);
@@ -2058,24 +1965,6 @@ abstract public class GeckoApp
         if ((intent.getFlags() & Intent.FLAG_ACTIVITY_LAUNCHED_FROM_HISTORY) != 0)
             return;
 
-        if (checkLaunchState(LaunchState.Launched)) {
-            Uri data = intent.getData();
-            Bundle bundle = intent.getExtras();
-            // if the intent has data (i.e. a URI to be opened) and the scheme
-            // is either http, we'll prefetch it, which means warming
-            // up the radio and DNS cache by connecting and parsing the redirect
-            // if the return code is between 300 and 400
-            if (data != null && 
-                "http".equals(data.getScheme()) &&
-                (bundle == null || bundle.getInt("prefetched", 0) != 1)) {
-                if (isHostOnRedirectWhitelist(data.getHost())) {
-                    GeckoAppShell.getHandler().post(new RedirectorRunnable(intent));
-                    return;
-                } else {
-                    GeckoAppShell.getHandler().post(new PrefetchRunnable(intent));
-                }
-            }
-        }
         final String action = intent.getAction();
 
         if (Intent.ACTION_MAIN.equals(action)) {
@@ -2279,7 +2168,6 @@ abstract public class GeckoApp
         unregisterEventListener("ToggleChrome:Show");
         unregisterEventListener("ToggleChrome:Focus");
         unregisterEventListener("Permissions:Data");
-        unregisterEventListener("Tab:HasTouchListener");
         unregisterEventListener("Tab:ViewportMetadata");
         unregisterEventListener("Session:StatePurged");
         unregisterEventListener("Bookmark:Insert");
@@ -2309,6 +2197,7 @@ abstract public class GeckoApp
             mPromptService.destroy();
         if (mTextSelection != null)
             mTextSelection.destroy();
+        SiteIdentityPopup.clearInstance();
 
         Tabs.getInstance().detachFromActivity(this);
 
@@ -2373,7 +2262,7 @@ abstract public class GeckoApp
     public Object onRetainNonConfigurationInstance() {
         // Send a non-null value so that we can restart the application, 
         // when activity restarts due to configuration change.
-        return new Boolean(true);
+        return Boolean.TRUE;
     } 
 
     abstract public String getPackageName();
@@ -2658,7 +2547,7 @@ abstract public class GeckoApp
     protected void connectGeckoLayerClient() {
         mLayerView.getLayerClient().notifyGeckoReady();
 
-        mLayerView.getTouchEventHandler().setOnTouchListener(new OnInterceptTouchListener() {
+        mLayerView.setTouchIntercepter(new OnInterceptTouchListener() {
             private PointF initialPoint = null;
 
             @Override
@@ -2726,10 +2615,6 @@ abstract public class GeckoApp
             // animations (see PropertyAnimator)
             super.setChildrenDrawnWithCacheEnabled(enabled);
         }
-    }
-
-    public boolean linkerExtract() {
-        return false;
     }
 
     private class FullScreenHolder extends FrameLayout {
@@ -2859,7 +2744,7 @@ abstract public class GeckoApp
         assertOnThread(sGeckoThread);
     }
 
-    private static void assertOnThread(Thread expectedThread) {
+    public static void assertOnThread(Thread expectedThread) {
         Thread currentThread = Thread.currentThread();
         long currentThreadId = currentThread.getId();
         long expectedThreadId = expectedThread.getId();

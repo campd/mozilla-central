@@ -168,6 +168,11 @@ public:
 
   static bool     IsImageSrcSetDisabled();
 
+  static bool LookupBindingMember(JSContext* aCx, nsIContent *aContent,
+                                  JS::HandleId aId, JSPropertyDescriptor* aDesc);
+  static bool IsBindingField(JSContext* aCx, nsIContent* aContent,
+                             JS::HandleId aId);
+
   /**
    * Returns the parent node of aChild crossing document boundaries.
    */
@@ -437,6 +442,13 @@ public:
   // Returns the subject principal. Guaranteed to return non-null. May only
   // be called when nsContentUtils is initialized.
   static nsIPrincipal* GetSubjectPrincipal();
+
+  // Returns the principal of the given JS object. This should never be null
+  // for any object in the XPConnect runtime.
+  //
+  // In general, being interested in the principal of an object is enough to
+  // guarantee that the return value is non-null.
+  static nsIPrincipal* GetObjectPrincipal(JSObject* aObj);
 
   static nsresult GenerateStateKey(nsIContent* aContent,
                                    const nsIDocument* aDocument,
@@ -1972,7 +1984,7 @@ public:
    * Returns true if the language name is a version of JavaScript and
    * false otherwise
    */
-  static bool IsJavaScriptLanguage(const nsString& aName, uint32_t *aVerFlags);
+  static bool IsJavaScriptLanguage(const nsString& aName);
 
   /**
    * Returns the JSVersion for a string of the form '1.n', n = 0, ..., 8, and
@@ -2210,6 +2222,7 @@ private:
   bool mPushedSomething;
 #ifdef DEBUG
   JSContext* mPushedContext;
+  unsigned mCompartmentDepthOnEntry;
 #endif
 };
 
@@ -2254,6 +2267,43 @@ public:
   }
 };
 
+namespace mozilla {
+
+/**
+ * Use AutoJSContext when you need a JS context on the stack but don't have one
+ * passed as a parameter. AutoJSContext will take care of finding the most
+ * appropriate JS context and release it when leaving the stack.
+ */
+class NS_STACK_CLASS AutoJSContext {
+public:
+  AutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
+  operator JSContext*();
+
+protected:
+  AutoJSContext(bool aSafe MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+
+private:
+  // We need this Init() method because we can't use delegating constructor for
+  // the moment. It is a C++11 feature and we do not require C++11 to be
+  // supported to be able to compile Gecko.
+  void Init(bool aSafe MOZ_GUARD_OBJECT_NOTIFIER_PARAM);
+
+  JSContext* mCx;
+  nsCxPusher mPusher;
+  MOZ_DECL_USE_GUARD_OBJECT_NOTIFIER
+};
+
+/**
+ * SafeAutoJSContext is similar to AutoJSContext but will only return the safe
+ * JS context. That means it will never call ::GetCurrentJSContext().
+ */
+class NS_STACK_CLASS SafeAutoJSContext : public AutoJSContext {
+public:
+  SafeAutoJSContext(MOZ_GUARD_OBJECT_NOTIFIER_ONLY_PARAM);
+};
+
+} // namespace mozilla
+
 #define NS_INTERFACE_MAP_ENTRY_TEAROFF(_interface, _allocator)                \
   if (aIID.Equals(NS_GET_IID(_interface))) {                                  \
     foundInterface = static_cast<_interface *>(_allocator);                   \
@@ -2275,11 +2325,6 @@ public:
 
 #define NS_ENSURE_FINITE2(f1, f2, rv)                                         \
   if (!NS_finite((f1)+(f2))) {                                                \
-    return (rv);                                                              \
-  }
-
-#define NS_ENSURE_FINITE3(f1, f2, f3, rv)                                     \
-  if (!NS_finite((f1)+(f2)+(f3))) {                                           \
     return (rv);                                                              \
   }
 

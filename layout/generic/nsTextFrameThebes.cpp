@@ -5,6 +5,8 @@
 
 /* rendering object for textual content of elements */
 
+#include "nsTextFrame.h"
+
 #include <cmath> // for std::abs(float/double)
 #include <cstdlib> // for std::abs(int/long)
 
@@ -13,6 +15,7 @@
 #include "mozilla/Likely.h"
 
 #include "nsCOMPtr.h"
+#include "nsBlockFrame.h"
 #include "nsHTMLParts.h"
 #include "nsCRT.h"
 #include "nsSplittableFrame.h"
@@ -44,7 +47,6 @@
 #include "nsFrameManager.h"
 #include "nsTextFrameTextRunCache.h"
 #include "nsExpirationTracker.h"
-#include "nsTextFrame.h"
 #include "nsUnicodeProperties.h"
 #include "nsUnicharUtilCIID.h"
 
@@ -99,14 +101,14 @@ struct TabWidth {
     : mOffset(aOffset), mWidth(float(aWidth))
   { }
 
-  uint32_t mOffset; // character offset within the text covered by the
-                    // PropertyProvider
+  uint32_t mOffset; // DOM offset relative to the current frame's offset.
   float    mWidth;  // extra space to be added at this position (in app units)
 };
 
 struct TabWidthStore {
-  TabWidthStore()
+  TabWidthStore(int32_t aValidForContentOffset)
     : mLimit(0)
+    , mValidForContentOffset(aValidForContentOffset)
   { }
 
   // Apply tab widths to the aSpacing array, which corresponds to characters
@@ -115,10 +117,16 @@ struct TabWidthStore {
   void ApplySpacing(gfxTextRun::PropertyProvider::Spacing *aSpacing,
                     uint32_t aOffset, uint32_t aLength);
 
-  uint32_t           mLimit;  // offset up to which tabs have been measured;
-                              // positions beyond this have not been calculated
-                              // yet but may be appended if needed later
-  nsTArray<TabWidth> mWidths; // (offset,width) records for each tab character
+  // Offset up to which tabs have been measured; positions beyond this have not
+  // been calculated yet but may be appended if needed later.  It's a DOM
+  // offset relative to the current frame's offset.
+  uint32_t mLimit;
+ 
+  // Need to recalc tab offsets if frame content offset differs from this.
+  int32_t mValidForContentOffset;
+
+  // A TabWidth record for each tab character measured so far.
+  nsTArray<TabWidth> mWidths;
 };
 
 void
@@ -2024,8 +2032,9 @@ BuildTextRunsScanner::BuildTextRunForFrames(void* aTextBuffer)
   gfxTextRun* textRun;
   gfxTextRunFactory::Parameters params =
       { mContext, finalUserData, &skipChars,
-        textBreakPointsAfterTransform.Elements(), textBreakPointsAfterTransform.Length(),
-        firstFrame->PresContext()->AppUnitsPerDevPixel() };
+        textBreakPointsAfterTransform.Elements(),
+        textBreakPointsAfterTransform.Length(),
+        int32_t(firstFrame->PresContext()->AppUnitsPerDevPixel())};
 
   if (mDoubleByteText) {
     const PRUnichar* text = static_cast<const PRUnichar*>(textPtr);
@@ -2475,6 +2484,11 @@ nsTextFrame::EnsureTextRun(TextRunType aWhichTextRun,
       static const gfxSkipChars emptySkipChars;
       return gfxSkipCharsIterator(emptySkipChars, 0);
     }
+    TabWidthStore* tabWidths =
+      static_cast<TabWidthStore*>(Properties().Get(TabWidthProperty()));
+    if (tabWidths && tabWidths->mValidForContentOffset != GetContentOffset()) {
+      Properties().Delete(TabWidthProperty());
+    }
   }
 
   if (textRun->GetFlags() & nsTextFrameUtils::TEXT_IS_SIMPLE_FLOW) {
@@ -2798,10 +2812,11 @@ protected:
   gfxSkipCharsIterator  mStart;  // Offset in original and transformed string
   gfxSkipCharsIterator  mTempIterator;
   
-  // Either null, or pointing to the frame's tabWidthProperty.
+  // Either null, or pointing to the frame's TabWidthProperty.
   TabWidthStore*        mTabWidths;
-  // how far we've done tab-width calculation; this is ONLY valid
-  // when mTabWidths is NULL (otherwise rely on mTabWidths->mLimit instead)
+  // How far we've done tab-width calculation; this is ONLY valid
+  // when mTabWidths is NULL (otherwise rely on mTabWidths->mLimit instead).
+  // It's a DOM offset relative to the current frame's offset.
   uint32_t              mTabWidthsAnalyzedLimit;
 
   int32_t               mLength; // DOM string length, may be INT32_MAX
@@ -3023,7 +3038,8 @@ PropertyProvider::CalcTabWidths(uint32_t aStart, uint32_t aLength)
       // tab character present (if any)
       for (uint32_t i = aStart + aLength; i > aStart; --i) {
         if (mTextRun->CharIsTab(i - 1)) {
-          NS_ASSERTION(mTabWidths && mTabWidths->mLimit >= i,
+          uint32_t startOffset = mStart.GetSkippedOffset();
+          NS_ASSERTION(mTabWidths && mTabWidths->mLimit + startOffset >= i,
                        "Precomputed tab widths are missing!");
           break;
         }
@@ -3034,9 +3050,10 @@ PropertyProvider::CalcTabWidths(uint32_t aStart, uint32_t aLength)
   }
 
   uint32_t startOffset = mStart.GetSkippedOffset();
-  uint32_t tabsEnd = mTabWidths ?
-    mTabWidths->mLimit : std::max(mTabWidthsAnalyzedLimit, startOffset);
-
+  MOZ_ASSERT(aStart >= startOffset, "wrong start offset");
+  MOZ_ASSERT(aStart + aLength <= startOffset + mLength, "beyond the end");
+  uint32_t tabsEnd =
+    (mTabWidths ? mTabWidths->mLimit : mTabWidthsAnalyzedLimit) + startOffset;
   if (tabsEnd < aStart + aLength) {
     NS_ASSERTION(mReflowing,
                  "We need precomputed tab widths, but don't have enough.");
@@ -3059,7 +3076,7 @@ PropertyProvider::CalcTabWidths(uint32_t aStart, uint32_t aLength)
         }
       } else {
         if (!mTabWidths) {
-          mTabWidths = new TabWidthStore();
+          mTabWidths = new TabWidthStore(mFrame->GetContentOffset());
           mFrame->Properties().Set(TabWidthProperty(), mTabWidths);
         }
         double nextTab = AdvanceToNextTab(mOffsetFromBlockOriginForTabs,
@@ -3073,7 +3090,7 @@ PropertyProvider::CalcTabWidths(uint32_t aStart, uint32_t aLength)
     }
 
     if (mTabWidths) {
-      mTabWidths->mLimit = aStart + aLength;
+      mTabWidths->mLimit = aStart + aLength - startOffset;
     }
   }
 
@@ -3081,7 +3098,7 @@ PropertyProvider::CalcTabWidths(uint32_t aStart, uint32_t aLength)
     // Delete any stale property that may be left on the frame
     mFrame->Properties().Delete(TabWidthProperty());
     mTabWidthsAnalyzedLimit = std::max(mTabWidthsAnalyzedLimit,
-                                     aStart + aLength);
+                                       aStart + aLength - startOffset);
   }
 }
 
@@ -4256,6 +4273,10 @@ nsTextFrame::GetCursor(const nsPoint& aPoint,
   FillCursorInformationFromStyle(GetStyleUserInterface(), aCursor);  
   if (NS_STYLE_CURSOR_AUTO == aCursor.mCursor) {
     aCursor.mCursor = NS_STYLE_CURSOR_TEXT;
+    // If this is editable, we should ignore tabindex value.
+    if (mContent->IsEditable()) {
+      return NS_OK;
+    }
 
     // If tabindex >= 0, use default cursor to indicate it's not selectable
     nsIFrame *ancestorFrame = this;
@@ -4289,6 +4310,7 @@ nsTextFrame::GetLastInFlow() const
   NS_POSTCONDITION(lastInFlow, "illegal state in flow chain.");
   return lastInFlow;
 }
+
 nsIFrame*
 nsTextFrame::GetLastContinuation() const
 {
@@ -4298,6 +4320,32 @@ nsTextFrame::GetLastContinuation() const
   }
   NS_POSTCONDITION(lastInFlow, "illegal state in continuation chain.");
   return lastInFlow;
+}
+
+void
+nsTextFrame::InvalidateFrame(uint32_t aDisplayItemKey)
+{
+  if (IsSVGText()) {
+    nsIFrame* svgTextFrame =
+      nsLayoutUtils::GetClosestFrameOfType(GetParent(),
+                                           nsGkAtoms::svgTextFrame2);
+    svgTextFrame->InvalidateFrame();
+    return;
+  }
+  nsTextFrameBase::InvalidateFrame(aDisplayItemKey);
+}
+
+void
+nsTextFrame::InvalidateFrameWithRect(const nsRect& aRect, uint32_t aDisplayItemKey)
+{
+  if (IsSVGText()) {
+    nsIFrame* svgTextFrame =
+      nsLayoutUtils::GetClosestFrameOfType(GetParent(),
+                                           nsGkAtoms::svgTextFrame2);
+    svgTextFrame->InvalidateFrame();
+    return;
+  }
+  nsTextFrameBase::InvalidateFrameWithRect(aRect, aDisplayItemKey);
 }
 
 gfxTextRun*
@@ -5539,7 +5587,7 @@ nsTextFrame::PaintTextWithSelectionColors(gfxContext* aCtx,
 
     DrawText(aCtx, aDirtyRect, aFramePt, textBaselinePt,
              offset, length, aProvider, aTextPaintStyle, foreground, aClipEdges,
-             advance, hyphenWidth > 0, nullptr, aCallbacks);
+             advance, hyphenWidth > 0, nullptr, nullptr, aCallbacks);
     if (hyphenWidth) {
       advance += hyphenWidth;
     }
@@ -5631,6 +5679,7 @@ nsTextFrame::PaintTextWithSelection(gfxContext* aCtx,
     uint32_t aContentOffset, uint32_t aContentLength,
     nsTextPaintStyle& aTextPaintStyle,
     const nsCharClipDisplayItem::ClipEdges& aClipEdges,
+    gfxTextObjectPaint* aObjectPaint,
     nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
   NS_ASSERTION(GetContent()->IsSelectionDescendant(), "wrong paint path");
@@ -5844,6 +5893,7 @@ void
 nsTextFrame::PaintText(nsRenderingContext* aRenderingContext, nsPoint aPt,
                        const nsRect& aDirtyRect,
                        const nsCharClipDisplayItem& aItem,
+                       gfxTextObjectPaint* aObjectPaint,
                        nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
   // Don't pass in aRenderingContext here, because we need a *reference*
@@ -5886,7 +5936,8 @@ nsTextFrame::PaintText(nsRenderingContext* aRenderingContext, nsPoint aPt,
       tmp.ConvertSkippedToOriginal(startOffset + maxLength) - contentOffset;
     if (PaintTextWithSelection(ctx, framePt, textBaselinePt, dirtyRect,
                                provider, contentOffset, contentLength,
-                               textPaintStyle, clipEdges, aCallbacks)) {
+                               textPaintStyle, clipEdges, aObjectPaint,
+                               aCallbacks)) {
       return;
     }
   }
@@ -5914,7 +5965,7 @@ nsTextFrame::PaintText(nsRenderingContext* aRenderingContext, nsPoint aPt,
   DrawText(ctx, dirtyRect, framePt, textBaselinePt, startOffset, maxLength, provider,
            textPaintStyle, foregroundColor, clipEdges, advanceWidth,
            (GetStateBits() & TEXT_HYPHEN_BREAK) != 0,
-           nullptr, aCallbacks);
+           nullptr, aObjectPaint, aCallbacks);
 }
 
 static void
@@ -5925,6 +5976,7 @@ DrawTextRun(gfxTextRun* aTextRun,
             PropertyProvider* aProvider,
             nscolor aTextColor,
             gfxFloat* aAdvanceWidth,
+            gfxTextObjectPaint* aObjectPaint,
             nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
   gfxFont::DrawMode drawMode = aCallbacks ? gfxFont::GLYPH_PATH :
@@ -5932,12 +5984,12 @@ DrawTextRun(gfxTextRun* aTextRun,
   if (aCallbacks) {
     aCallbacks->NotifyBeforeText(aTextColor);
     aTextRun->Draw(aCtx, aTextBaselinePt, drawMode, aOffset, aLength,
-                   aProvider, aAdvanceWidth, nullptr, aCallbacks);
+                   aProvider, aAdvanceWidth, aObjectPaint, aCallbacks);
     aCallbacks->NotifyAfterText();
   } else {
     aCtx->SetColor(gfxRGBA(aTextColor));
     aTextRun->Draw(aCtx, aTextBaselinePt, drawMode, aOffset, aLength,
-                   aProvider, aAdvanceWidth, nullptr);
+                   aProvider, aAdvanceWidth, aObjectPaint);
   }
 }
 
@@ -5949,10 +6001,11 @@ nsTextFrame::DrawTextRun(gfxContext* const aCtx,
                          nscolor aTextColor,
                          gfxFloat& aAdvanceWidth,
                          bool aDrawSoftHyphen,
+                         gfxTextObjectPaint* aObjectPaint,
                          nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
   ::DrawTextRun(mTextRun, aCtx, aTextBaselinePt, aOffset, aLength, &aProvider,
-                aTextColor, &aAdvanceWidth, aCallbacks);
+                aTextColor, &aAdvanceWidth, aObjectPaint, aCallbacks);
 
   if (aDrawSoftHyphen) {
     // Don't use ctx as the context, because we need a reference context here,
@@ -5966,7 +6019,7 @@ nsTextFrame::DrawTextRun(gfxContext* const aCtx,
       ::DrawTextRun(hyphenTextRun.get(), aCtx,
                     gfxPoint(hyphenBaselineX, aTextBaselinePt.y),
                     0, hyphenTextRun->GetLength(),
-                    nullptr, aTextColor, nullptr, aCallbacks);
+                    nullptr, aTextColor, nullptr, aObjectPaint, aCallbacks);
     }
   }
 }
@@ -5984,6 +6037,7 @@ nsTextFrame::DrawTextRunAndDecorations(
     bool aDrawSoftHyphen,
     const TextDecorations& aDecorations,
     const nscolor* const aDecorationOverrideColor,
+    gfxTextObjectPaint* aObjectPaint,
     nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
     const gfxFloat app = aTextStyle.PresContext()->AppUnitsPerDevPixel();
@@ -6048,7 +6102,7 @@ nsTextFrame::DrawTextRunAndDecorations(
     // CSS 2.1 mandates that text be painted after over/underlines, and *then*
     // line-throughs
     DrawTextRun(aCtx, aTextBaselinePt, aOffset, aLength, aProvider, aTextColor,
-                aAdvanceWidth, aDrawSoftHyphen, aCallbacks);
+                aAdvanceWidth, aDrawSoftHyphen, aObjectPaint, aCallbacks);
 
     // Line-throughs
     for (uint32_t i = aDecorations.mStrikes.Length(); i-- > 0; ) {
@@ -6084,6 +6138,7 @@ nsTextFrame::DrawText(
     gfxFloat& aAdvanceWidth,
     bool aDrawSoftHyphen,
     const nscolor* const aDecorationOverrideColor,
+    gfxTextObjectPaint* aObjectPaint,
     nsTextFrame::DrawPathCallbacks* aCallbacks)
 {
   TextDecorations decorations;
@@ -6098,10 +6153,10 @@ nsTextFrame::DrawText(
     DrawTextRunAndDecorations(aCtx, aDirtyRect, aFramePt, aTextBaselinePt, aOffset, aLength,
                               aProvider, aTextStyle, aTextColor, aClipEdges, aAdvanceWidth,
                               aDrawSoftHyphen, decorations,
-                              aDecorationOverrideColor, aCallbacks);
+                              aDecorationOverrideColor, aObjectPaint, aCallbacks);
   } else {
     DrawTextRun(aCtx, aTextBaselinePt, aOffset, aLength, aProvider,
-                aTextColor, aAdvanceWidth, aDrawSoftHyphen, aCallbacks);
+                aTextColor, aAdvanceWidth, aDrawSoftHyphen, aObjectPaint, aCallbacks);
   }
 }
 
@@ -6188,7 +6243,7 @@ nsTextFrame::GetCharacterOffsetAtFramePoint(const nsPoint &aPoint)
 }
 
 nsIFrame::ContentOffsets
-nsTextFrame::GetCharacterOffsetAtFramePointInternal(const nsPoint &aPoint,
+nsTextFrame::GetCharacterOffsetAtFramePointInternal(nsPoint aPoint,
                                                     bool aForInsertionPoint)
 {
   ContentOffsets offsets;

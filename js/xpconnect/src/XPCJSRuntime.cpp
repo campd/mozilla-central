@@ -31,6 +31,7 @@
 #include "mozilla/dom/BindingUtils.h"
 #include "mozilla/dom/Element.h"
 #include "mozilla/Attributes.h"
+#include "AccessCheck.h"
 
 #include "sampler.h"
 #include "nsJSPrincipals.h"
@@ -63,7 +64,6 @@ const char* XPCJSRuntime::mStrings[] = {
     "__proto__",            // IDX_PROTO
     "__iterator__",         // IDX_ITERATOR
     "__exposedProps__",     // IDX_EXPOSEDPROPS
-    "__scriptOnly__",       // IDX_SCRIPTONLY
     "baseURIObject",        // IDX_BASEURIOBJECT
     "nodePrincipal",        // IDX_NODEPRINCIPAL
     "documentURIObject",    // IDX_DOCUMENTURIOBJECT
@@ -223,13 +223,67 @@ CompartmentPrivate::~CompartmentPrivate()
 CompartmentPrivate*
 EnsureCompartmentPrivate(JSObject *obj)
 {
-    JSCompartment *c = js::GetObjectCompartment(obj);
+    return EnsureCompartmentPrivate(js::GetObjectCompartment(obj));
+}
+
+CompartmentPrivate*
+EnsureCompartmentPrivate(JSCompartment *c)
+{
     CompartmentPrivate *priv = GetCompartmentPrivate(c);
     if (priv)
         return priv;
     priv = new CompartmentPrivate();
     JS_SetCompartmentPrivate(c, priv);
     return priv;
+}
+
+bool
+IsXBLScope(JSCompartment *compartment)
+{
+    // We always eagerly create compartment privates for XBL scopes.
+    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    if (!priv || !priv->scope)
+        return false;
+    return priv->scope->IsXBLScope();
+}
+
+bool
+IsUniversalXPConnectEnabled(JSCompartment *compartment)
+{
+    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    if (!priv)
+        return false;
+    return priv->universalXPConnectEnabled;
+}
+
+bool
+IsUniversalXPConnectEnabled(JSContext *cx)
+{
+    JSCompartment *compartment = js::GetContextCompartment(cx);
+    if (!compartment)
+        return false;
+    return IsUniversalXPConnectEnabled(compartment);
+}
+
+bool
+EnableUniversalXPConnect(JSContext *cx)
+{
+    JSCompartment *compartment = js::GetContextCompartment(cx);
+    if (!compartment)
+        return true;
+    // Never set universalXPConnectEnabled on a chrome compartment - it confuses
+    // the security wrapping code.
+    if (AccessCheck::isChrome(compartment))
+        return true;
+    CompartmentPrivate *priv = GetCompartmentPrivate(compartment);
+    if (!priv)
+        return true;
+    priv->universalXPConnectEnabled = true;
+
+    // Recompute all the cross-compartment wrappers leaving the newly-privileged
+    // compartment.
+    return js::RecomputeWrappers(cx, js::SingleCompartment(compartment),
+                                 js::AllCompartments());
 }
 
 }
@@ -786,6 +840,8 @@ XPCJSRuntime::FinalizeCallback(JSFreeOp *fop, JSFinalizeStatus status, JSBool is
             // Find dying scopes.
             XPCWrappedNativeScope::StartFinalizationPhaseOfGC(fop, self);
 
+            XPCStringConvert::ClearCache();
+
             self->mDoingFinalization = true;
             break;
         }
@@ -1168,6 +1224,8 @@ XPCJSRuntime::~XPCJSRuntime()
 
     js::SetGCSliceCallback(mJSRuntime, mPrevGCSliceCallback);
 
+    xpc_DelocalizeRuntime(mJSRuntime);
+
     if (mWatchdogWakeup) {
         // If the watchdog thread is running, tell it to terminate waking it
         // up if necessary and wait until it signals that it finished. As we
@@ -1308,6 +1366,11 @@ XPCJSRuntime::~XPCJSRuntime()
         fprintf(stderr, "nJRSI: destroyed runtime %p\n", (void *)mJSRuntime);
 #endif
     }
+#ifdef MOZ_ENABLE_PROFILER_SPS
+    // Tell the profiler that the runtime is gone
+    if (ProfileStack *stack = mozilla_profile_stack())
+        stack->sampleRuntime(nullptr);
+#endif
 
 #ifdef DEBUG
     for (uint32_t i = 0; i < XPCCCX_STRING_CACHE_SIZE; ++i) {
@@ -1595,13 +1658,6 @@ ReportCompartmentStats(const JS::CompartmentStats &cStats,
                      "heap that holds references to executable code pools "
                      "used by IonMonkey.");
 
-#if JS_HAS_XML_SUPPORT
-    CREPORT_GC_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("gc-heap/xml"),
-                     cStats.gcHeapXML,
-                     "Memory on the garbage-collected JavaScript "
-                     "heap that holds E4X XML objects.");
-#endif
-
     CREPORT_BYTES(cJSPathPrefix + NS_LITERAL_CSTRING("objects-extra/slots"),
                   cStats.objectsExtra.slots,
                   "Memory allocated for the non-fixed object "
@@ -1856,6 +1912,10 @@ ReportJSRuntimeExplicitTreeStats(const JS::RuntimeStats &rtStats,
                   nsIMemoryReporter::KIND_NONHEAP, rtStats.runtime.unusedCode,
                   "Memory allocated by one of the JITs to hold the "
                   "runtime's code, but which is currently unused.");
+
+    RREPORT_BYTES(rtPath + NS_LITERAL_CSTRING("runtime/regexp-data"),
+                  nsIMemoryReporter::KIND_NONHEAP, rtStats.runtime.regexpData,
+                  "Memory used by the regexp JIT to hold data.");
 
     RREPORT_BYTES(rtPath + NS_LITERAL_CSTRING("runtime/stack"),
                   nsIMemoryReporter::KIND_NONHEAP, rtStats.runtime.stack,
@@ -2292,6 +2352,7 @@ CompartmentNameCallback(JSRuntime *rt, JSCompartment *comp,
 }
 
 bool XPCJSRuntime::gExperimentalBindingsEnabled;
+bool XPCJSRuntime::gXBLScopesEnabled;
 
 static bool
 PreserveWrapper(JSContext *cx, JSObject *obj)
@@ -2471,6 +2532,9 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     Preferences::AddBoolVarCache(&gExperimentalBindingsEnabled,
                                  "dom.experimental_bindings",
                                  false);
+    Preferences::AddBoolVarCache(&gXBLScopesEnabled,
+                                 "dom.xbl_scopes",
+                                 false);
 
 
     // these jsids filled in later when we have a JSContext to work with.
@@ -2487,10 +2551,12 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     // to cause period, and we hope hygienic, last-ditch GCs from within
     // the GC's allocator.
     JS_SetGCParameter(mJSRuntime, JSGC_MAX_BYTES, 0xffffffff);
-#ifdef MOZ_ASAN
-    // ASan requires more stack space due to redzones
+#if defined(MOZ_ASAN) || (defined(DEBUG) && !defined(XP_WIN))
+    // Bug 803182: account for the 4x difference in the size of js::Interpret
+    // between optimized and debug builds. Also, ASan requires more stack space
+    // due to redzones
     JS_SetNativeStackQuota(mJSRuntime, 2 * 128 * sizeof(size_t) * 1024);
-#else  
+#else
     JS_SetNativeStackQuota(mJSRuntime, 128 * sizeof(size_t) * 1024);
 #endif
     JS_SetContextCallback(mJSRuntime, ContextCallback);
@@ -2533,6 +2599,12 @@ XPCJSRuntime::XPCJSRuntime(nsXPConnect* aXPConnect)
     // JS_CompileFunction*). In practice, this means content scripts and event
     // handlers.
     JS_SetSourceHook(mJSRuntime, SourceHook);
+
+    // Set up locale information and callbacks for the newly-created runtime so
+    // that the various toLocaleString() methods, localeCompare(), and other
+    // internationalization APIs work as desired.
+    if (!xpc_LocalizeRuntime(mJSRuntime))
+        NS_RUNTIMEABORT("xpc_LocalizeRuntime failed.");
 
     NS_RegisterMemoryReporter(new NS_MEMORY_REPORTER_NAME(XPConnectJSGCHeap));
     NS_RegisterMemoryReporter(new NS_MEMORY_REPORTER_NAME(XPConnectJSSystemCompartmentCount));

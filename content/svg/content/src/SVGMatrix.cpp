@@ -18,20 +18,7 @@ namespace dom {
 //----------------------------------------------------------------------
 // nsISupports methods:
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(SVGMatrix)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(SVGMatrix)
-NS_IMPL_CYCLE_COLLECTION_UNLINK(mTransform)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_PRESERVED_WRAPPER
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(SVGMatrix)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mTransform)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_SCRIPT_OBJECTS
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_TRACE_BEGIN(SVGMatrix)
-NS_IMPL_CYCLE_COLLECTION_TRACE_PRESERVED_WRAPPER
-NS_IMPL_CYCLE_COLLECTION_TRACE_END
+  NS_IMPL_CYCLE_COLLECTION_WRAPPERCACHE_1(SVGMatrix, mTransform)
 
 NS_IMPL_CYCLE_COLLECTING_ADDREF(SVGMatrix)
 NS_IMPL_CYCLE_COLLECTING_RELEASE(SVGMatrix)
@@ -143,7 +130,7 @@ already_AddRefed<SVGMatrix>
 SVGMatrix::Inverse(ErrorResult& rv)
 {
   if (Matrix().IsSingular()) {
-    rv.Throw(NS_ERROR_DOM_SVG_MATRIX_NOT_INVERTABLE);
+    rv.Throw(NS_ERROR_DOM_INVALID_STATE_ERR);
     return nullptr;
   }
   nsRefPtr<SVGMatrix> matrix = new SVGMatrix(gfxMatrix(Matrix()).Invert());
@@ -185,7 +172,7 @@ already_AddRefed<SVGMatrix>
 SVGMatrix::RotateFromVector(float x, float y, ErrorResult& rv)
 {
   if (x == 0.0 || y == 0.0) {
-    rv.Throw(NS_ERROR_RANGE_ERR);
+    rv.Throw(NS_ERROR_DOM_INVALID_ACCESS_ERR);
     return nullptr;
   }
 
@@ -217,7 +204,7 @@ SVGMatrix::SkewX(float angle, ErrorResult& rv)
 {
   double ta = tan( angle*radPerDegree );
   if (!NS_finite(ta)) {
-    rv.Throw(NS_ERROR_RANGE_ERR);
+    rv.Throw(NS_ERROR_DOM_INVALID_ACCESS_ERR);
     return nullptr;
   }
 
@@ -234,7 +221,7 @@ SVGMatrix::SkewY(float angle, ErrorResult& rv)
 {
   double ta = tan( angle*radPerDegree );
   if (!NS_finite(ta)) {
-    rv.Throw(NS_ERROR_RANGE_ERR);
+    rv.Throw(NS_ERROR_DOM_INVALID_ACCESS_ERR);
     return nullptr;
   }
 

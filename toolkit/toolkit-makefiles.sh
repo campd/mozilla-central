@@ -449,6 +449,7 @@ MAKEFILES_embedding="
 "
 
 MAKEFILES_xulapp="
+  addon-sdk/Makefile
   toolkit/Makefile
   toolkit/library/Makefile
   toolkit/crashreporter/client/Makefile
@@ -621,6 +622,7 @@ elif [ "$MOZ_WIDGET_TOOLKIT" = "cocoa" ]; then
     toolkit/themes/pinstripe/global/Makefile
     toolkit/themes/pinstripe/mozapps/Makefile
     toolkit/components/alerts/mac/Makefile
+    toolkit/components/alerts/mac/growl/Makefile
     widget/cocoa/Makefile
   "
 elif [ "$MOZ_WIDGET_TOOLKIT" = "gtk2" ]; then
@@ -718,6 +720,7 @@ fi
 
 if [ "$ENABLE_TESTS" ]; then
   add_makefiles "
+    addon-sdk/test/Makefile
     caps/tests/mochitest/Makefile
     chrome/test/Makefile
     content/base/test/Makefile
@@ -760,13 +763,16 @@ if [ "$ENABLE_TESTS" ]; then
     dom/imptests/editing/selecttest/Makefile
     dom/imptests/failures/editing/conformancetest/Makefile
     dom/imptests/failures/editing/selecttest/Makefile
-    dom/imptests/failures/html/tests/submission/Opera/microdata/Makefile
+    dom/imptests/failures/html/old-tests/submission/Opera/microdata/Makefile
     dom/imptests/failures/webapps/DOMCore/tests/approved/Makefile
     dom/imptests/failures/webapps/DOMCore/tests/submissions/Opera/Makefile
     dom/imptests/failures/webapps/WebStorage/tests/submissions/Infraware/Makefile
     dom/imptests/failures/webapps/WebStorage/tests/submissions/Ms2ger/Makefile
-    dom/imptests/html/tests/submission/Mozilla/Makefile
-    dom/imptests/html/tests/submission/Opera/microdata/Makefile
+    dom/imptests/html/html/semantics/scripting-1/the-script-element/Makefile
+    dom/imptests/html/html/webappapis/scripting/events/Makefile
+    dom/imptests/html/html/webappapis/scripting/processing-model-2/Makefile
+    dom/imptests/html/html/browsers/browsing-the-web/read-media/Makefile
+    dom/imptests/html/old-tests/submission/Opera/microdata/Makefile
     dom/imptests/webapps/DOMCore/tests/approved/Makefile
     dom/imptests/webapps/DOMCore/tests/submissions/Opera/Makefile
     dom/imptests/webapps/WebStorage/tests/submissions/Infraware/Makefile
@@ -1204,6 +1210,7 @@ fi
 if [ "$MOZ_B2G_RIL" ]; then
   add_makefiles "
     dom/telephony/Makefile
+    dom/voicemail/Makefile
     dom/wifi/Makefile
     ipc/ril/Makefile
   "
@@ -1458,9 +1465,8 @@ if [ "$MOZ_XUL" ]; then
     content/xul/templates/Makefile
     content/xul/templates/public/Makefile
     content/xul/templates/src/Makefile
-    layout/xul/base/src/grid/Makefile
-    layout/xul/base/src/tree/public/Makefile
-    layout/xul/base/src/tree/src/Makefile
+    layout/xul/grid/Makefile
+    layout/xul/tree/Makefile
     toolkit/components/autocomplete/Makefile
     toolkit/components/satchel/Makefile
   "

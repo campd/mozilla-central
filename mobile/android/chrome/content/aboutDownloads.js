@@ -139,6 +139,7 @@ let Downloads = {
     this._dlmgr.addPrivacyAwareListener(this);
 
     Services.obs.addObserver(this, "last-pb-context-exited", false);
+    Services.obs.addObserver(this, "download-manager-remove-download-guid", false);
 
     // If we have private downloads, show them all immediately. If we were to
     // add them asynchronously, there's a small chance we could get a
@@ -165,6 +166,7 @@ let Downloads = {
 
     this._dlmgr.removeListener(this);
     Services.obs.removeObserver(this, "last-pb-context-exited");
+    Services.obs.removeObserver(this, "download-manager-remove-download-guid");
   },
 
   onProgressChange: function(aWebProgress, aRequest, aCurSelfProgress, aMaxSelfProgress,
@@ -194,9 +196,17 @@ let Downloads = {
   onStateChange: function(aWebProgress, aRequest, aState, aStatus, aDownload) { },
   onSecurityChange: function(aWebProgress, aRequest, aState, aDownload) { },
 
-  // Called when last private window is closed
   observe: function (aSubject, aTopic, aData) {
-    this._privateList.innerHTML = "";
+    switch (aTopic) {
+      case "last-pb-context-exited":
+        this._privateList.innerHTML = "";
+        break;
+      case "download-manager-remove-download-guid": {
+        let guid = aSubject.QueryInterface(Ci.nsISupportsCString).data;
+        this._removeItem(this._getElementForDownload(guid));
+        break;
+      }
+    }
   },
 
   _moveDownloadAfterActive: function dl_moveDownloadAfterActive(aItem) {
@@ -439,7 +449,7 @@ let Downloads = {
       } catch (ex) {
         this.logError("openDownload() " + ex, aDownload);
       }
-    });
+    }.bind(this));
   },
 
   removeDownload: function dl_removeDownload(aItem) {
@@ -454,12 +464,11 @@ let Downloads = {
       }
       aDownload.remove();
       try {
-        if (f) f.remove();
+        if (f) f.remove(false);
       } catch (ex) {
         this.logError("removeDownload() " + ex, aDownload);
       }
-    });
-    aItem.parentNode.removeChild(aItem);
+    }.bind(this));
   },
 
   removeAll: function dl_removeAll() {

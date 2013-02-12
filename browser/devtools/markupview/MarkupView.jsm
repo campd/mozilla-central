@@ -24,16 +24,16 @@ Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 let obj = {};
-Cu.import('resource://gre/modules/commonjs/loader.js', obj);
+Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
 let {Loader, Require, unload} = obj.Loader;
 let loader = new Loader({
   paths: {
-    'commonjs/': 'resource://gre/modules/commonjs/',
+    "sdk/": "resource://gre/modules/commonjs/sdk/",
     '': 'resource:///modules/',
   }
 });
 let require = Require(loader, {id: "domwalker"});
-let promise = require("commonjs/promise/core");
+let promise = require("sdk/core/promise");
 
 /**
  * Vocabulary for the purposes of this file:
@@ -158,8 +158,7 @@ MarkupView.prototype = {
           return Ci.nsIDOMNodeFilter.FILTER_ACCEPT;
         }
         return Ci.nsIDOMNodeFilter.FILTER_SKIP;
-      },
-      false
+      }
     );
     walker.currentNode = aCurrent || this._selectedContainer.elt;
     return walker;
@@ -846,7 +845,18 @@ function MarkupContainer(aMarkupView, aNode)
     this.markup.navigate(this);
   }.bind(this), false);
 
+  if (this.editor.summaryElt) {
+    this.editor.summaryElt.addEventListener("click", function(evt) {
+      this.markup.navigate(this);
+      this.markup.expandNode(this.node);
+    }.bind(this), false);
+    this.codeBox.appendChild(this.editor.summaryElt);
+  }
+
   if (this.editor.closeElt) {
+    this.editor.closeElt.addEventListener("mousedown", function(evt) {
+      this.markup.navigate(this);
+    }.bind(this), false);
     this.codeBox.appendChild(this.editor.closeElt);
   }
 
@@ -883,9 +893,15 @@ MarkupContainer.prototype = {
     if (aValue) {
       this.expander.setAttribute("expanded", "");
       this.children.setAttribute("expanded", "");
+      if (this.editor.summaryElt) {
+        this.editor.summaryElt.setAttribute("expanded", "");
+      }
     } else {
       this.expander.removeAttribute("expanded");
       this.children.removeAttribute("expanded");
+      if (this.editor.summaryElt) {
+        this.editor.summaryElt.removeAttribute("expanded");
+      }
     }
   },
 
@@ -1061,10 +1077,17 @@ function ElementEditor(aContainer, aNode)
   this.tag = null;
   this.attrList = null;
   this.newAttr = null;
+  this.summaryElt = null;
   this.closeElt = null;
 
   // Create the main editor
   this.template("element", this);
+
+  if (this.node.numChildren > 0 ||
+      (this.node.nodeValue && this.node.nodeValue.length > 0)) {
+    // Create the summary placeholder
+    this.template("elementContentSummary", this);
+  }
 
   // Create the closing tag
   this.template("elementClose", this);

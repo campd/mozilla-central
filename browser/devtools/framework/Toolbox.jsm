@@ -8,7 +8,7 @@ const { classes: Cc, interfaces: Ci, utils: Cu } = Components;
 
 Cu.import('resource://gre/modules/XPCOMUtils.jsm');
 Cu.import("resource://gre/modules/Services.jsm");
-Cu.import("resource://gre/modules/commonjs/promise/core.js");
+Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 Cu.import("resource:///modules/devtools/gDevTools.jsm");
 
@@ -317,6 +317,13 @@ Toolbox.prototype = {
 
     if (!this._target.isLocalTab) {
       return;
+    }
+
+    let closeButton = this.doc.getElementById("toolbox-close");
+    if (this.hostType === this.HostType.WINDOW) {
+      closeButton.setAttribute("hidden", "true");
+    } else {
+      closeButton.removeAttribute("hidden");
     }
 
     let sideEnabled = Services.prefs.getBoolPref(this._prefs.SIDE_ENABLED);

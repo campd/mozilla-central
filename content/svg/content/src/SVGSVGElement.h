@@ -7,10 +7,7 @@
 #define mozilla_dom_SVGSVGElement_h
 
 #include "mozilla/dom/FromParser.h"
-#include "nsIDOMSVGFitToViewBox.h"
-#include "nsIDOMSVGLocatable.h"
 #include "nsISVGPoint.h"
-#include "nsIDOMSVGSVGElement.h"
 #include "nsSVGEnum.h"
 #include "nsSVGLength2.h"
 #include "SVGGraphicsElement.h"
@@ -23,6 +20,7 @@ nsresult NS_NewSVGSVGElement(nsIContent **aResult,
                              already_AddRefed<nsINodeInfo> aNodeInfo,
                              mozilla::dom::FromParser aFromParser);
 
+class nsIDOMSVGNumber;
 class nsSMILTimeContainer;
 class nsSVGOuterSVGFrame;
 class nsSVGInnerSVGFrame;
@@ -40,57 +38,29 @@ class SVGViewElement;
 
 class SVGSVGElement;
 
-class nsSVGTranslatePoint {
+class DOMSVGTranslatePoint MOZ_FINAL : public nsISVGPoint {
 public:
-  nsSVGTranslatePoint()
-    : mX(0.0f)
-    , mY(0.0f)
-  {}
+  DOMSVGTranslatePoint(SVGPoint* aPt, SVGSVGElement *aElement)
+    : nsISVGPoint(aPt), mElement(aElement) {}
 
-  nsSVGTranslatePoint(float aX, float aY)
-    : mX(aX)
-    , mY(aY)
-  {}
+  DOMSVGTranslatePoint(DOMSVGTranslatePoint* aPt)
+    : nsISVGPoint(&aPt->mPt), mElement(aPt->mElement) {}
 
-  void SetX(float aX)
-    { mX = aX; }
-  void SetY(float aY)
-    { mY = aY; }
-  float GetX() const
-    { return mX; }
-  float GetY() const
-    { return mY; }
+  NS_DECL_CYCLE_COLLECTING_ISUPPORTS
+  NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMSVGTranslatePoint)
 
-  nsresult ToDOMVal(SVGSVGElement *aElement, nsISupports **aResult);
+  virtual nsISVGPoint* Clone();
 
-  bool operator!=(const nsSVGTranslatePoint &rhs) const {
-    return mX != rhs.mX || mY != rhs.mY;
-  }
+  // WebIDL
+  virtual float X() { return mPt.GetX(); }
+  virtual float Y() { return mPt.GetY(); }
+  virtual void SetX(float aValue, ErrorResult& rv);
+  virtual void SetY(float aValue, ErrorResult& rv);
+  virtual already_AddRefed<nsISVGPoint> MatrixTransform(SVGMatrix& matrix);
 
-private:
+  virtual nsISupports* GetParentObject() MOZ_OVERRIDE;
 
-  struct DOMVal MOZ_FINAL : public nsISVGPoint {
-    DOMVal(nsSVGTranslatePoint* aVal, SVGSVGElement *aElement)
-      : nsISVGPoint(), mVal(aVal), mElement(aElement) {}
-
-    NS_DECL_CYCLE_COLLECTING_ISUPPORTS
-    NS_DECL_CYCLE_COLLECTION_SCRIPT_HOLDER_CLASS(DOMVal)
-
-    // WebIDL
-    virtual float X() { return mVal->GetX(); }
-    virtual float Y() { return mVal->GetY(); }
-    virtual void SetX(float aValue, ErrorResult& rv);
-    virtual void SetY(float aValue, ErrorResult& rv);
-    virtual already_AddRefed<nsISVGPoint> MatrixTransform(SVGMatrix& matrix);
-
-    virtual nsISupports* GetParentObject() MOZ_OVERRIDE;
-
-    nsSVGTranslatePoint *mVal; // kept alive because it belongs to mElement
-    nsRefPtr<SVGSVGElement> mElement;
-  };
-
-  float mX;
-  float mY;
+  nsRefPtr<SVGSVGElement> mElement;
 };
 
 class svgFloatSize {
@@ -109,8 +79,7 @@ public:
 typedef SVGGraphicsElement SVGSVGElementBase;
 
 class SVGSVGElement MOZ_FINAL : public SVGSVGElementBase,
-                                public nsIDOMSVGSVGElement,
-                                public nsIDOMSVGFitToViewBox
+                                public nsIDOMSVGElement
 {
   friend class ::nsSVGOuterSVGFrame;
   friend class ::nsSVGInnerSVGFrame;
@@ -129,8 +98,6 @@ public:
   // interfaces:
   NS_DECL_ISUPPORTS_INHERITED
   NS_DECL_CYCLE_COLLECTION_CLASS_INHERITED(SVGSVGElement, SVGSVGElementBase)
-  NS_DECL_NSIDOMSVGSVGELEMENT
-  NS_DECL_NSIDOMSVGFITTOVIEWBOX
 
   // xxx I wish we could use virtual inheritance
   NS_FORWARD_NSIDOMNODE_TO_NSINODE
@@ -142,26 +109,19 @@ public:
    * currentTranslate.y to be set by a single operation that dispatches a
    * single SVGZoom event (instead of one SVGZoom and two SVGScroll events).
    */
-  NS_IMETHOD SetCurrentScaleTranslate(float s, float x, float y);
-
-  /**
-   * For use by pan controls to allow currentTranslate.x and currentTranslate.y
-   * to be set by a single operation that dispatches a single SVGScroll event
-   * (instead of two).
-   */
-  NS_IMETHOD SetCurrentTranslate(float x, float y);
+  void SetCurrentScaleTranslate(float s, float x, float y);
 
   /**
    * Retrieve the value of currentScale and currentTranslate.
    */
-  const nsSVGTranslatePoint& GetCurrentTranslate() { return mCurrentTranslate; }
+  const SVGPoint& GetCurrentTranslate() { return mCurrentTranslate; }
   float GetCurrentScale() { return mCurrentScale; }
 
   /**
    * Retrieve the value of currentScale, currentTranslate.x or
    * currentTranslate.y prior to the last change made to any one of them.
    */
-  const nsSVGTranslatePoint& GetPreviousTranslate() { return mPreviousTranslate; }
+  const SVGPoint& GetPreviousTranslate() { return mPreviousTranslate; }
   float GetPreviousScale() { return mPreviousScale; }
 
   nsSMILTimeContainer* GetTimedDocumentRoot();
@@ -255,32 +215,31 @@ public:
     mViewportHeight = aSize.height;
   }
 
-  virtual nsXPCClassInfo* GetClassInfo();
-
   virtual nsIDOMNode* AsDOMNode() { return this; }
 
   // WebIDL
-  already_AddRefed<nsIDOMSVGAnimatedLength> X();
-  already_AddRefed<nsIDOMSVGAnimatedLength> Y();
-  already_AddRefed<nsIDOMSVGAnimatedLength> Width();
-  already_AddRefed<nsIDOMSVGAnimatedLength> Height();
+  already_AddRefed<SVGAnimatedLength> X();
+  already_AddRefed<SVGAnimatedLength> Y();
+  already_AddRefed<SVGAnimatedLength> Width();
+  already_AddRefed<SVGAnimatedLength> Height();
   float PixelUnitToMillimeterX();
   float PixelUnitToMillimeterY();
   float ScreenPixelToMillimeterX();
   float ScreenPixelToMillimeterY();
   bool UseCurrentView();
-  // XPIDL SetCurrentScale and SetCurrentTranslate are alright to use because
-  // they only throw on non-finite floats and we don't allow those.
   float CurrentScale();
+  void SetCurrentScale(float aCurrentScale);
   already_AddRefed<nsISVGPoint> CurrentTranslate();
+  void SetCurrentTranslate(float x, float y);
   uint32_t SuspendRedraw(uint32_t max_wait_milliseconds);
-  // XPIDL UnSuspendRedraw(All) can be used because it's a no-op.
+  void UnsuspendRedraw(uint32_t suspend_handle_id);
+  void UnsuspendRedrawAll();
   void ForceRedraw(ErrorResult& rv);
-  void PauseAnimations(ErrorResult& rv);
-  void UnpauseAnimations(ErrorResult& rv);
-  bool AnimationsPaused(ErrorResult& rv);
-  float GetCurrentTime(ErrorResult& rv);
-  void SetCurrentTime(float seconds, ErrorResult& rv);
+  void PauseAnimations();
+  void UnpauseAnimations();
+  bool AnimationsPaused();
+  float GetCurrentTime();
+  void SetCurrentTime(float seconds);
   already_AddRefed<nsIDOMSVGNumber> CreateSVGNumber();
   already_AddRefed<nsIDOMSVGLength> CreateSVGLength();
   already_AddRefed<SVGAngle> CreateSVGAngle();
@@ -413,20 +372,20 @@ private:
   // zoom and pan
   // IMPORTANT: see the comment in RecordCurrentScaleTranslate before writing
   // code to change any of these!
-  nsSVGTranslatePoint               mCurrentTranslate;
-  float                             mCurrentScale;
-  nsSVGTranslatePoint               mPreviousTranslate;
-  float                             mPreviousScale;
+  SVGPoint mCurrentTranslate;
+  float    mCurrentScale;
+  SVGPoint mPreviousTranslate;
+  float    mPreviousScale;
 
   // For outermost <svg> elements created from parsing, animation is started by
   // the onload event in accordance with the SVG spec, but for <svg> elements
   // created by script or promoted from inner <svg> to outermost <svg> we need
   // to manually kick off animation when they are bound to the tree.
-  bool                              mStartAnimationOnBindToTree;
-  bool                              mImageNeedsTransformInvalidation;
-  bool                              mIsPaintingSVGImageElement;
-  bool                              mHasChildrenOnlyTransform;
-  bool                              mUseCurrentView;
+  bool     mStartAnimationOnBindToTree;
+  bool     mImageNeedsTransformInvalidation;
+  bool     mIsPaintingSVGImageElement;
+  bool     mHasChildrenOnlyTransform;
+  bool     mUseCurrentView;
 };
 
 } // namespace dom

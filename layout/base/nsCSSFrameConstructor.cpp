@@ -121,6 +121,7 @@
 #include "nsIDOMSVGFilters.h"
 #include "DOMSVGTests.h"
 #include "nsSVGEffects.h"
+#include "nsSVGTextFrame2.h"
 #include "nsSVGTextPathFrame.h"
 #include "nsSVGUtils.h"
 
@@ -143,6 +144,7 @@ NS_NewHTMLVideoFrame (nsIPresShell* aPresShell, nsStyleContext* aContext);
 #endif
 
 #include "nsSVGTextContainerFrame.h"
+#include "nsSVGTextFrame2.h"
 
 nsIFrame*
 NS_NewSVGOuterSVGFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
@@ -166,6 +168,8 @@ nsIFrame*
 NS_NewSVGSwitchFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGTextFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
+nsIFrame*
+NS_NewSVGTextFrame2(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
 NS_NewSVGTSpanFrame(nsIPresShell* aPresShell, nsStyleContext* aContext);
 nsIFrame*
@@ -929,9 +933,10 @@ nsFrameConstructorState::nsFrameConstructorState(nsIPresShell*          aPresShe
     // See PushAbsoluteContaningBlock below
     mFrameState(aHistoryState),
     mAdditionalStateBits(0),
-    mFixedPosIsAbsPos(aAbsoluteContainingBlock &&
-                      aAbsoluteContainingBlock->GetStyleDisplay()->
-                        HasTransform(aAbsoluteContainingBlock)),
+    // If the fixed-pos containing block is equal to the abs-pos containing
+    // block, use the abs-pos containing block's abs-pos list for fixed-pos
+	// frames.
+    mFixedPosIsAbsPos(aFixedContainingBlock == aAbsoluteContainingBlock),
     mHavePendingPopupgroup(false),
     mCreatingExtraFrames(false),
     mTreeMatchContext(true, nsRuleWalker::eRelevantLinkUnvisited,
@@ -962,9 +967,10 @@ nsFrameConstructorState::nsFrameConstructorState(nsIPresShell* aPresShell,
     mFloatedItems(aFloatContainingBlock),
     // See PushAbsoluteContaningBlock below
     mAdditionalStateBits(0),
-    mFixedPosIsAbsPos(aAbsoluteContainingBlock &&
-                      aAbsoluteContainingBlock->GetStyleDisplay()->
-                        HasTransform(aAbsoluteContainingBlock)),
+    // If the fixed-pos containing block is equal to the abs-pos containing
+    // block, use the abs-pos containing block's abs-pos list for fixed-pos
+	// frames.
+    mFixedPosIsAbsPos(aFixedContainingBlock == aAbsoluteContainingBlock),
     mHavePendingPopupgroup(false),
     mCreatingExtraFrames(false),
     mTreeMatchContext(true, nsRuleWalker::eRelevantLinkUnvisited,
@@ -1246,10 +1252,10 @@ nsFrameConstructorState::ProcessFrameInsertions(nsAbsoluteItems& aFrameItems,
   NS_ASSERTION(containingBlock,
                "Child list without containing block?");
 
-  if (aChildListID == nsIFrame::kFixedList &&
-      containingBlock->GetStyleDisplay()->HasTransform(containingBlock)) {
-    // Put this frame on the transformed-frame's abs-pos list instead.
-    aChildListID = nsIFrame::kAbsoluteList;
+  if (aChildListID == nsIFrame::kFixedList) {
+    // Put this frame on the transformed-frame's abs-pos list instead, if
+    // it has abs-pos children instead of fixed-pos children.
+    aChildListID = containingBlock->GetAbsoluteListID();
   }
 
   // Insert the frames hanging out in aItems.  We can use SetInitialChildList()
@@ -1428,6 +1434,7 @@ nsCSSFrameConstructor::nsCSSFrameConstructor(nsIDocument *aDocument,
   , mInStyleRefresh(false)
   , mHoverGeneration(0)
   , mRebuildAllExtraHint(nsChangeHint(0))
+  , mOverflowChangedTracker(nullptr)
   , mAnimationGeneration(0)
   , mPendingRestyles(ELEMENT_HAS_PENDING_RESTYLE |
                      ELEMENT_IS_POTENTIAL_RESTYLE_ROOT, this)
@@ -1505,6 +1512,10 @@ nsCSSFrameConstructor::NotifyDestroyingFrame(nsIFrame* aFrame)
     // USE nodes.  However, this is unlikely to happen in the real world
     // since USE nodes generally go along with INCREMENT nodes.
     CountersDirty();
+  }
+
+  if (mOverflowChangedTracker) {
+    mOverflowChangedTracker->RemoveFrame(aFrame);
   }
 
   nsFrameManager::NotifyDestroyingFrame(aFrame);
@@ -2355,8 +2366,7 @@ nsCSSFrameConstructor::ConstructDocElementFrame(Element*                 aDocEle
     nsRefPtr<nsXBLBinding> binding;
     rv = xblService->LoadBindings(aDocElement, display->mBinding->GetURI(),
                                   display->mBinding->mOriginPrincipal,
-                                  false, getter_AddRefs(binding),
-                                  &resolveStyle);
+                                  getter_AddRefs(binding), &resolveStyle);
     if (NS_FAILED(rv) && rv != NS_ERROR_XBL_BLOCKED)
       return NS_OK; // Binding will load asynchronously.
 
@@ -3204,15 +3214,24 @@ FindAncestorWithGeneratedContentPseudo(nsIFrame* aFrame)
 const nsCSSFrameConstructor::FrameConstructionData*
 nsCSSFrameConstructor::FindTextData(nsIFrame* aParentFrame)
 {
-  if (aParentFrame && aParentFrame->IsFrameOfType(nsIFrame::eSVG)) {
+  if (aParentFrame && IsFrameForSVG(aParentFrame)) {
     nsIFrame *ancestorFrame =
       nsSVGUtils::GetFirstNonAAncestorFrame(aParentFrame);
     if (ancestorFrame) {
-      nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-      if (metrics) {
+      if (NS_SVGTextCSSFramesEnabled()) {
+        static const FrameConstructionData sSVGTextData =
+          FCDATA_DECL(FCDATA_IS_LINE_PARTICIPANT | FCDATA_IS_SVG_TEXT,
+                      NS_NewTextFrame);
+        if (ancestorFrame->IsSVGText()) {
+          return &sSVGTextData;
+        }
+      } else {
         static const FrameConstructionData sSVGGlyphData =
           SIMPLE_FCDATA(NS_NewSVGGlyphFrame);
-        return &sSVGGlyphData;
+        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
+        if (metrics) {
+          return &sSVGGlyphData;
+        }
       }
     }
     return nullptr;
@@ -4821,6 +4840,8 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
                                    nsIAtom* aTag,
                                    int32_t aNameSpaceID,
                                    nsIFrame* aParentFrame,
+                                   bool aIsWithinSVGText,
+                                   bool aAllowsTextPathChild,
                                    nsStyleContext* aStyleContext)
 {
   if (aNameSpaceID != kNameSpaceID_SVG) {
@@ -4831,7 +4852,7 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
   static const FrameConstructionData sContainerData =
     SIMPLE_SVG_FCDATA(NS_NewSVGContainerFrame);
 
-  bool parentIsSVG = false;
+  bool parentIsSVG = aIsWithinSVGText;
   nsIContent* parentContent =
     aParentFrame ? aParentFrame->GetContent() : nullptr;
   // XXXbz should this really be based on the XBL-resolved tag of the parent
@@ -4893,8 +4914,10 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
   }
 
   // Prevent bad frame types being children of filters or parents of filter
-  // primitives:
-  bool parentIsFilter = aParentFrame->GetType() == nsGkAtoms::svgFilterFrame;
+  // primitives.  If aParentFrame is null, we know that the frame that will
+  // be created will be an nsInlineFrame, so it can never be a filter.
+  bool parentIsFilter = aParentFrame &&
+    aParentFrame->GetType() == nsGkAtoms::svgFilterFrame;
   nsCOMPtr<nsIDOMSVGFilterPrimitiveStandardAttributes> filterPrimitive =
     do_QueryInterface(aElement);
   if ((parentIsFilter && !filterPrimitive) ||
@@ -4903,8 +4926,10 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
   }
 
   // Prevent bad frame types being children of filter primitives or parents of
-  // filter primitive children:
-  bool parentIsFEContainerFrame =
+  // filter primitive children.  If aParentFrame is null, we know that the frame
+  // that will be created will be an nsInlineFrame, so it can never be a filter
+  // primitive.
+  bool parentIsFEContainerFrame = aParentFrame &&
     aParentFrame->GetType() == nsGkAtoms::svgFEContainerFrame;
   if ((parentIsFEContainerFrame && !IsFilterPrimitiveChildTag(aTag)) ||
       (!parentIsFEContainerFrame && IsFilterPrimitiveChildTag(aTag))) {
@@ -4914,27 +4939,66 @@ nsCSSFrameConstructor::FindSVGData(Element* aElement,
   // Special cases for text/tspan/textPath, because the kind of frame
   // they get depends on the parent frame.  We ignore 'a' elements when
   // determining the parent, however.
-  nsIFrame *ancestorFrame =
-    nsSVGUtils::GetFirstNonAAncestorFrame(aParentFrame);
-  if (ancestorFrame) {
-    if (aTag == nsGkAtoms::tspan || aTag == nsGkAtoms::altGlyph) {
-      // tspan and altGlyph must be children of another text content element.
-      nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-      if (!metrics) {
-        return &sSuppressData;
+  if (aIsWithinSVGText) {
+    // If aIsWithinSVGText is true, then we know that the "SVG text uses
+    // CSS frames" pref was true when this SVG fragment was first constructed.
+
+    // We don't use ConstructInline because we want different behavior
+    // for generated content.
+    static const FrameConstructionData sTSpanData =
+      FCDATA_DECL(FCDATA_DISALLOW_OUT_OF_FLOW |
+                  FCDATA_SKIP_ABSPOS_PUSH |
+                  FCDATA_DISALLOW_GENERATED_CONTENT |
+                  FCDATA_IS_LINE_PARTICIPANT |
+                  FCDATA_IS_INLINE |
+                  FCDATA_USE_CHILD_ITEMS,
+                  NS_NewInlineFrame);
+    if (aTag == nsGkAtoms::textPath) {
+      if (aAllowsTextPathChild) {
+        return &sTSpanData;
       }
-    } else if (aTag == nsGkAtoms::textPath) {
-      // textPath must be a child of text.
-      nsIAtom* ancestorFrameType = ancestorFrame->GetType();
-      if (ancestorFrameType != nsGkAtoms::svgTextFrame) {
-        return &sSuppressData;
-      }
-    } else if (aTag != nsGkAtoms::a) {
-      // Every other element except 'a' must not be a child of a text content
-      // element.
-      nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
-      if (metrics) {
-        return &sSuppressData;
+    } else if (aTag == nsGkAtoms::tspan ||
+               aTag == nsGkAtoms::altGlyph ||
+               aTag == nsGkAtoms::a) {
+      return &sTSpanData;
+    }
+    return &sSuppressData;
+  } else if (NS_SVGTextCSSFramesEnabled()) {
+    if (aTag == nsGkAtoms::text) {
+      static const FrameConstructionData sTextData =
+        FCDATA_WITH_WRAPPING_BLOCK(FCDATA_DISALLOW_OUT_OF_FLOW |
+                                   FCDATA_ALLOW_BLOCK_STYLES,
+                                   NS_NewSVGTextFrame2,
+                                   nsCSSAnonBoxes::mozSVGText);
+      return &sTextData;
+    } else if (aTag == nsGkAtoms::tspan ||
+               aTag == nsGkAtoms::altGlyph ||
+               aTag == nsGkAtoms::textPath) {
+      return &sSuppressData;
+    }
+  } else {
+    nsIFrame *ancestorFrame =
+      nsSVGUtils::GetFirstNonAAncestorFrame(aParentFrame);
+    if (ancestorFrame) {
+      if (aTag == nsGkAtoms::tspan || aTag == nsGkAtoms::altGlyph) {
+        // tspan and altGlyph must be children of another text content element.
+        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
+        if (!metrics) {
+          return &sSuppressData;
+        }
+      } else if (aTag == nsGkAtoms::textPath) {
+        // textPath must be a child of text.
+        nsIAtom* ancestorFrameType = ancestorFrame->GetType();
+        if (ancestorFrameType != nsGkAtoms::svgTextFrame) {
+          return &sSuppressData;
+        }
+      } else if (aTag != nsGkAtoms::a) {
+        // Every other element except 'a' must not be a child of a text content
+        // element.
+        nsSVGTextContainerFrame* metrics = do_QueryFrame(ancestorFrame);
+        if (metrics) {
+          return &sSuppressData;
+        }
       }
     }
   }
@@ -5101,11 +5165,20 @@ nsCSSFrameConstructor::AddFrameConstructionItems(nsFrameConstructorState& aState
   nsRefPtr<nsStyleContext> styleContext;
   styleContext = ResolveStyleContext(aParentFrame, aContent, &aState);
 
+  uint32_t flags = ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK;
+  if (aParentFrame->IsSVGText()) {
+    flags |= ITEM_IS_WITHIN_SVG_TEXT;
+  }
+  if (aParentFrame->GetType() == nsGkAtoms::blockFrame &&
+      aParentFrame->GetParent() &&
+      aParentFrame->GetParent()->GetType() == nsGkAtoms::svgTextFrame2) {
+    flags |= ITEM_ALLOWS_TEXT_PATH_CHILD;
+  }
   AddFrameConstructionItemsInternal(aState, aContent, aParentFrame,
                                     aContent->Tag(), aContent->GetNameSpaceID(),
                                     aSuppressWhiteSpaceOptimizations,
                                     styleContext,
-                                    ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK,
+                                    flags,
                                     aItems);
 }
 
@@ -5161,7 +5234,6 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
 
     nsresult rv = xblService->LoadBindings(aContent, display->mBinding->GetURI(),
                                            display->mBinding->mOriginPrincipal,
-                                           false,
                                            getter_AddRefs(newPendingBinding->mBinding),
                                            &resolveStyle);
     if (NS_FAILED(rv) && rv != NS_ERROR_XBL_BLOCKED)
@@ -5252,6 +5324,8 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
     }
     if (!data) {
       data = FindSVGData(element, aTag, aNameSpaceID, aParentFrame,
+                         aFlags & ITEM_IS_WITHIN_SVG_TEXT,
+                         aFlags & ITEM_ALLOWS_TEXT_PATH_CHILD,
                          styleContext);
     }
 
@@ -5333,6 +5407,8 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
     aState.mHavePendingPopupgroup = true;
   }
   item->mIsPopup = isPopup;
+  item->mIsForSVGAElement = aNameSpaceID == kNameSpaceID_SVG &&
+                            aTag == nsGkAtoms::a;
 
   if (canHavePageBreak && display->mBreakAfter) {
     AddPageBreakItem(aContent, aStyleContext, aItems);
@@ -5341,7 +5417,9 @@ nsCSSFrameConstructor::AddFrameConstructionItemsInternal(nsFrameConstructorState
   if (bits & FCDATA_IS_INLINE) {
     // To correctly set item->mIsAllInline we need to build up our child items
     // right now.
-    BuildInlineChildItems(aState, *item);
+    BuildInlineChildItems(aState, *item,
+                          aFlags & ITEM_IS_WITHIN_SVG_TEXT,
+                          aFlags & ITEM_ALLOWS_TEXT_PATH_CHILD);
     item->mHasInlineEnds = true;
     item->mIsBlock = false;
   } else {
@@ -5590,12 +5668,13 @@ nsCSSFrameConstructor::GetFrameFor(nsIContent* aContent)
 }
 
 nsIFrame*
-nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame)
+nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame,
+                                                  ContainingBlockType aType)
 {
   NS_PRECONDITION(nullptr != mRootElementFrame, "no root element frame");
 
   // Starting with aFrame, look for a frame that is absolutely positioned or
-  // relatively positioned
+  // relatively positioned (and transformed, if aType is FIXED)
   for (nsIFrame* frame = aFrame; frame; frame = frame->GetParent()) {
     if (frame->IsFrameOfType(nsIFrame::eMathML)) {
       // If it's mathml, bail out -- no absolute positioning out from inside
@@ -5610,7 +5689,10 @@ nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame)
     // Scrollframes are special since they're not positioned, but their
     // scrolledframe might be.  So, we need to check this special case to return
     // the correct containing block (the scrolledframe) in that case.
-    if (!frame->IsPositioned()) {
+    // If we're looking for a fixed-pos containing block and the frame is
+    // not transformed, skip it.
+    if (!frame->IsPositioned() ||
+        (aType == FIXED_POS && !frame->GetStyleDisplay()->HasTransform(frame))) {
       continue;
     }
     nsIFrame* absPosCBCandidate = nullptr;
@@ -5626,9 +5708,9 @@ nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame)
       continue;
     }
 
-    // For tables, return the outer table frame.
+    // For tables, skip the inner frame and consider the outer table frame.
     if (absPosCBCandidate->GetType() == nsGkAtoms::tableFrame) {
-      return absPosCBCandidate->GetParent();
+      continue;
     }
     // For outer table frames, we can just return absPosCBCandidate.
     return absPosCBCandidate;
@@ -5637,22 +5719,10 @@ nsCSSFrameConstructor::GetAbsoluteContainingBlock(nsIFrame* aFrame)
   // It is possible for the search for the containing block to fail, because
   // no absolute container can be found in the parent chain.  In those cases,
   // we fall back to the document element's containing block.
-  return mHasRootAbsPosContainingBlock ? mDocElementContainingBlock : nullptr;
-}
-
-nsIFrame*
-nsCSSFrameConstructor::GetFixedContainingBlock(nsIFrame* aFrame)
-{
-  NS_PRECONDITION(nullptr != mRootElementFrame, "no root element frame");
-
-  // Starting with aFrame, look for a frame that is CSS-transformed
-  for (nsIFrame* frame = aFrame; frame; frame = frame->GetParent()) {
-    if (frame->GetStyleDisplay()->HasTransform(frame)) {
-      return frame;
-    }
+  if (aType == FIXED_POS) {
+    return mFixedContainingBlock;
   }
-
-  return mFixedContainingBlock;
+  return mHasRootAbsPosContainingBlock ? mDocElementContainingBlock : nullptr;
 }
 
 nsIFrame*
@@ -6649,8 +6719,9 @@ nsCSSFrameConstructor::ContentAppended(nsIContent*     aContainer,
                                         &parentAfterFrame);
   
   // Create some new frames
-  nsFrameConstructorState state(mPresShell, GetFixedContainingBlock(parentFrame),
-                                GetAbsoluteContainingBlock(parentFrame),
+  nsFrameConstructorState state(mPresShell,
+                                GetAbsoluteContainingBlock(parentFrame, FIXED_POS),
+                                GetAbsoluteContainingBlock(parentFrame, ABS_POS),
                                 GetFloatContainingBlock(parentFrame));
   state.mTreeMatchContext.InitAncestors(aContainer->AsElement());
 
@@ -7084,8 +7155,9 @@ nsCSSFrameConstructor::ContentRangeInserted(nsIContent*            aContainer,
     return rv;
   }
 
-  nsFrameConstructorState state(mPresShell, GetFixedContainingBlock(parentFrame),
-                                GetAbsoluteContainingBlock(parentFrame),
+  nsFrameConstructorState state(mPresShell,
+                                GetAbsoluteContainingBlock(parentFrame, FIXED_POS),
+                                GetAbsoluteContainingBlock(parentFrame, ABS_POS),
                                 GetFloatContainingBlock(parentFrame),
                                 aFrameState);
   state.mTreeMatchContext.InitAncestors(aContainer ?
@@ -7807,10 +7879,22 @@ DoApplyRenderingChangeToTree(nsIFrame* aFrame,
       }
     }
     if (aChange & nsChangeHint_UpdateTextPath) {
-      NS_ABORT_IF_FALSE(aFrame->GetType() == nsGkAtoms::svgTextPathFrame,
-                        "textPath frame expected");
-      // Invalidate and reflow the entire nsSVGTextFrame:
-      static_cast<nsSVGTextPathFrame*>(aFrame)->NotifyGlyphMetricsChange();
+      if (aFrame->GetType() == nsGkAtoms::svgTextPathFrame) {
+        // Invalidate and reflow the entire nsSVGTextFrame:
+        static_cast<nsSVGTextPathFrame*>(aFrame)->NotifyGlyphMetricsChange();
+      } else if (aFrame->IsSVGText()) {
+        // Invalidate and reflow the entire nsSVGTextFrame2:
+        NS_ASSERTION(aFrame->GetContent()->IsSVG(nsGkAtoms::textPath),
+                     "expected frame for a <textPath> element");
+        nsIFrame* text = nsLayoutUtils::GetClosestFrameOfType(
+                                                      aFrame,
+                                                      nsGkAtoms::svgTextFrame2);
+        NS_ASSERTION(text, "expected to find an ancestor nsSVGTextFrame2");
+        static_cast<nsSVGTextFrame2*>(text)->NotifyGlyphMetricsChange();
+      } else {
+        NS_ABORT_IF_FALSE(false, "unexpected frame got "
+                                 "nsChangeHint_UpdateTextPath");
+      }
     }
     if (aChange & nsChangeHint_UpdateOpacityLayer) {
       // FIXME/bug 796697: we can get away with empty transactions for
@@ -8124,6 +8208,10 @@ nsCSSFrameConstructor::ProcessRestyledFrames(nsStyleChangeList& aChangeList,
 
   SAMPLE_LABEL("CSS", "ProcessRestyledFrames");
 
+  MOZ_ASSERT(!GetOverflowChangedTracker(), 
+             "Can't have multiple overflow changed trackers!");
+  SetOverflowChangedTracker(&aTracker);
+
   // Make sure to not rebuild quote or counter lists while we're
   // processing restyles
   BeginUpdate();
@@ -8208,9 +8296,6 @@ nsCSSFrameConstructor::ProcessRestyledFrames(nsStyleChangeList& aChangeList,
       // the style resolution we will do for the frame construction
       // happens async when we're not in an animation restyle already,
       // problems could arise.
-      if (content->GetPrimaryFrame()) {
-        aTracker.RemoveFrameAndDescendants(content->GetPrimaryFrame());
-      }
       RecreateFramesForContent(content, false);
     } else {
       NS_ASSERTION(frame, "This shouldn't happen");
@@ -8312,6 +8397,7 @@ nsCSSFrameConstructor::ProcessRestyledFrames(nsStyleChangeList& aChangeList,
 #endif
   }
 
+  SetOverflowChangedTracker(nullptr);
   aChangeList.Clear();
   return NS_OK;
 }
@@ -8344,6 +8430,7 @@ nsCSSFrameConstructor::RestyleElement(Element        *aElement,
       if (oldContext->GetStyleFont()->mFont.size !=
           newContext->GetStyleFont()->mFont.size) {
         // The basis for 'rem' units has changed.
+        newContext = nullptr;
         DoRebuildAllStyleData(aRestyleTracker, nsChangeHint(0));
         if (aMinHint == 0) {
           return;
@@ -8698,8 +8785,9 @@ nsCSSFrameConstructor::CreateContinuingTableFrame(nsIPresShell* aPresShell,
       // Replicate the header/footer frame.
       nsTableRowGroupFrame*   headerFooterFrame;
       nsFrameItems            childItems;
-      nsFrameConstructorState state(mPresShell, mFixedContainingBlock,
-                                    GetAbsoluteContainingBlock(newFrame),
+      nsFrameConstructorState state(mPresShell,
+                                    GetAbsoluteContainingBlock(newFrame, FIXED_POS),
+                                    GetAbsoluteContainingBlock(newFrame, ABS_POS),
                                     nullptr);
       state.mCreatingExtraFrames = true;
 
@@ -10570,8 +10658,9 @@ nsCSSFrameConstructor::CreateLetterFrame(nsIFrame* aBlockFrame,
 
     NS_ASSERTION(aBlockContinuation == GetFloatContainingBlock(aParentFrame),
                  "Containing block is confused");
-    nsFrameConstructorState state(mPresShell, mFixedContainingBlock,
-                                  GetAbsoluteContainingBlock(aParentFrame),
+    nsFrameConstructorState state(mPresShell,
+                                  GetAbsoluteContainingBlock(aParentFrame, FIXED_POS),
+                                  GetAbsoluteContainingBlock(aParentFrame, ABS_POS),
                                   aBlockContinuation);
 
     // Create the right type of first-letter frame
@@ -10958,8 +11047,8 @@ nsCSSFrameConstructor::CreateListBoxContent(nsPresContext* aPresContext,
   // Construct a new frame
   if (nullptr != aParentFrame) {
     nsFrameItems            frameItems;
-    nsFrameConstructorState state(mPresShell, mFixedContainingBlock,
-                                  GetAbsoluteContainingBlock(aParentFrame),
+    nsFrameConstructorState state(mPresShell, GetAbsoluteContainingBlock(aParentFrame, FIXED_POS),
+                                  GetAbsoluteContainingBlock(aParentFrame, ABS_POS),
                                   GetFloatContainingBlock(aParentFrame), 
                                   mTempFrameTreeState);
 
@@ -11317,14 +11406,15 @@ nsCSSFrameConstructor::CreateIBSiblings(nsFrameConstructorState& aState,
 
 void
 nsCSSFrameConstructor::BuildInlineChildItems(nsFrameConstructorState& aState,
-                                             FrameConstructionItem& aParentItem)
+                                             FrameConstructionItem& aParentItem,
+                                             bool aItemIsWithinSVGText,
+                                             bool aItemAllowsTextPathChild)
 {
   // XXXbz should we preallocate aParentItem.mChildItems to some sane
   // length?  Maybe even to parentContent->GetChildCount()?
   nsFrameConstructorState::PendingBindingAutoPusher
     pusher(aState, aParentItem.mPendingBinding);
 
-  // Probe for generated content before
   nsStyleContext* const parentStyleContext = aParentItem.mStyleContext;
   nsIContent* const parentContent = aParentItem.mContent;
 
@@ -11333,9 +11423,12 @@ nsCSSFrameConstructor::BuildInlineChildItems(nsFrameConstructorState& aState,
                    aState.mTreeMatchContext,
                    parentContent->AsElement());
   
-  CreateGeneratedContentItem(aState, nullptr, parentContent, parentStyleContext,
-                             nsCSSPseudoElements::ePseudo_before,
-                             aParentItem.mChildItems);
+  if (!aItemIsWithinSVGText) {
+    // Probe for generated content before
+    CreateGeneratedContentItem(aState, nullptr, parentContent, parentStyleContext,
+                               nsCSSPseudoElements::ePseudo_before,
+                               aParentItem.mChildItems);
+  }
 
   ChildIterator iter, last;
   for (ChildIterator::Init(parentContent, &iter, &last);
@@ -11361,17 +11454,26 @@ nsCSSFrameConstructor::BuildInlineChildItems(nsFrameConstructorState& aState,
     nsRefPtr<nsStyleContext> childContext =
       ResolveStyleContext(parentStyleContext, content, &aState);
 
+    uint32_t flags = ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK;
+    if (aItemIsWithinSVGText) {
+      flags |= ITEM_IS_WITHIN_SVG_TEXT;
+    }
+    if (aItemAllowsTextPathChild && aParentItem.mIsForSVGAElement) {
+      flags |= ITEM_ALLOWS_TEXT_PATH_CHILD;
+    }
     AddFrameConstructionItemsInternal(aState, content, nullptr, content->Tag(),
                                       content->GetNameSpaceID(),
                                       iter.XBLInvolved(), childContext,
-                                      ITEM_ALLOW_XBL_BASE | ITEM_ALLOW_PAGE_BREAK,
+                                      flags,
                                       aParentItem.mChildItems);
   }
 
-  // Probe for generated content after
-  CreateGeneratedContentItem(aState, nullptr, parentContent, parentStyleContext,
-                             nsCSSPseudoElements::ePseudo_after,
-                             aParentItem.mChildItems);
+  if (!aItemIsWithinSVGText) {
+    // Probe for generated content after
+    CreateGeneratedContentItem(aState, nullptr, parentContent, parentStyleContext,
+                               nsCSSPseudoElements::ePseudo_after,
+                               aParentItem.mChildItems);
+  }
 
   aParentItem.mIsAllInline = aParentItem.mChildItems.AreAllItemsInline();
 }

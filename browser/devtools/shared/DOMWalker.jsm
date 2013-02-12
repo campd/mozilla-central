@@ -10,17 +10,17 @@ Cu.import("resource:///modules/devtools/CssLogic.jsm");
 var { types, params, remotable } = Remotable;
 
 let obj = {};
-Cu.import('resource://gre/modules/commonjs/loader.js', obj);
+Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
 let {Loader, Require, unload} = obj.Loader;
 let loader = new Loader({
   paths: {
-    'commonjs/': 'resource://gre/modules/commonjs/',
+    "sdk/": "resource://gre/modules/commonjs/sdk/",
     '': 'resource:///modules/',
   }
 });
 let require = Require(loader, {id: "markupview"});
 
-let promise = require("commonjs/promise/core");
+let promise = require("sdk/core/promise");
 
 this.EXPORTED_SYMBOLS = ["DOMWalker", "DOMWalkerActor", "createWalker"];
 

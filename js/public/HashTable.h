@@ -10,6 +10,7 @@
 
 #include "mozilla/Attributes.h"
 #include "mozilla/DebugOnly.h"
+#include "mozilla/TypeTraits.h"
 #include "mozilla/Util.h"
 
 #include "js/TemplateLib.h"
@@ -236,8 +237,12 @@ class HashMap
             remove(p);
     }
 
+    // HashMap is movable
+    HashMap(MoveRef<HashMap> rhs) : impl(Move(rhs->impl)) {}
+    void operator=(MoveRef<HashMap> rhs) { impl = Move(rhs->impl); }
+
   private:
-    // Not implicitly copyable (expensive). May add explicit |clone| later.
+    // HashMap is not copyable or assignable
     HashMap(const HashMap &hm) MOZ_DELETE;
     HashMap &operator=(const HashMap &hm) MOZ_DELETE;
 
@@ -426,8 +431,12 @@ class HashSet
             remove(p);
     }
 
+    // HashSet is movable
+    HashSet(MoveRef<HashSet> rhs) : impl(Move(rhs->impl)) {}
+    void operator=(MoveRef<HashSet> rhs) { impl = Move(rhs->impl); }
+
   private:
-    // Not implicitly copyable (expensive). May add explicit |clone| later.
+    // HashSet is not copyable or assignable
     HashSet(const HashSet &hs) MOZ_DELETE;
     HashSet &operator=(const HashSet &hs) MOZ_DELETE;
 
@@ -538,20 +547,25 @@ class HashMapEntry
     Value value;
 };
 
-namespace tl {
+} // namespace js
+
+namespace mozilla {
 
 template <class T>
-struct IsPodType<detail::HashTableEntry<T> > {
-    static const bool result = IsPodType<T>::result;
+struct IsPod<js::detail::HashTableEntry<T> >
+{
+    static const bool value = IsPod<T>::value;
 };
 
 template <class K, class V>
-struct IsPodType<HashMapEntry<K, V> >
+struct IsPod<js::HashMapEntry<K, V> >
 {
-    static const bool result = IsPodType<K>::result && IsPodType<V>::result;
+    static const bool value = IsPod<K>::value && IsPod<V>::value;
 };
 
-} // namespace tl
+} // namespace mozilla
+
+namespace js {
 
 namespace detail {
 
@@ -778,6 +792,25 @@ class HashTable : private AllocPolicy
                 table.compactIfUnderloaded();
         }
     };
+
+    // HashTable is movable
+    HashTable(MoveRef<HashTable> rhs)
+      : AllocPolicy(*rhs)
+    {
+        PodAssign(this, &*rhs);
+        rhs->table = NULL;
+    }
+    void operator=(MoveRef<HashTable> rhs) {
+        if (table)
+            destroyTable(*this, table, capacity());
+        PodAssign(this, &*rhs);
+        rhs->table = NULL;
+    }
+
+  private:
+    // HashTable is not copyable or assignable
+    HashTable(const HashTable &) MOZ_DELETE;
+    void operator=(const HashTable &) MOZ_DELETE;
 
   private:
     uint32_t    hashShift;      // multiplicative hash shift
@@ -1217,7 +1250,7 @@ class HashTable : private AllocPolicy
   public:
     void clear()
     {
-        if (tl::IsPodType<Entry>::result) {
+        if (mozilla::IsPod<Entry>::value) {
             memset(table, 0, sizeof(*table) * capacity());
         } else {
             uint32_t tableCapacity = capacity();

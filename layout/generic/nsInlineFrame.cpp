@@ -5,8 +5,9 @@
 
 /* rendering object for CSS display:inline objects */
 
-#include "nsCOMPtr.h"
 #include "nsInlineFrame.h"
+#include "nsCOMPtr.h"
+#include "nsLineLayout.h"
 #include "nsBlockFrame.h"
 #include "nsPlaceholderFrame.h"
 #include "nsGkAtoms.h"
@@ -56,6 +57,32 @@ nsIAtom*
 nsInlineFrame::GetType() const
 {
   return nsGkAtoms::inlineFrame;
+}
+
+void
+nsInlineFrame::InvalidateFrame(uint32_t aDisplayItemKey)
+{
+  if (IsSVGText()) {
+    nsIFrame* svgTextFrame =
+      nsLayoutUtils::GetClosestFrameOfType(GetParent(),
+                                           nsGkAtoms::svgTextFrame2);
+    svgTextFrame->InvalidateFrame();
+    return;
+  }
+  nsInlineFrameBase::InvalidateFrame(aDisplayItemKey);
+}
+
+void
+nsInlineFrame::InvalidateFrameWithRect(const nsRect& aRect, uint32_t aDisplayItemKey)
+{
+  if (IsSVGText()) {
+    nsIFrame* svgTextFrame =
+      nsLayoutUtils::GetClosestFrameOfType(GetParent(),
+                                           nsGkAtoms::svgTextFrame2);
+    svgTextFrame->InvalidateFrame();
+    return;
+  }
+  nsInlineFrameBase::InvalidateFrameWithRect(aRect, aDisplayItemKey);
 }
 
 static inline bool
@@ -458,13 +485,11 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
   lineLayout->BeginSpan(this, &aReflowState, leftEdge,
                         leftEdge + availableWidth, &mBaseline);
 
-  // First reflow our current children
+  // First reflow our principal children.
   nsIFrame* frame = mFrames.FirstChild();
   bool done = false;
-  while (nullptr != frame) {
-    bool reflowingFirstLetter = lineLayout->GetFirstLetterStyleOK();
-
-    // Check if we should lazily set the child frame's parent pointer
+  while (frame) {
+    // Check if we should lazily set the child frame's parent pointer.
     if (irs.mSetParentPointer) {
       bool havePrevBlock =
         irs.mLineContainer && irs.mLineContainer->GetPrevContinuation();
@@ -540,6 +565,7 @@ nsInlineFrame::ReflowFrames(nsPresContext* aPresContext,
     MOZ_ASSERT(frame->GetParent() == this);
 
     if (!done) {
+      bool reflowingFirstLetter = lineLayout->GetFirstLetterStyleOK();
       rv = ReflowInlineFrame(aPresContext, aReflowState, irs, frame, aStatus);
       done = NS_FAILED(rv) ||
              NS_INLINE_IS_BREAK(aStatus) || 

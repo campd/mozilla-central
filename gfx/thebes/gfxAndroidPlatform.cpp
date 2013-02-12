@@ -7,6 +7,7 @@
 
 #include "gfxAndroidPlatform.h"
 #include "mozilla/gfx/2D.h"
+#include "mozilla/Preferences.h"
 
 #include "gfxFT2FontList.h"
 #include "gfxImageSurface.h"
@@ -26,8 +27,6 @@ using namespace mozilla::dom;
 using namespace mozilla::gfx;
 
 static FT_Library gPlatformFTLibrary = NULL;
-
-#define LOG(args...)  __android_log_print(ANDROID_LOG_INFO, "GeckoFonts" , ## args)
 
 static int64_t sFreetypeMemoryUsed;
 static FT_MemoryRec_ sFreetypeMemoryRecord;
@@ -102,6 +101,11 @@ gfxAndroidPlatform::gfxAndroidPlatform()
     mOffscreenFormat = mScreenDepth == 16
                        ? gfxASurface::ImageFormatRGB16_565
                        : gfxASurface::ImageFormatRGB24;
+
+    if (Preferences::GetBool("gfx.android.rgb16.force", false)) {
+        mOffscreenFormat = gfxASurface::ImageFormatRGB16_565;
+    }
+
 }
 
 gfxAndroidPlatform::~gfxAndroidPlatform()
@@ -256,13 +260,13 @@ gfxAndroidPlatform::FontHintingEnabled()
     // XXX when gecko-android-java is used as an "app runtime", we may
     // want to re-enable hinting for non-browser processes there.
     return false;
-#endif
+#endif //  MOZ_USING_ANDROID_JAVA_WIDGETS
 
-#ifdef MOZ_B2G
+#ifdef MOZ_WIDGET_GONK
     // On B2G, the UX preference is currently to keep hinting disabled
     // for all text (see bug 829523).
     return false;
-#endif //  MOZ_USING_ANDROID_JAVA_WIDGETS
+#endif
 
     // Currently, we don't have any other targets, but if/when we do,
     // decide how to handle them here.
@@ -284,7 +288,7 @@ gfxAndroidPlatform::RequiresLinearZoom()
     return true;
 #endif
 
-#ifdef MOZ_B2G
+#ifdef MOZ_WIDGET_GONK
     // On B2G, we need linear zoom for the browser, but otherwise prefer
     // the improved glyph spacing that results from respecting the device
     // pixel resolution for glyph layout (see bug 816614).

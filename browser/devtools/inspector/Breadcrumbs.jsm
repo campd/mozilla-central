@@ -17,17 +17,17 @@ Cu.import("resource:///modules/devtools/DOMHelpers.jsm");
 Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
 
 let obj = {};
-Cu.import('resource://gre/modules/commonjs/loader.js', obj);
+Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
 let {Loader, Require, unload} = obj.Loader;
 let loader = new Loader({
   paths: {
-    'commonjs/': 'resource://gre/modules/commonjs/',
+    'sdk/': 'resource://gre/modules/commonjs/sdk/',
     '': 'resource:///modules/',
   }
 });
 let require = Require(loader, {id: "breadcrumbs"});
 
-let promise = require("commonjs/promise/core");
+let promise = require("sdk/core/promise");
 
 const LOW_PRIORITY_ELEMENTS = {
   "HEAD": true,

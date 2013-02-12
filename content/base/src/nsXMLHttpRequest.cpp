@@ -1,5 +1,5 @@
-/* -*- Mode: C++; tab-width: 2; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
-/* vim: set ts=2 sw=2 et tw=80: */
+/* -*- Mode: C++; tab-width: 8; indent-tabs-mode: nil; c-basic-offset: 2 -*- */
+/* vim: set ts=8 sts=2 et sw=2 tw=80: */
 /* This Source Code Form is subject to the terms of the Mozilla Public
  * License, v. 2.0. If a copy of the MPL was not distributed with this
  * file, You can obtain one at http://mozilla.org/MPL/2.0/. */
@@ -338,8 +338,6 @@ XMLHttpRequestAuthPrompt::PromptPassword(const PRUnichar* aDialogTitle,
 
 /////////////////////////////////////////////
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXHREventTarget)
-
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN_INHERITED(nsXHREventTarget,
                                                   nsDOMEventTargetHelper)
 NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
@@ -406,6 +404,8 @@ nsXMLHttpRequest::nsXMLHttpRequest()
     mXPCOMifier(nullptr)
 {
   nsLayoutStatics::AddRef();
+
+  mAlreadySetHeaders.Init();
 
   SetIsDOMBinding();
 #ifdef DEBUG
@@ -499,7 +499,7 @@ nsXMLHttpRequest::Initialize(nsISupports* aOwner, JSContext* cx, JSObject* obj,
 nsresult
 nsXMLHttpRequest::InitParameters(JSContext* aCx, const jsval* aParams)
 {
-  XMLHttpRequestParameters params;
+  mozilla::idl::XMLHttpRequestParameters params;
   nsresult rv = params.Init(aCx, aParams);
   NS_ENSURE_SUCCESS(rv, rv);
 
@@ -565,8 +565,6 @@ nsXMLHttpRequest::SetRequestObserver(nsIRequestObserver* aObserver)
 {
   mRequestObserver = aObserver;
 }
-
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXMLHttpRequest)
 
 NS_IMPL_CYCLE_COLLECTION_CAN_SKIP_BEGIN(nsXMLHttpRequest)
   bool isBlack = tmp->IsBlack();
@@ -642,6 +640,7 @@ NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION_INHERITED(nsXMLHttpRequest)
   NS_INTERFACE_MAP_ENTRY(nsISupportsWeakReference)
   NS_INTERFACE_MAP_ENTRY(nsIJSNativeInitializer)
   NS_INTERFACE_MAP_ENTRY(nsITimerCallback)
+  NS_INTERFACE_MAP_ENTRY(nsISizeOfEventTarget)
 NS_INTERFACE_MAP_END_INHERITING(nsXHREventTarget)
 
 NS_IMPL_ADDREF_INHERITED(nsXMLHttpRequest, nsXHREventTarget)
@@ -654,6 +653,33 @@ nsXMLHttpRequest::DisconnectFromOwner()
 {
   nsXHREventTarget::DisconnectFromOwner();
   Abort();
+}
+
+size_t
+nsXMLHttpRequest::SizeOfEventTargetIncludingThis(
+  nsMallocSizeOfFun aMallocSizeOf) const
+{
+  size_t n = aMallocSizeOf(this);
+  n += mResponseBody.SizeOfExcludingThisIfUnshared(aMallocSizeOf);
+
+  // Why is this safe?  Because no-one else will report this string.  The
+  // other possible sharers of this string are as follows.
+  //
+  // - The JS engine could hold copies if the JS code holds references, e.g.
+  //   |var text = XHR.responseText|.  However, those references will be via JS
+  //   external strings, for which the JS memory reporter does *not* report the
+  //   chars.
+  //
+  // - Binary extensions, but they're *extremely* unlikely to do any memory
+  //   reporting.
+  //
+  n += mResponseText.SizeOfExcludingThisEvenIfShared(aMallocSizeOf);
+
+  return n;
+
+  // Measurement of the following members may be added later if DMD finds it is
+  // worthwhile:
+  // - lots
 }
 
 /* readonly attribute nsIChannel channel; */
@@ -1805,6 +1831,10 @@ nsXMLHttpRequest::Open(const nsACString& method, const nsACString& url,
     }
     uri->SetUserPass(userpass);
   }
+
+  // Clear our record of previously set headers so future header set
+  // operations will merge/override correctly.
+  mAlreadySetHeaders.Clear();
 
   // When we are called from JS we can find the load group for the page,
   // and add ourselves to it. This way any pending requests
@@ -3159,24 +3189,36 @@ nsXMLHttpRequest::SetRequestHeader(const nsACString& header,
     return NS_OK;
   }
 
+  // We will merge XHR headers, per the spec (secion 4.6.2) unless:
+  // 1 - The caller is privileged and setting an invalid header,
+  // or
+  // 2 - we have not yet explicitly set that header; this allows web
+  //     content to override default headers the first time they set them.
+  bool mergeHeaders = true;
+
   // Prevent modification to certain HTTP headers (see bug 302263), unless
   // the executing script is privileged.
+  bool isInvalidHeader = false;
+  const char *kInvalidHeaders[] = {
+    "accept-charset", "accept-encoding", "access-control-request-headers",
+    "access-control-request-method", "connection", "content-length",
+    "cookie", "cookie2", "content-transfer-encoding", "date", "dnt",
+    "expect", "host", "keep-alive", "origin", "referer", "te", "trailer",
+    "transfer-encoding", "upgrade", "user-agent", "via"
+  };
+  uint32_t i;
+  for (i = 0; i < ArrayLength(kInvalidHeaders); ++i) {
+    if (header.LowerCaseEqualsASCII(kInvalidHeaders[i])) {
+      isInvalidHeader = true;
+      break;
+    }
+  }
 
   if (!nsContentUtils::IsCallerChrome()) {
     // Step 5: Check for dangerous headers.
-    const char *kInvalidHeaders[] = {
-      "accept-charset", "accept-encoding", "access-control-request-headers",
-      "access-control-request-method", "connection", "content-length",
-      "cookie", "cookie2", "content-transfer-encoding", "date", "dnt",
-      "expect", "host", "keep-alive", "origin", "referer", "te", "trailer",
-      "transfer-encoding", "upgrade", "user-agent", "via"
-    };
-    uint32_t i;
-    for (i = 0; i < ArrayLength(kInvalidHeaders); ++i) {
-      if (header.LowerCaseEqualsASCII(kInvalidHeaders[i])) {
-        NS_WARNING("refusing to set request header");
-        return NS_OK;
-      }
+    if (isInvalidHeader) {
+      NS_WARNING("refusing to set request header");
+      return NS_OK;
     }
     if (StringBeginsWith(header, NS_LITERAL_CSTRING("proxy-"),
                          nsCaseInsensitiveCStringComparator()) ||
@@ -3207,14 +3249,27 @@ nsXMLHttpRequest::SetRequestHeader(const nsACString& header,
         mCORSUnsafeHeaders.AppendElement(header);
       }
     }
+  } else {
+    // Case 1 above
+    if (isInvalidHeader) {
+      mergeHeaders = false;
+    }
   }
 
-  // We need to set, not add to, the header.
-  nsresult rv = httpChannel->SetRequestHeader(header, value, false);
+  if (!mAlreadySetHeaders.Contains(header)) {
+    // Case 2 above
+    mergeHeaders = false;
+  }
+
+  // Merge headers depending on what we decided above.
+  nsresult rv = httpChannel->SetRequestHeader(header, value, mergeHeaders);
   if (rv == NS_ERROR_INVALID_ARG) {
     return NS_ERROR_DOM_SYNTAX_ERR;
   }
   if (NS_SUCCEEDED(rv)) {
+    // Remember that we've set this header, so subsequent set operations will merge values.
+    mAlreadySetHeaders.PutEntry(nsCString(header));
+
     // We'll want to duplicate this header for any replacement channels (eg. on redirect)
     RequestHeader reqHeader = {
       nsCString(header), nsCString(value)
@@ -3511,15 +3566,7 @@ private:
   nsRefPtr<nsXMLHttpRequest> mXHR;
 };
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(AsyncVerifyRedirectCallbackForwarder)
-
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_BEGIN(AsyncVerifyRedirectCallbackForwarder)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE(mXHR)
-NS_IMPL_CYCLE_COLLECTION_TRAVERSE_END
-
-NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(AsyncVerifyRedirectCallbackForwarder)
-  NS_IMPL_CYCLE_COLLECTION_UNLINK(mXHR)
-NS_IMPL_CYCLE_COLLECTION_UNLINK_END
+NS_IMPL_CYCLE_COLLECTION_1(AsyncVerifyRedirectCallbackForwarder, mXHR)
 
 NS_INTERFACE_MAP_BEGIN_CYCLE_COLLECTION(AsyncVerifyRedirectCallbackForwarder)
   NS_INTERFACE_MAP_ENTRY(nsISupports)
@@ -3870,7 +3917,9 @@ nsXMLHttpRequest::GetInterface(JSContext* aCx, nsIJSID* aIID, ErrorResult& aRv)
   aRv = GetInterface(*iid, getter_AddRefs(result));
   NS_ENSURE_FALSE(aRv.Failed(), JSVAL_NULL);
 
-  JSObject* global = JS_GetGlobalForObject(aCx, GetWrapper());
+  JSObject* wrapper = GetWrapper();
+  JSAutoCompartment ac(aCx, wrapper);
+  JSObject* global = JS_GetGlobalForObject(aCx, wrapper);
   aRv = nsContentUtils::WrapNative(aCx, global, result, iid, &v);
   return aRv.Failed() ? JSVAL_NULL : v;
 }
@@ -4012,8 +4061,6 @@ nsXMLHttpProgressEvent::nsXMLHttpProgressEvent(nsIDOMProgressEvent* aInner,
 nsXMLHttpProgressEvent::~nsXMLHttpProgressEvent()
 {}
 
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXMLHttpProgressEvent)
-
 DOMCI_DATA(XMLHttpProgressEvent, nsXMLHttpProgressEvent)
 
 // QueryInterface implementation for nsXMLHttpProgressEvent
@@ -4090,8 +4137,6 @@ NS_IMPL_CYCLE_COLLECTING_RELEASE(nsXMLHttpRequestXPCOMifier)
 
 // Can't NS_IMPL_CYCLE_COLLECTION_1 because mXHR has ambiguous
 // inheritance from nsISupports.
-NS_IMPL_CYCLE_COLLECTION_CLASS(nsXMLHttpRequestXPCOMifier)
-
 NS_IMPL_CYCLE_COLLECTION_UNLINK_BEGIN(nsXMLHttpRequestXPCOMifier)
 if (tmp->mXHR) {
   tmp->mXHR->mXPCOMifier = nullptr;

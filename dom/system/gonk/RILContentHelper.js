@@ -77,7 +77,8 @@ const RIL_IPC_MSG_NAMES = [
   "RIL:DataError",
   "RIL:SetCallForwardingOption",
   "RIL:GetCallForwardingOption",
-  "RIL:CellBroadcastReceived"
+  "RIL:CellBroadcastReceived",
+  "RIL:CfStateChanged"
 ];
 
 const kVoiceChangedTopic     = "mobile-connection-voice-changed";
@@ -89,6 +90,7 @@ const kStkCommandTopic       = "icc-manager-stk-command";
 const kStkSessionEndTopic    = "icc-manager-stk-session-end";
 const kDataErrorTopic        = "mobile-connection-data-error";
 const kIccCardLockErrorTopic = "mobile-connection-icccardlock-error";
+const kCfStateChangedTopic   = "mobile-connection-cfstate-change";
 
 XPCOMUtils.defineLazyServiceGetter(this, "cpmm",
                                    "@mozilla.org/childprocessmessagemanager;1",
@@ -112,9 +114,6 @@ MobileICCCardLockResult.prototype = {
 };
 
 function MobileICCInfo() {
-  try {
-    this.lastKnownMcc = Services.prefs.getIntPref("ril.lastKnownMcc");
-  } catch (e) {}
 };
 MobileICCInfo.prototype = {
   QueryInterface: XPCOMUtils.generateQI([Ci.nsIDOMMozMobileICCInfo]),
@@ -130,7 +129,6 @@ MobileICCInfo.prototype = {
 
   iccid: null,
   mcc: 0,
-  lastKnownMcc: 0,
   mnc: 0,
   spn: null,
   msisdn: null
@@ -160,6 +158,7 @@ MobileConnectionInfo.prototype = {
   emergencyCallsOnly: false,
   roaming: false,
   network: null,
+  lastKnownMcc: 0,
   cell: null,
   type: null,
   signalStrength: null,
@@ -317,7 +316,7 @@ CellBroadcastEtwsInfo.prototype = {
 
 function RILContentHelper() {
   this.rilContext = {
-    cardState:            RIL.GECKO_CARDSTATE_UNAVAILABLE,
+    cardState:            RIL.GECKO_CARDSTATE_UNKNOWN,
     iccInfo:              new MobileICCInfo(),
     voiceConnectionInfo:  new MobileConnectionInfo(),
     dataConnectionInfo:   new MobileConnectionInfo()
@@ -341,18 +340,10 @@ RILContentHelper.prototype = {
                                     interfaces: [Ci.nsIMobileConnectionProvider,
                                                  Ci.nsIRILContentHelper]}),
 
-  updateVoicemailInfo: function updateVoicemailInfo(srcInfo, destInfo) {
+  // An utility function to copy objects.
+  updateInfo: function updateInfo(srcInfo, destInfo) {
     for (let key in srcInfo) {
       destInfo[key] = srcInfo[key];
-    }
-  },
-
-  updateICCInfo: function updateICCInfo(srcInfo, destInfo) {
-    for (let key in srcInfo) {
-      destInfo[key] = srcInfo[key];
-      if (key === 'mcc') {
-        destInfo['lastKnownMcc'] = srcInfo[key];
-      }
     }
   },
 
@@ -387,11 +378,8 @@ RILContentHelper.prototype = {
       network = destInfo.network = new MobileNetworkInfo();
     }
 
-    network.longName = srcNetwork.longName;
-    network.shortName = srcNetwork.shortName;
-    network.mnc = srcNetwork.mnc;
-    network.mcc = srcNetwork.mcc;
-  },
+    this.updateInfo(srcNetwork, network);
+ },
 
   // nsIRILContentHelper
 
@@ -413,7 +401,7 @@ RILContentHelper.prototype = {
       return;
     }
     this.rilContext.cardState = rilContext.cardState;
-    this.updateICCInfo(rilContext.icc, this.rilContext.iccInfo);
+    this.updateInfo(rilContext.iccInfo, this.rilContext.iccInfo);
     this.updateConnectionInfo(rilContext.voice, this.rilContext.voiceConnectionInfo);
     this.updateConnectionInfo(rilContext.data, this.rilContext.dataConnectionInfo);
 
@@ -685,7 +673,7 @@ RILContentHelper.prototype = {
 
     let voicemailInfo = cpmm.sendSyncMessage("RIL:GetVoicemailInfo")[0];
     if (voicemailInfo) {
-      this.updateVoicemailInfo(voicemailInfo, this.voicemailInfo);
+      this.updateInfo(voicemailInfo, this.voicemailInfo);
     }
 
     return this.voicemailInfo;
@@ -730,6 +718,14 @@ RILContentHelper.prototype = {
 
   unregisterTelephonyCallback: function unregisteTelephonyCallback(callback) {
     this.unregisterCallback("_telephonyCallbacks", callback);
+
+    // We also need to make sure the callback is removed from
+    // _enumerateTelephonyCallbacks.
+    let index = this._enumerateTelephonyCallbacks.indexOf(callback);
+    if (index != -1) {
+      this._enumerateTelephonyCallbacks.splice(index, 1);
+      if (DEBUG) debug("Unregistered enumerateTelephony callback: " + callback);
+    }
   },
 
   registerVoicemailCallback: function registerVoicemailCallback(callback) {
@@ -908,12 +904,7 @@ RILContentHelper.prototype = {
         }
         break;
       case "RIL:IccInfoChanged":
-        this.updateICCInfo(msg.json, this.rilContext.iccInfo);
-        if (this.rilContext.iccInfo.mcc) {
-          try {
-            Services.prefs.setIntPref("ril.lastKnownMcc", this.rilContext.iccInfo.mcc);
-          } catch (e) {}
-        }
+        this.updateInfo(msg.json, this.rilContext.iccInfo);
         Services.obs.notifyObservers(null, kIccInfoChangedTopic, null);
         break;
       case "RIL:VoiceInfoChanged":
@@ -957,7 +948,7 @@ RILContentHelper.prototype = {
         this.handleVoicemailNotification(msg.json);
         break;
       case "RIL:VoicemailInfoChanged":
-        this.updateVoicemailInfo(msg.json, this.voicemailInfo);
+        this.updateInfo(msg.json, this.voicemailInfo);
         break;
       case "RIL:CardLockResult":
         if (msg.json.success) {
@@ -1006,6 +997,15 @@ RILContentHelper.prototype = {
         break;
       case "RIL:SetCallForwardingOption":
         this.handleSetCallForwardingOption(msg.json);
+        break;
+      case "RIL:CfStateChanged":
+        let result = JSON.stringify({success: msg.json.success,
+                                     action: msg.json.action,
+                                     reason: msg.json.reason,
+                                     number: msg.json.number,
+                                     timeSeconds: msg.json.timeSeconds,
+                                     serviceClass: msg.json.serviceClass});
+        Services.obs.notifyObservers(null, kCfStateChangedTopic, result);
         break;
       case "RIL:CellBroadcastReceived":
         let message = new CellBroadcastMessage(msg.json);
@@ -1057,11 +1057,7 @@ RILContentHelper.prototype = {
     for (let i = 0; i < networks.length; i++) {
       let network = networks[i];
       let info = new MobileNetworkInfo();
-
-      for (let key in network) {
-        info[key] = network[key];
-      }
-
+      this.updateInfo(network, info);
       networks[i] = info;
     }
 
@@ -1116,11 +1112,7 @@ RILContentHelper.prototype = {
     for (let i = 0; i < rules.length; i++) {
       let rule = rules[i];
       let info = new MobileCFInfo();
-
-      for (let key in rule) {
-        info[key] = rule[key];
-      }
-
+      this.updateInfo(rule, info);
       rules[i] = info;
     }
   },

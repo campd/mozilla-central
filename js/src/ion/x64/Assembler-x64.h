@@ -189,6 +189,16 @@ class Operand
         disp_(disp)
     { }
 
+    Address toAddress() {
+        JS_ASSERT(kind() == REG_DISP);
+        return Address(Register::FromCode(base()), disp());
+    }
+
+    BaseIndex toBaseIndex() {
+        JS_ASSERT(kind() == SCALE);
+        return BaseIndex(Register::FromCode(base()), Register::FromCode(index()), scale(), disp());
+    }
+
     Kind kind() const {
         return kind_;
     }
@@ -285,7 +295,7 @@ class Assembler : public AssemblerX86Shared
 
     // The buffer is about to be linked, make sure any constant pools or excess
     // bookkeeping has been flushed to the instruction stream.
-    void flush();
+    void finish();
 
     // Copy the assembly code to the given buffer, and perform any pending
     // relocations relying on the target address.
@@ -504,6 +514,9 @@ class Assembler : public AssemblerX86Shared
     }
     void cmpq(const Operand &lhs, Imm32 rhs) {
         switch (lhs.kind()) {
+          case Operand::REG:
+            masm.cmpq_ir(rhs.value, lhs.reg());
+            break;
           case Operand::REG_DISP:
             masm.cmpq_im(rhs.value, lhs.disp(), lhs.base());
             break;
@@ -526,10 +539,10 @@ class Assembler : public AssemblerX86Shared
     void cmpq(const Register &lhs, const Register &rhs) {
         masm.cmpq_rr(rhs.code(), lhs.code());
     }
-    void cmpq(Imm32 lhs, const Register &rhs) {
-        masm.cmpq_ir(lhs.value, rhs.code());
+    void cmpq(const Register &lhs, Imm32 rhs) {
+        masm.cmpq_ir(rhs.value, lhs.code());
     }
-    
+
     void testq(const Register &lhs, Imm32 rhs) {
         masm.testq_i32r(rhs.value, lhs.code());
     }
@@ -558,14 +571,20 @@ class Assembler : public AssemblerX86Shared
         addPendingJump(src, target->raw(), Relocation::IONCODE);
     }
 
+    // Emit a CALL or CMP (nop) instruction. ToggleCall can be used to patch
+    // this instruction.
+    CodeOffsetLabel toggledCall(IonCode *target, bool enabled) {
+        CodeOffsetLabel offset(size());
+        JmpSrc src = enabled ? masm.call() : masm.cmp_eax();
+        addPendingJump(src, target->raw(), Relocation::IONCODE);
+        return offset;
+    }
+
     // Do not mask shared implementations.
     using AssemblerX86Shared::call;
 
-    void cvttsd2sq(const FloatRegister &src, const Register &dest) {
-        masm.cvttsd2sq_rr(src.code(), dest.code());
-    }
-    void cvttsd2s(const FloatRegister &src, const Register &dest) {
-        cvttsd2sq(src, dest);
+    void cvttsd2si(const FloatRegister &src, const Register &dest) {
+        masm.cvttsd2si_rr(src.code(), dest.code());
     }
     void cvtsq2sd(const Register &src, const FloatRegister &dest) {
         masm.cvtsq2sd_rr(src.code(), dest.code());
