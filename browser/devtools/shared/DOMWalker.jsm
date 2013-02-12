@@ -52,6 +52,10 @@ domTypes.NodeStyleEntry = types.Dict({
 
 domTypes.NodeStyleEntries = types.Array(domTypes.NodeStyleEntry);
 
+domTypes.NodeStyle = types.Dict({
+  computed: domTypes.StyleRule,
+  entries: domTypes.NodeStyleEntries
+});
 domTypes.PseudoModification = types.Context(
   "writePseudoModification",
   "readPseudoModification"
@@ -76,8 +80,11 @@ domParams.Nodes = function(path) {
   return Remotable.Param(path, domTypes.Nodes);
 };
 
-domParams.NodeStyleEntries = function(path) {
-  return Remotable.Param(path, domTypes.NodeStyleEntries);
+domParams.StyleRule = function(path) {
+  return Remotable.Param(path, domTypes.StyleRule);
+}
+domParams.NodeStyle = function(path) {
+  return Remotable.Param(path, domTypes.NodeStyle);
 };
 
 domParams.PseudoModifications = function(path) {
@@ -108,6 +115,7 @@ domParams.LongNodeList = params.Options([
 domParams.TraversalOptions = params.Options([
   params.Simple("whatToShow")
 ]);
+
 
 
 function DOMRef(node) {
@@ -253,7 +261,6 @@ AttributeModificationList.prototype = {
   }
 };
 
-
 function StyleRuleRef(item, parentRule) {
   this.parentRule = parentRule;
   if (item instanceof Ci.nsIDOMCSSRule) {
@@ -268,6 +275,7 @@ function StyleRuleRef(item, parentRule) {
     // Element style not attached to a rule.
     this.type = ELEMENT_STYLE;
     this.shortSource = CssLogic.shortSource(null);
+    // XXX: this isn't quite right for computed styles...
     this.rawRule = {
       selectorText: "element style",
       style: item,
@@ -748,6 +756,17 @@ DOMWalker.prototype = {
     ret: params.Void(),
   }),
 
+  getComputedStyle: remotable(function(node) {
+    let win = node.rawNode.ownerDocument.defaultView;
+    let computed = win.getComputedStyle(node.rawNode);
+    return promise.resolve(new StyleRuleRef(computed, null));
+  }, {
+    params: [
+      domParams.Node("node"),
+    ],
+    ret: domParams.StyleRule("computed")
+  }),
+
   getNodeStyle: remotable(function(node, options) {
     let rules = [];
 
@@ -757,11 +776,17 @@ DOMWalker.prototype = {
       return promise.resolve(rules);
     }
 
+    let win = node.rawNode.ownerDocument.defaultView;
+    let computed = new StyleRuleRef(win.getComputedStyle(node.rawNode), null);
+
     return this.parents(node, { sameDocument: true }).then(function(parents) {
       for (let parent of parents) {
         this._addElementRules(rules, parent, parent, options);
       }
-      return rules;
+      return {
+        computed: computed,
+        entries: rules
+      };
     }.bind(this));
   }, {
     params: [
@@ -770,7 +795,7 @@ DOMWalker.prototype = {
         params.Simple("inherited")
       ])
     ],
-    ret: domParams.NodeStyleEntries("style")
+    ret: domParams.NodeStyle("style")
   }),
 
   _addElementRules: function(rules, element, inherited, options)

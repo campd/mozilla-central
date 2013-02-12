@@ -127,14 +127,14 @@ ElementStyle.prototype = {
   {
     return this.walker.getNodeStyle(this.element, {
       inherited: true
-    }).then(function(rules) {
+    }).then(function(nodeStyle) {
       // Store the current list of rules (if any) during the population
       // process.  They will be reused if possible.
       this._refreshRules = this.rules;
 
       this.rules = [];
 
-      for (let rule of rules) {
+      for (let rule of nodeStyle.entries) {
         this._maybeAddRule(rule);
       }
 
