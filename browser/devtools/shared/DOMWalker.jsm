@@ -126,15 +126,59 @@ domParams.TraversalOptions = params.Options([
   params.Simple("whatToShow")
 ]);
 
-
-
-function DOMRef(node) {
+function DOMRef(owner, node) {
+  this.actorID = owner.pool.add(this);
   this._rawNode = node;
 }
 
 DOMRef.prototype = {
+  actorPref: "node",
   toString: function() {
     return "[DOMRef for " + this._rawNode.toString() + "]";
+  },
+
+  form: function DNA_form() {
+    let form = {
+      actor: this.actorID
+    };
+
+    // XXX: some of these are redundant and should be worked out independently
+    // on the client.
+
+    for (let attr of [
+      "id", "className", "numChildren",
+      "nodeType", "namespaceURI", "tagName", "nodeName", "nodeValue",
+      "name", "publicId", "systemId", "pseudoClassLocks"]) {
+      form[attr] = this[attr];
+    }
+
+    for (let attr of [
+      "isDocumentElement", "isNode", "isConnected"]) {
+      form[attr] = this[attr]();
+    }
+
+    if (this.attributes) {
+      form.attrs = this.writeAttrs();
+    }
+
+    if (this.isWalkerRoot()) {
+      form.isWalkerRoot = true;
+    }
+
+    return form;
+  },
+
+  writeNodeAttributes: function(node) {
+    return this.writeAttrs();
+  },
+
+  writeAttrs: function() {
+    let attrs = [];
+    for (let i = 0; i < this.attributes.length; i++) {
+      let attr = this.attributes[i];
+      attrs.push({namespace: attr.namespace, name: attr.name, value: attr.value });
+    }
+    return attrs;
   },
 
   /**
@@ -243,7 +287,8 @@ DOMRef.prototype = {
   },
 };
 
-Remotable.initImplementation(DOMRef.prototype)
+Remotable.initImplementation(DOMRef.prototype);
+Remotable.initActor(DOMRef.prototype);
 
 function AttributeModificationList(node) {
   this.node = node;
@@ -279,6 +324,7 @@ function StyleSheetRef(owner, sheet, parent) {
 }
 
 StyleSheetRef.prototype = {
+  actorPrefix: "sheet",
   toString: function() "[StyleSheetRef for " + this.rawSheet.toString() + "]",
 
   form: function() {
@@ -292,8 +338,8 @@ StyleSheetRef.prototype = {
     };
 
     form.media = [];
-    for (let i = 0, n = this.impl.media.length; i < n; i++) {
-      form.media.push(this.impl.media.item[i]);
+    for (let i = 0, n = this.media.length; i < n; i++) {
+      form.media.push(this.media.item[i]);
     }
     return form;
   },
@@ -345,6 +391,7 @@ function StyleRuleRef(owner, item) {
 }
 
 StyleRuleRef.prototype = {
+  actorPrefix: "rule",
   toString: function() "[StyleRuleRef for " + this.rawRule.toString() + "]",
 
   form: function() {
@@ -1016,7 +1063,7 @@ DOMWalker.prototype = {
     if (this._refMap.has(node)) {
       return this._refMap.get(node);
     }
-    let ref = new DOMRef(node);
+    let ref = new DOMRef(this, node);
 
     if (this._observer) {
       this._observer.observe(node, {
@@ -1051,7 +1098,6 @@ DOMWalker.prototype = {
     }
 
     let ref = new StyleRuleRef(this, item);
-    this.pool.add(ref);
     this._declMap.set(item, ref);
     return ref;
   },
@@ -1466,8 +1512,6 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
   this.impl = aWalker;
   this.conn = aParentActor.conn;
   this.parent = aParentActor;
-  this._nodePool = Remotable.WrapperPool(this.conn, "node", DOMNodeActor, this);
-  this.conn.addActorPool(this._nodePool);
   this._boundOnMutations = this._onMutations.bind(this);
   this.impl.on("mutations", this._boundOnMutations);
 }
@@ -1488,8 +1532,6 @@ DOMWalkerActor.prototype = {
 
     this.impl.destroy();
 
-    this.conn.removeActorPool(this._nodePool);
-    delete this._nodePool;
     this.parent.releaseActor(this);
     delete this.conn;
     delete this.parent;
@@ -1497,12 +1539,10 @@ DOMWalkerActor.prototype = {
 
   // Conversions for protocol types.
   writeNode: function DWA_writeNode(node) {
-    if (!node) return node;
-    let id = this._nodePool.add(node);
-    return this._nodePool.get(id).form();
+    return node ? node.form() : null;
   },
   readNode: function DWA_readNode(node) {
-    return node ? this._nodePool.obj(node) : null;
+    return node ? this.impl.pool.obj(node) : null;
   },
 
   writeStyleSheet: function(sheet) {
@@ -1520,9 +1560,8 @@ DOMWalkerActor.prototype = {
   },
 
   writePseudoModification: function(node) {
-    let actor = this._nodePool.actorID(node);
     return {
-      actor: actor,
+      actor: node.actorID,
       pseudoClassLocks: node.pseudoClassLocks
     }
   },
@@ -1575,64 +1614,6 @@ DOMWalkerActor.prototype = {
     })
   },
 };
-
-// These are ephemeral, created as needed by the DOMWalkerNodePool.
-function DOMNodeActor(aPool, aActorID, aNodeRef)
-{
-  let self = this instanceof DOMNodeActor ?
-    this : Object.create(DOMNodeActor.prototype);
-  Remotable.initActor(DOMNodeActor.prototype, DOMRef.prototype)
-  self.conn = aPool.conn;
-  self.impl = aNodeRef;
-  self.actorID = aActorID;
-  return self;
-}
-
-DOMNodeActor.prototype = {
-  form: function DNA_form() {
-    let form = {
-      actor: this.actorID
-    };
-
-    // XXX: some of these are redundant and should be worked out independently
-    // on the client.
-
-    for (let attr of [
-      "id", "className", "numChildren",
-      "nodeType", "namespaceURI", "tagName", "nodeName", "nodeValue",
-      "name", "publicId", "systemId", "pseudoClassLocks"]) {
-      form[attr] = this.impl[attr];
-    }
-
-    for (let attr of [
-      "isDocumentElement", "isNode", "isConnected"]) {
-      form[attr] = this.impl[attr]();
-    }
-
-    if (this.impl.attributes) {
-      form.attrs = this.writeAttrs();
-    }
-
-    if (this.impl.isWalkerRoot()) {
-      form.isWalkerRoot = true;
-    }
-
-    return form;
-  },
-
-  writeNodeAttributes: function(node) {
-    return this.writeAttrs();
-  },
-
-  writeAttrs: function() {
-    let attrs = [];
-    for (let i = 0; i < this.impl.attributes.length; i++) {
-      let attr = this.impl.attributes[i];
-      attrs.push({namespace: attr.namespace, name: attr.name, value: attr.value });
-    }
-    return attrs;
-  },
-}
 
 function promisePass(r) {
   return r;
