@@ -1372,7 +1372,7 @@ RemoteWalker.prototype = {
  */
 this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
 {
-  Remotable.initServer(DOMWalkerActor.prototype, DOMWalker.prototype);
+  Remotable.initActor(DOMWalkerActor.prototype, DOMWalker.prototype);
 
   this.impl = aWalker;
 
@@ -1508,7 +1508,7 @@ function DOMNodeActor(aPool, aActorID, aNodeRef)
 {
   let self = this instanceof DOMNodeActor ?
     this : Object.create(DOMNodeActor.prototype);
-  Remotable.initServer(DOMNodeActor.prototype, DOMRef.prototype)
+  Remotable.initActor(DOMNodeActor.prototype, DOMRef.prototype)
   self.conn = aPool.conn;
   self.impl = aNodeRef;
   self.actorID = aActorID;
@@ -1565,7 +1565,7 @@ function StyleSheetActor(pool, actorID, ref, context)
 {
   let self = this instanceof StyleSheetActor ?
     this : Object.create(StyleSheetActor.prototype);
-  Remotable.initServer(StyleSheetActor.prototype, StyleRuleRef.prototype);
+  Remotable.initActor(StyleSheetActor.prototype, StyleRuleRef.prototype);
   self.walker = context;
   self.conn = pool.conn;
   self.impl = ref;
@@ -1596,7 +1596,7 @@ function StyleRuleActor(pool, actorID, ref, context)
 {
   let self = this instanceof StyleRuleActor ?
     this : Object.create(StyleRuleActor.prototype);
-  Remotable.initServer(StyleRuleActor.prototype, StyleRuleRef.prototype);
+  Remotable.initActor(StyleRuleActor.prototype, StyleRuleRef.prototype);
   self.walker = context;
   self.conn = pool.conn;
   self.impl = ref;

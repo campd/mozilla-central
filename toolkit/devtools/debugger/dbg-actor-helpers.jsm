@@ -18,7 +18,7 @@ types.Simple = {
 /**
  * The context type constructor builds a type whose interpretation
  * depends on the object asking for the conversion.  Use this to allow
- * server or client objects to provide translation methods.
+ * actor or client objects to provide translation methods.
  *
  * @param string writeMethod
  *        Will be called on the context object when writing objects
@@ -202,7 +202,7 @@ Remotable.remotable = function(fn, spec)
 };
 
 /**
- * For servers and clients, implements a custom handler for the
+ * For actors and clients, implements a custom handler for the
  * remotable method.  The generated implementation will not be
  * created.
  *
@@ -295,18 +295,18 @@ Remotable.initClient = function(clientProto, implProto)
   });
 };
 
-Remotable.initServer = function(serverProto, implProto)
+Remotable.initActor = function(actorProto, implProto)
 {
-  if (serverProto.__remoteInitialized) {
+  if (actorProto.__remoteInitialized) {
     return;
   }
-  serverProto.__remoteInitialized = true;
-  if (!serverProto.requestTypes) {
-    serverProto.requestTypes = {};
+  actorProto.__remoteInitialized = true;
+  if (!actorProto.requestTypes) {
+    actorProto.requestTypes = {};
   }
 
-  if (!serverProto.writeError) {
-    serverProto.writeError = function(err) {
+  if (!actorProto.writeError) {
+    actorProto.writeError = function(err) {
       this.conn.send({
         from: this.actorID,
         error: "unknownError",
@@ -318,11 +318,13 @@ Remotable.initServer = function(serverProto, implProto)
     };
   }
 
+  implProto = implProto || actorProto;
+
   let remoteSpecs = implProto.__remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     let handler = null;
-    if (spec.name in serverProto) {
-      handler = serverProto[spec.name];
+    if (spec.name in actorProto) {
+      handler = actorProto[spec.name];
       if (!handler._custom) {
         throw new Error(spec.name + " already exists and is not marked custom.\n");
       }
@@ -343,7 +345,7 @@ Remotable.initServer = function(serverProto, implProto)
       }
     };
 
-    serverProto.requestTypes[spec.requestType || spec.name] = handler;
+    actorProto.requestTypes[spec.requestType || spec.name] = handler;
   });
 }
 
@@ -429,8 +431,8 @@ Remotable.LongStringActor = function(pool, actorID, impl)
 {
   let self = this instanceof Remotable.LongStringActor ?
     this : Object.create(Remotable.LongStringActor.prototype);
-  Remotable.initServer(Remotable.LongStringActor.prototype,
-                       Remotable.LongString.prototype);
+  Remotable.initActor(Remotable.LongStringActor.prototype,
+                      Remotable.LongString.prototype);
   self.conn = pool.conn;
   self.pool = pool;
   self.actorID = actorID;
