@@ -323,10 +323,11 @@ Remotable.initActor = function(actorProto, implProto)
   let remoteSpecs = implProto.__remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     let handler = null;
-    if (spec.name in actorProto) {
-      handler = actorProto[spec.name];
+    let custom = spec.name + "_request";
+    if (custom in actorProto) {
+      handler = actorProto[custom];
       if (!handler._custom) {
-        throw new Error(spec.name + " already exists and is not marked custom.\n");
+        throw new Error(spec.name + "_request exists but is not marked custom.\n");
       }
     } else {
       handler = function(aPacket) {
@@ -454,7 +455,7 @@ Remotable.LongStringActor.prototype = {
     }
   },
 
-  release: Remotable.custom(function(aPacket) {
+  release_request: Remotable.custom(function(aPacket) {
     this.impl.release();
     this.pool.remove(this.actorID);
     return {from: this.actorID};
