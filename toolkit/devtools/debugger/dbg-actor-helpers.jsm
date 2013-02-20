@@ -40,6 +40,7 @@ types.Context.prototype = {
   read: function(value, context) context[this.readMethod].call(context, value)
 };
 
+
 /**
  * Represents an array of types.
  *

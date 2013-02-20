@@ -564,7 +564,7 @@ ClassListRef.prototype = {
 /**
  * An async DOM walker.
  */
-this.DOMWalker = function DOMWalker(conn, document, options)
+this.DOMWalker = function DOMWalker(owner, document, options)
 {
   EventEmitter.decorate(this);
   this._doc = document;
@@ -573,9 +573,11 @@ this.DOMWalker = function DOMWalker(conn, document, options)
   this._sheetMap = new Map();
 
 
+  let conn = owner ? owner.conn : null;
   this.pool = Remotable.ActorPool(conn, "dom");
-  if (conn) {
-    this.conn = conn;
+  if (owner) {
+    this.owner = owner;
+    this.conn = owner.conn;
     this.conn.addActorPool(this.pool);
   }
 
@@ -593,11 +595,23 @@ this.DOMWalker = function DOMWalker(conn, document, options)
 }
 
 DOMWalker.prototype = {
-  destroy: function() {
+  actorPrefix: "dom",
+  grip: function DWA_grip() {
+    return { actor: this.actorID };
+  },
+
+  toString: function() {
+    return "[DOMWalker " + this.actorID + "]";
+  },
+
+  disconnect: function() {
     if (this.conn) {
       this.conn.removeActorPool(this.pool);
+      this.owner.releaseActor(this);
+      delete this.conn;
     }
     delete this.pool;
+    delete this.owner;
 
     if (this._observer) {
       this._observer.disconnect();
@@ -616,6 +630,39 @@ DOMWalker.prototype = {
 
     this.clearPseudoClassLocks(null, { all: true });
     delete this._pclList;
+  },
+
+  destroy: function() {
+    this.disconnect();
+  },
+
+  // Conversions for protocol types.
+  writeNode: function DWA_writeNode(node) {
+    return node ? node.form() : null;
+  },
+  readNode: function DWA_readNode(node) {
+    return node ? this.pool.obj(node) : null;
+  },
+
+  writeStyleSheet: function(sheet) {
+    return sheet ? sheet.form() : null;
+  },
+  readStyleSheet: function(sheet) {
+    return this.pool.obj(sheet);
+  },
+
+  writeStyleRule: function(rule) {
+    return rule ? rule.form() : null;
+  },
+  readStyleRule: function(rule) {
+    return this.pool.obj(rule);
+  },
+
+  writePseudoModification: function(node) {
+    return {
+      actor: node.actorID,
+      pseudoClassLocks: node.pseudoClassLocks
+    }
   },
 
   /**
@@ -1118,10 +1165,59 @@ DOMWalker.prototype = {
       });
     }
     this.emit("mutations", refMutations);
-  }
+    if (this.conn) {
+      this._sendMutations(refMutations);
+    }
+  },
+
+  _sendMutations: function(mutations)
+  {
+    let toSend = [];
+    for (let mutation of mutations) {
+      let target = mutation.target.actorID;
+      if (mutation.type == "childList") {
+        toSend.push({
+          target: target,
+          type: "childList",
+          newNumChildren: mutation.target.numChildren,
+        });
+      } else if (mutation.type == "attributes") {
+        toSend.push({
+          target: target,
+          type: "attributes",
+          attributeName: mutation.attributeName,
+          attributeNamespace: mutation.attributeNamespace,
+          oldValue: mutation.oldValue,
+          newValue: mutation.target.rawNode.getAttribute(mutation.attributeName)
+        });
+      } else if (mutation.type == "characterData") {
+        toSend.push({
+          target: target,
+          type: "characterData",
+          newValue: mutation.target.nodeValue,
+        });
+      }
+    }
+
+    this.conn.send({
+      from: this.actorID,
+      type: "mutations",
+      mutations: toSend
+    });
+  },
+
+
+  sendError: function(error) {
+    this.conn.send({
+      from: this.actorID,
+      error: "inspectorError",
+      message: "DOM walker error:" + error.toString()
+    })
+  },
 };
 
 Remotable.initImplementation(DOMWalker.prototype);
+Remotable.initActor(DOMWalker.prototype);
 
 function RemoteRef(walker, form)
 {
@@ -1494,124 +1590,6 @@ RemoteWalker.prototype = {
 
   actor: function() {
     return this.actorPromise;
-  },
-};
-
-// Note to self:
-// Every actor needs to know:
-// * Its parent
-// * Its lifetime (maybe the same as its parent?)
-
-/**
- * Server-side actor implementation.
- */
-this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
-{
-  Remotable.initActor(DOMWalkerActor.prototype, DOMWalker.prototype);
-
-  this.impl = aWalker;
-  this.conn = aParentActor.conn;
-  this.parent = aParentActor;
-  this._boundOnMutations = this._onMutations.bind(this);
-  this.impl.on("mutations", this._boundOnMutations);
-}
-
-DOMWalkerActor.prototype = {
-  actorPrefix: "domwalker",
-  grip: function DWA_grip() {
-    return { actor: this.actorID };
-  },
-
-  toString: function() {
-    return "[DOMWalkerActor " + this.actorID + "]";
-  },
-
-  disconnect: function DWA_disconnect() {
-    this.impl.off("mutations", this._boundOnMutations);
-    delete this._boundOnMutations;
-
-    this.impl.destroy();
-
-    this.parent.releaseActor(this);
-    delete this.conn;
-    delete this.parent;
-  },
-
-  // Conversions for protocol types.
-  writeNode: function DWA_writeNode(node) {
-    return node ? node.form() : null;
-  },
-  readNode: function DWA_readNode(node) {
-    return node ? this.impl.pool.obj(node) : null;
-  },
-
-  writeStyleSheet: function(sheet) {
-    return sheet ? sheet.form() : null;
-  },
-  readStyleSheet: function(sheet) {
-    return this.impl.pool.obj(sheet);
-  },
-
-  writeStyleRule: function(rule) {
-    return rule ? rule.form() : null;
-  },
-  readStyleRule: function(rule) {
-    return this.impl.pool.obj(rule);
-  },
-
-  writePseudoModification: function(node) {
-    return {
-      actor: node.actorID,
-      pseudoClassLocks: node.pseudoClassLocks
-    }
-  },
-
-  _onMutations: function DWA_onMutations(event, mutations)
-  {
-    let toSend = [];
-    for (let mutation of mutations) {
-      if (!mutation.target.__actorID) {
-        // This isn't a node we're monitoring.
-        continue;
-      }
-      let target = mutation.target.__actorID;
-      if (mutation.type == "childList") {
-        toSend.push({
-          target: target,
-          type: "childList",
-          newNumChildren: mutation.target.numChildren,
-        });
-      } else if (mutation.type == "attributes") {
-        toSend.push({
-          target: target,
-          type: "attributes",
-          attributeName: mutation.attributeName,
-          attributeNamespace: mutation.attributeNamespace,
-          oldValue: mutation.oldValue,
-          newValue: mutation.target.rawNode.getAttribute(mutation.attributeName)
-        });
-      } else if (mutation.type == "characterData") {
-        toSend.push({
-          target: target,
-          type: "characterData",
-          newValue: mutation.target.nodeValue,
-        });
-      }
-    }
-
-    this.conn.send({
-      from: this.actorID,
-      type: "mutations",
-      mutations: toSend
-    });
-  },
-
-  sendError: function(error) {
-    this.conn.send({
-      from: this.actorID,
-      error: "inspectorError",
-      message: "DOM walker error:" + error.toString()
-    })
   },
 };
 

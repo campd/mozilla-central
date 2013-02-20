@@ -14,8 +14,6 @@ Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
 XPCOMUtils.defineLazyModuleGetter(this, "DOMWalker",
   "resource:///modules/devtools/DOMWalker.jsm");
-XPCOMUtils.defineLazyModuleGetter(this, "DOMWalkerActor",
-  "resource:///modules/devtools/DOMWalker.jsm");
 XPCOMUtils.defineLazyModuleGetter(this, "Remotable",
   "resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 
@@ -89,13 +87,11 @@ InspectorActor.prototype =
 
   onGetWalker: function IA_getWalker(aPacket)
   {
-    let walker = new DOMWalker(this.conn, this._window.document, {
+    let walker = new DOMWalker(this, this._window.document, {
       watchVisited: true
     });
-
-    let actor = new DOMWalkerActor(this, walker);
-    this._actorPool.addActor(actor);
-    return actor.grip();
+    this._actorPool.addActor(walker);
+    return walker.grip();
   },
 };
 
