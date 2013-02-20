@@ -126,7 +126,7 @@ ElementStyle.prototype = {
   populate: function ElementStyle_populate()
   {
     return this.walker.getNodeStyle(this.element, {
-      inherited: true
+      inherited: true,
     }).then(function(nodeStyle) {
       // Store the current list of rules (if any) during the population
       // process.  They will be reused if possible.
@@ -157,6 +157,11 @@ ElementStyle.prototype = {
    */
   _maybeAddRule: function ElementStyle_maybeAddRule(aOptions)
   {
+    // Don't include system stylesheets for now
+    if (aOptions.system) {
+      return;
+    }
+
     // If we've already included this domRule (for example, when a
     // common selector is inherited), ignore it.
     if (aOptions.rule &&

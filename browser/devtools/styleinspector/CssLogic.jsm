@@ -147,8 +147,10 @@ CssLogic.prototype = {
    * @param {nsIDOMElement} aViewedElement the element the user has highlighted
    * in the Inspector.
    */
-  highlight: function CssLogic_highlight(aViewedElement)
+  highlight: function CssLogic_highlight(aViewedElement, aNodeStyle)
   {
+    // CssLogic just isn't working right now.
+    return;
     if (!aViewedElement) {
       this.viewedElement = null;
       this.viewedDocument = null;
@@ -158,9 +160,11 @@ CssLogic.prototype = {
     }
 
     this.viewedElement = aViewedElement;
+    this.nodeStyle = aNodeStyle;
 
-    let doc = this.viewedElement.ownerDocument;
+    let doc = aNodeStyle.document;
     if (doc != this.viewedDocument) {
+      dump("NEW DOCUMENT\n");
       // New document: clear/rebuild the cache.
       this.viewedDocument = doc;
 
@@ -173,8 +177,8 @@ CssLogic.prototype = {
 
     this._matchedRules = null;
     this._matchedSelectors = null;
-    let win = this.viewedDocument.defaultView;
-    this._computedStyle = win.getComputedStyle(this.viewedElement, "");
+
+    this._computedStyle = aNodeStyle.computed;
   },
 
   /**
@@ -192,6 +196,9 @@ CssLogic.prototype = {
    * @see CssLogic.FILTER.*
    */
   set sourceFilter(aValue) {
+    this._sourceFilter = aValue;
+    return;
+
     let oldValue = this._sourceFilter;
     this._sourceFilter = aValue;
 
@@ -257,9 +264,7 @@ CssLogic.prototype = {
     this._passId++;
     this.reset();
 
-    // styleSheets isn't an array, but forEach can work on it anyway
-    Array.prototype.forEach.call(this.viewedDocument.styleSheets,
-        this._cacheSheet, this);
+    this.nodeStyle.sheets.forEach(this._cacheSheet, this);
 
     this._sheetsCached = true;
   },
@@ -286,17 +291,6 @@ CssLogic.prototype = {
 
     // Cache the sheet.
     let cssSheet = this.getSheet(aDomSheet, this._sheetIndex++);
-    if (cssSheet._passId != this._passId) {
-      cssSheet._passId = this._passId;
-
-      // Find import rules.
-      Array.prototype.forEach.call(aDomSheet.cssRules, function(aDomRule) {
-        if (aDomRule.type == Ci.nsIDOMCSSRule.IMPORT_RULE && aDomRule.styleSheet &&
-            this.mediaMatches(aDomRule)) {
-          this._cacheSheet(aDomRule.styleSheet);
-        }
-      }, this);
-    }
   },
 
   /**
@@ -553,7 +547,7 @@ CssLogic.prototype = {
   {
     let domRules;
     let element = this.viewedElement;
-    let filter = this.sourceFilter;
+//    let filter = this.sourceFilter;
     let sheetIndex = 0;
 
     this._matchId++;
@@ -564,54 +558,36 @@ CssLogic.prototype = {
       return;
     }
 
-    do {
-      let status = this.viewedElement === element ?
-                   CssLogic.STATUS.MATCHED : CssLogic.STATUS.PARENT_MATCH;
+    for (let entry of this.nodeStyle.entries) {
+      let status = entry.inherited ? CssLogic.STATUS.MATCHED : CssLogic.STATUS.PARENT_MATCH;
 
-      try {
-        domRules = this.domUtils.getCSSStyleRules(element);
-      } catch (ex) {
-        Services.console.
-          logStringMessage("CL__buildMatchedRules error: " + ex);
+      let domRule = entry.rule;
+      if (domRule.type !== Ci.nsIDOMCSSRule.STYLE_RULE) {
         continue;
       }
 
-      for (let i = 0, n = domRules.Count(); i < n; i++) {
-        let domRule = domRules.GetElementAt(i);
-        if (domRule.type !== Ci.nsIDOMCSSRule.STYLE_RULE) {
-          continue;
-        }
-
-        let sheet = this.getSheet(domRule.parentStyleSheet, -1);
-        if (sheet._passId !== this._passId) {
-          sheet.index = sheetIndex++;
-          sheet._passId = this._passId;
-        }
-
-        if (filter === CssLogic.FILTER.ALL && !sheet.contentSheet) {
-          continue;
-        }
-
-        let rule = sheet.getRule(domRule);
-        if (rule._passId === this._passId) {
-          continue;
-        }
-
-        rule._matchId = this._matchId;
-        rule._passId = this._passId;
-        this._matchedRules.push([rule, status]);
+      let sheet = this.getSheet(domRule.parentStyleSheet, -1);
+      if (sheet._passId !== this._passId) {
+        sheet.index = sheetIndex++;
       }
 
+// XXX: Reimplement filtering in the walker.
+//      if (filter === CssLogic.FILTER.ALL && !sheet.contentSheet) {
+//        continue;
+//      }
 
-      // Add element.style information.
-      if (element.style.length > 0) {
-        let rule = new CssRule(null, { style: element.style }, element);
-        rule._matchId = this._matchId;
-        rule._passId = this._passId;
-        this._matchedRules.push([rule, status]);
+      // XXX: copy the constant or something.
+      var rule = null;
+      if (domRule.type == 100) {
+        let fromNode = domRule.inherited || this.viewedElement;
+        rule = new CssRule(null, domRule, fromNode);
+      } else {
+        rule = sheet.getRule(domRule);
       }
-    } while ((element = element.parentNode) &&
-              element.nodeType === Ci.nsIDOMNode.ELEMENT_NODE);
+
+      rule._matchId = this._matchId;
+      this._matchedRules.push([rule, status]);
+    }
   },
 
   /**
@@ -621,11 +597,9 @@ CssLogic.prototype = {
    * @return {boolean} True if the DOM CSS object matches the current view
    * media, or false otherwise.
    */
-  mediaMatches: function CL_mediaMatches(aDomObject)
+  mediaMatches: function CL_mediaMatches(aSheetRef)
   {
-    let mediaText = aDomObject.media.mediaText;
-    return !mediaText || this.viewedDocument.defaultView.
-                         matchMedia(mediaText).matches;
+    return aSheetRef.mediaMatched;
    },
 };
 
@@ -920,7 +894,7 @@ function CssSheet(aCssLogic, aDomSheet, aIndex)
   this._sheetAllowed = null;
 
   // Cached CssRules from the given stylesheet.
-  this._rules = {};
+  this._rules = new Map();
 
   this._ruleCount = -1;
 }
@@ -1049,30 +1023,11 @@ CssSheet.prototype = {
    */
   getRule: function CssSheet_getRule(aDomRule)
   {
-    let cacheId = aDomRule.type + aDomRule.selectorText;
-
-    let rule = null;
-    let ruleFound = false;
-
-    if (cacheId in this._rules) {
-      for (let i = 0, rulesLen = this._rules[cacheId].length; i < rulesLen; i++) {
-        rule = this._rules[cacheId][i];
-        if (rule._domRule === aDomRule) {
-          ruleFound = true;
-          break;
-        }
-      }
+    if (this._rules.has(aDomRule)) {
+      return this._rules.get(aDomRule);
     }
-
-    if (!ruleFound) {
-      if (!(cacheId in this._rules)) {
-        this._rules[cacheId] = [];
-      }
-
-      rule = new CssRule(this, aDomRule);
-      this._rules[cacheId].push(rule);
-    }
-
+    let rule = new CssRule(this, aDomRule);
+    this._rules.set(aDomRule, rule);
     return rule;
   },
 
@@ -1171,8 +1126,8 @@ function CssRule(aCssSheet, aDomRule, aElement)
   if (this._cssSheet) {
     // parse _domRule.selectorText on call to this.selectors
     this._selectors = null;
-    this.line = this._cssSheet._cssLogic.domUtils.getRuleLine(this._domRule);
-    this.source = this._cssSheet.shortSource + ":" + this.line;
+    this.line = this._domRule.ruleLine;
+    this.source = this._domRule.shortSource + ":" + this.line;
     if (this.mediaText) {
       this.source += " @media " + this.mediaText;
     }
@@ -1229,7 +1184,7 @@ CssRule.prototype = {
    */
   getPropertyValue: function(aProperty)
   {
-    return this._domRule.style.getPropertyValue(aProperty);
+    return this._domRule.getPropertyValue(aProperty);
   },
 
   /**
@@ -1241,7 +1196,7 @@ CssRule.prototype = {
    */
   getPropertyPriority: function(aProperty)
   {
-    return this._domRule.style.getPropertyPriority(aProperty);
+    return this._domRule.getPropertyPriority(aProperty);
   },
 
   /**

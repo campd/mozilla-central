@@ -10,6 +10,7 @@ const Ci = Components.interfaces;
 
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
+Cu.import("resource://gre/modules/devtools/Console.jsm");
 Cu.import("resource:///modules/devtools/CssRuleView.jsm");
 Cu.import("resource:///modules/devtools/ToolDefinitions.jsm");
 
@@ -183,13 +184,6 @@ this.ComputedViewTool = function CVT_ComputedViewTool(aInspector, aWindow, aIFra
 ComputedViewTool.prototype = {
   onSelect: function CVT_onSelect(aEvent)
   {
-    if (!this.inspector.selection.rawNode) {
-      // Computed View is not remote-ready yet.
-      this.cssLogic.highlight(null);
-      this.view.highlight(null);
-      return;
-    }
-
     if (!this.inspector.selection.isConnected() ||
         !this.inspector.selection.isElementNode()) {
       this.view.highlight(null);
@@ -200,8 +194,16 @@ ComputedViewTool.prototype = {
       if (this.inspector.selection.reason == "highlighter") {
         // FIXME: We should hide view's content
       } else {
-        this.cssLogic.highlight(this.inspector.selection.rawNode);
-        this.view.highlight(this.inspector.selection.rawNode);
+        dump("GETTING NODE STYLE\n");
+        this.inspector.walker.getNodeStyle(this.inspector.selection.nodeRef, {
+          inherited: true,
+          computed: true,
+          sheets: true,
+        }).then(function(nodeStyle) {
+          dump("ABOUT TO HIGHLIGHT\n");
+          this.cssLogic.highlight(this.inspector.selection.nodeRef, nodeStyle);
+          this.view.highlight(this.inspector.selection.nodeRef);
+        }.bind(this)).then(function(r) r, console.error);
       }
     }
 

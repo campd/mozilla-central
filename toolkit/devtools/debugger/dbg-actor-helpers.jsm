@@ -79,14 +79,14 @@ types.Dict.prototype = {
   write: function(value, context) {
     let ret = {};
     for (let t in this.subtypes) {
-      ret[t] = this.subtypes[t].write(value[t], context);
+      ret[t] = value[t] ? this.subtypes[t].write(value[t], context) : undefined;
     }
     return ret;
   },
   read: function(value, context) {
     let ret = {};
     for (let t in this.subtypes) {
-      ret[t] = this.subtypes[t].read(value[t], context);
+      ret[t] = value[t] ? this.subtypes[t].read(value[t], context) : undefined;
     }
     return ret;
   }
