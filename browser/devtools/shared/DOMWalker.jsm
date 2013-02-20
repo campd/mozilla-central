@@ -271,13 +271,37 @@ AttributeModificationList.prototype = {
   }
 };
 
-function StyleSheetRef(sheet, parent) {
+function StyleSheetRef(owner, sheet, parent) {
+  this.actorID = owner.pool.add(this);
+  this.owner = owner;
   this.rawSheet = sheet;
   this.parentStyleSheet = parent;
 }
 
 StyleSheetRef.prototype = {
   toString: function() "[StyleSheetRef for " + this.rawSheet.toString() + "]",
+
+  form: function() {
+    let form = {
+      actor: this.actorID,
+      disabled: this.disabled,
+      href: this.href,
+      title: this.title,
+      type: this.type,
+      mediaMatches: this.mediaMatches
+    };
+
+    form.media = [];
+    for (let i = 0, n = this.impl.media.length; i < n; i++) {
+      form.media.push(this.impl.media.item[i]);
+    }
+    return form;
+  },
+
+  get parentStyleSheet() {
+    return this.rawSheet.parentStyleSheet ?
+      this.owner._sheetRef(this.rawSheet.parentStyleSheet) : null;
+  },
 
   get disabled() this.rawSheet.disabled,
   get href() this.rawSheet.href,
@@ -294,10 +318,11 @@ StyleSheetRef.prototype = {
 };
 
 Remotable.initImplementation(StyleSheetRef.prototype);
+Remotable.initActor(StyleSheetRef.prototype);
 
-function StyleRuleRef(item, parentRule, parentStyleSheet) {
-  this.parentRule = parentRule;
-  this.parentStyleSheet = parentStyleSheet;
+function StyleRuleRef(owner, item) {
+  this.owner = owner;
+  this.actorID = owner.pool.add(this);
   if (item instanceof Ci.nsIDOMCSSRule) {
     this.type = item.type;
     this.rawRule = item;
@@ -321,6 +346,64 @@ function StyleRuleRef(item, parentRule, parentStyleSheet) {
 
 StyleRuleRef.prototype = {
   toString: function() "[StyleRuleRef for " + this.rawRule.toString() + "]",
+
+  form: function() {
+    let form = {
+      actor: this.actorID,
+      type: this.type,
+      shortSource: this.shortSource || undefined,
+      ruleLine: this.ruleLine || undefined,
+    };
+
+    if (this.parentRule) {
+      form.parentRule = this.parentRule.form();
+    }
+
+    if (this.parentStyleSheet) {
+      form.parentStyleSheet = this.parentStyleSheet.actorID;
+    }
+
+    switch (this.type) {
+      case Ci.nsIDOMCSSRule.STYLE_RULE:
+      case ELEMENT_STYLE:
+        form.cssText = this.cssText;
+        form.properties = this.cssProperties();
+        form.selectorText = this.selectorText;
+        break;
+      case Ci.nsIDOMCSSRule.CHARSET_RULE:
+        form.encoding = this.encoding;
+        break;
+      case Ci.nsIDOMCSSRule.IMPORT_RULE:
+        form.href = this.href;
+        // fallthrough
+      case Ci.nsIDOMCSSRule.MEDIA_RULE:
+        form.media = [];
+        for (let i = 0, n = this.media.length; i < n; i++) {
+          form.media.push(this.media.item[i]);
+        }
+        break;
+    };
+
+    return form;
+  },
+
+  writeCssProperties: function(value) {
+    return { cssText: value.cssText, properties: value.cssProperties() };
+  },
+
+  get parentRule() {
+    if (this.rawRule.parentRule) {
+      return this.owner._declRef(this.rawRule.parentRule);
+    }
+    return null;
+  },
+
+  get parentStyleSheet() {
+    if (this.rawRule.parentStyleSheet) {
+      return this.owner._sheetRef(this.rawRule.parentStyleSheet);
+    }
+    return null;
+  },
 
   // CSSStyleRule stuff
   get selectorText() this.rawRule.selectorText,
@@ -397,6 +480,7 @@ StyleRuleRef.prototype = {
 };
 
 Remotable.initImplementation(StyleRuleRef.prototype)
+Remotable.initActor(StyleRuleRef.prototype)
 
 function StyleModificationList(rule) {
   this.rule = rule;
@@ -837,7 +921,7 @@ DOMWalker.prototype = {
   getComputedStyle: remotable(function(node) {
     let win = node.rawNode.ownerDocument.defaultView;
     let computed = win.getComputedStyle(node.rawNode);
-    return promise.resolve(new StyleRuleRef(computed, null, null));
+    return promise.resolve(new StyleRuleRef(this, computed));
   }, {
     params: [
       domParams.Node("node"),
@@ -867,13 +951,12 @@ DOMWalker.prototype = {
       };
 
       if (options.sheets) {
-        ret.sheets = this._getStyleSheets(doc)
-        dump("stylesheets: " + ret.sheets + "\n");
+        ret.sheets = this._getStyleSheets(doc);
       }
 
       if (options.computed) {
         let win = node.rawNode.ownerDocument.defaultView;
-        ret.computed = new StyleRuleRef(win.getComputedStyle(node.rawNode), null, null);
+        ret.computed = new StyleRuleRef(this, win.getComputedStyle(node.rawNode));
       }
 
       return ret;
@@ -956,10 +1039,7 @@ DOMWalker.prototype = {
       return this._sheetMap.get(sheet);
     }
 
-    let parent = sheet.parentStyleSheet;
-    parent = this.parentStyleSheet ? this._sheetRef(sheet.parentStyleSheet) : null;
-
-    let ref = new StyleSheetRef(sheet, parent);
+    let ref = new StyleSheetRef(this, sheet);
     this._sheetMap.set(sheet, ref);
     return ref;
   },
@@ -970,11 +1050,8 @@ DOMWalker.prototype = {
       return this._declMap.get(item);
     }
 
-    let parent = item.parentRule ? this._declRef(item.parentRule) : null;
-
-    let sheet = item.parentStyleSheet ? this._sheetRef(item.parentStyleSheet) : null;
-
-    let ref = new StyleRuleRef(item, parent, sheet);
+    let ref = new StyleRuleRef(this, item);
+    this.pool.add(ref);
     this._declMap.set(item, ref);
     return ref;
   },
@@ -1191,8 +1268,6 @@ RemoteStyleRuleRef.prototype = {
   },
 
   get parentStyleSheet() {
-    dump("trying to get " + this.form_parentStyleSheet);
-    dump("does it exist?" + this.walker._refMap.has(this.form_parentStyleSheet) + "\n");
     return this.walker._refMap.get(this.form_parentStyleSheet);
   },
 
@@ -1393,10 +1468,6 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
   this.parent = aParentActor;
   this._nodePool = Remotable.WrapperPool(this.conn, "node", DOMNodeActor, this);
   this.conn.addActorPool(this._nodePool);
-  this._sheetPool = Remotable.WrapperPool(this.conn, "sheet", StyleSheetActor, this);
-  this.conn.addActorPool(this._sheetPool);
-  this._rulePool = Remotable.WrapperPool(this.conn, "rule", StyleRuleActor, this);
-  this.conn.addActorPool(this._rulePool);
   this._boundOnMutations = this._onMutations.bind(this);
   this.impl.on("mutations", this._boundOnMutations);
 }
@@ -1419,10 +1490,6 @@ DOMWalkerActor.prototype = {
 
     this.conn.removeActorPool(this._nodePool);
     delete this._nodePool;
-    this.conn.removeActorPool(this._sheetPool);
-    delete this._sheetPool;
-    this.conn.removeActorPool(this._rulePool);
-    delete this._rulePool;
     this.parent.releaseActor(this);
     delete this.conn;
     delete this.parent;
@@ -1430,24 +1497,26 @@ DOMWalkerActor.prototype = {
 
   // Conversions for protocol types.
   writeNode: function DWA_writeNode(node) {
-    return node ? this._nodePool.add(node).form() : null;
+    if (!node) return node;
+    let id = this._nodePool.add(node);
+    return this._nodePool.get(id).form();
   },
   readNode: function DWA_readNode(node) {
     return node ? this._nodePool.obj(node) : null;
   },
 
   writeStyleSheet: function(sheet) {
-    return sheet ? this._sheetPool.add(sheet).form() : null;
+    return sheet ? sheet.form() : null;
   },
   readStyleSheet: function(sheet) {
-    return sheet ? this._rulePool.obj(rule) : null;
+    return this.impl.pool.obj(sheet);
   },
 
   writeStyleRule: function(rule) {
-    return rule ? this._rulePool.add(rule).form() : null;
+    return rule ? rule.form() : null;
   },
   readStyleRule: function(rule) {
-    return rule ? this._rulePool.obj(rule) : null;
+    return this.impl.pool.obj(rule);
   },
 
   writePseudoModification: function(node) {
@@ -1564,96 +1633,6 @@ DOMNodeActor.prototype = {
     return attrs;
   },
 }
-
-function StyleSheetActor(pool, actorID, ref, context)
-{
-  let self = this instanceof StyleSheetActor ?
-    this : Object.create(StyleSheetActor.prototype);
-  Remotable.initActor(StyleSheetActor.prototype, StyleRuleRef.prototype);
-  self.walker = context;
-  self.conn = pool.conn;
-  self.impl = ref;
-  self.actorID = actorID;
-  return self;
-}
-
-StyleSheetActor.prototype = {
-  form: function() {
-    let form = {
-      actor: this.actorID,
-      disabled: this.impl.disabled,
-      href: this.impl.href,
-      title: this.impl.title,
-      type: this.impl.type,
-      mediaMatches: true,
-    };
-
-    form.media = [];
-    for (let i = 0, n = this.impl.media.length; i < n; i++) {
-      form.media.push(this.impl.media.item[i]);
-    }
-    return form;
-  }
-}
-
-function StyleRuleActor(pool, actorID, ref, context)
-{
-  let self = this instanceof StyleRuleActor ?
-    this : Object.create(StyleRuleActor.prototype);
-  Remotable.initActor(StyleRuleActor.prototype, StyleRuleRef.prototype);
-  self.walker = context;
-  self.conn = pool.conn;
-  self.impl = ref;
-  self.actorID = actorID;
-  return self;
-}
-
-StyleRuleActor.prototype = {
-  form: function() {
-    let form = {
-      actor: this.actorID,
-      type: this.impl.type,
-      shortSource: this.impl.shortSource || undefined,
-      ruleLine: this.impl.ruleLine || undefined,
-    };
-
-    if (this.impl.parentRule) {
-      form.parentRule = this.walker.writeStyleRule(this.impl.parentRule);
-    }
-
-    if (this.impl.parentStyleSheet) {
-      form.parentStyleSheet = this.walker._sheetPool.add(this.impl.parentStyleSheet).actorID;
-    }
-
-    switch (this.impl.type) {
-      case Ci.nsIDOMCSSRule.STYLE_RULE:
-      case ELEMENT_STYLE:
-        form.cssText = this.impl.cssText;
-        form.properties = this.impl.cssProperties();
-        form.selectorText = this.impl.selectorText;
-        break;
-      case Ci.nsIDOMCSSRule.CHARSET_RULE:
-        form.encoding = this.impl.encoding;
-        break;
-      case Ci.nsIDOMCSSRule.IMPORT_RULE:
-        form.href = this.impl.href;
-        // fallthrough
-      case Ci.nsIDOMCSSRule.MEDIA_RULE:
-        form.media = [];
-        for (let i = 0, n = this.impl.media.length; i < n; i++) {
-          form.media.push(this.impl.media.item[i]);
-        }
-        break;
-    };
-
-    return form;
-  },
-
-  writeCssProperties: function(value) {
-    return { cssText: value.cssText, properties: value.cssProperties() };
-  }
-};
-
 
 function promisePass(r) {
   return r;

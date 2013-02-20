@@ -346,12 +346,10 @@ Remotable.initActor = function(actorProto, implProto)
   });
 }
 
-Remotable.LongString = function(str, pool, actorID)
+Remotable.LongString = function(str, pool)
 {
   this.str = str;
   this.pool = pool;
-  this.pool.add(this);
-  this.actorID = this.pool.actorID(this);
 }
 
 Remotable.LongString.INITIAL_SIZE = 1000;
@@ -479,7 +477,7 @@ Remotable.WrapperPool.prototype = {
       obj.__actorID = this.allocID(obj.actorPrefix || this.prefix || undefined);
     }
     this.map.set(obj.__actorID, obj);
-    return this.factory(this, obj.__actorID, obj, this.context);
+    return obj.__actorID;
   },
   actorID: function(obj) {
     if (!obj.__actorID) {
