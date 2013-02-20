@@ -89,7 +89,7 @@ InspectorActor.prototype =
 
   onGetWalker: function IA_getWalker(aPacket)
   {
-    let walker = new DOMWalker(this._window.document, {
+    let walker = new DOMWalker(this.conn, this._window.document, {
       watchVisited: true
     });
 

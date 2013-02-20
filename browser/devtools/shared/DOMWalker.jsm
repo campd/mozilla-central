@@ -26,7 +26,7 @@ this.EXPORTED_SYMBOLS = ["DOMWalker", "DOMWalkerActor", "createWalker"];
 
 this.createWalker = function(target, options) {
   if (target.window) {
-    return new DOMWalker(target.window.document, options);
+    return new DOMWalker(null, target.window.document, options);
   }
   if (target.client) {
     return new RemoteWalker(target, options);
@@ -108,9 +108,6 @@ domParams.NodeAttributes = function(path) {
 };
 domParams.RuleCssProperties = function(path) {
   return Remotable.Param(path, domTypes.RuleCssProperties);
-};
-domParams.WalkerString = function(path) {
-  return params.LongStringReturn(path, "writeString");
 };
 
 domParams.LongNodeListOptions = params.Options([
@@ -436,13 +433,20 @@ ClassListRef.prototype = {
 /**
  * An async DOM walker.
  */
-this.DOMWalker = function DOMWalker(document, options)
+this.DOMWalker = function DOMWalker(conn, document, options)
 {
   EventEmitter.decorate(this);
   this._doc = document;
   this._refMap = new WeakMap();
   this._declMap = new Map();
   this._sheetMap = new Map();
+
+
+  this.pool = Remotable.ActorPool(conn, "dom");
+  if (conn) {
+    this.conn = conn;
+    this.conn.addActorPool(this.pool);
+  }
 
   if (!!options.watchVisited) {
     this._observer = new document.defaultView.MutationObserver(this._mutationObserver.bind(this));
@@ -459,6 +463,11 @@ this.DOMWalker = function DOMWalker(document, options)
 
 DOMWalker.prototype = {
   destroy: function() {
+    if (this.conn) {
+      this.conn.removeActorPool(this.pool);
+    }
+    delete this.pool;
+
     if (this._observer) {
       this._observer.disconnect();
       delete this._observer;
@@ -667,17 +676,17 @@ DOMWalker.prototype = {
   },
 
   innerHTML: remotable(function(node) {
-    return promise.resolve(new Remotable.LongString(node._rawNode.innerHTML));
+    return promise.resolve(new Remotable.LongString(node._rawNode.innerHTML, this.pool));
   }, {
     params: [domParams.Node("node")],
-    ret: domParams.WalkerString("innerHTML")
+    ret: params.LongStringReturn("innerHTML")
   }),
 
   outerHTML: remotable(function(node) {
-    return promise.resolve(new Remotable.LongString(node._rawNode.outerHTML));
+    return promise.resolve(new Remotable.LongString(node._rawNode.outerHTML, this.pool));
   }, {
     params: [domParams.Node("node")],
-    ret: domParams.WalkerString("outerHTML")
+    ret: params.LongStringReturn("outerHTML")
   }),
 
   _addPseudoClassLock: function(node, pseudo) {
@@ -1367,6 +1376,11 @@ RemoteWalker.prototype = {
   },
 };
 
+// Note to self:
+// Every actor needs to know:
+// * Its parent
+// * Its lifetime (maybe the same as its parent?)
+
 /**
  * Server-side actor implementation.
  */
@@ -1375,18 +1389,14 @@ this.DOMWalkerActor = function DOMWalkerActor(aParentActor, aWalker)
   Remotable.initActor(DOMWalkerActor.prototype, DOMWalker.prototype);
 
   this.impl = aWalker;
-
   this.conn = aParentActor.conn;
   this.parent = aParentActor;
-  this._nodePool = new Remotable.WrapperPool(this.conn, "node", DOMNodeActor, this);
+  this._nodePool = Remotable.WrapperPool(this.conn, "node", DOMNodeActor, this);
   this.conn.addActorPool(this._nodePool);
-  this._sheetPool = new Remotable.WrapperPool(this.conn, "sheet", StyleSheetActor, this);
+  this._sheetPool = Remotable.WrapperPool(this.conn, "sheet", StyleSheetActor, this);
   this.conn.addActorPool(this._sheetPool);
-  this._rulePool = new Remotable.WrapperPool(this.conn, "rule", StyleRuleActor, this);
+  this._rulePool = Remotable.WrapperPool(this.conn, "rule", StyleRuleActor, this);
   this.conn.addActorPool(this._rulePool);
-  this._stringPool = new Remotable.WrapperPool(this.conn, "str", Remotable.LongStringActor, this);
-  this.conn.addActorPool(this._stringPool);
-
   this._boundOnMutations = this._onMutations.bind(this);
   this.impl.on("mutations", this._boundOnMutations);
 }
@@ -1413,8 +1423,6 @@ DOMWalkerActor.prototype = {
     delete this._sheetPool;
     this.conn.removeActorPool(this._rulePool);
     delete this._rulePool;
-    this.conn.removeActorPool(this._stringPool);
-    delete this._stringPool;
     this.parent.releaseActor(this);
     delete this.conn;
     delete this.parent;
@@ -1440,10 +1448,6 @@ DOMWalkerActor.prototype = {
   },
   readStyleRule: function(rule) {
     return rule ? this._rulePool.obj(rule) : null;
-  },
-
-  writeString: function DWA_writeString(longStr) {
-    return this._stringPool.add(longStr).form();
   },
 
   writePseudoModification: function(node) {

@@ -653,7 +653,7 @@ DebuggerServerConnection.prototype = {
     // Dispatch the request to the actor.
     if (actor.requestTypes && actor.requestTypes[aPacket.type]) {
       try {
-        ret = actor.requestTypes[aPacket.type].bind(actor)(aPacket);
+        ret = actor.requestTypes[aPacket.type].bind(actor)(aPacket, this);
       } catch(e) {
         dump(e.stack);
         Cu.reportError(e);

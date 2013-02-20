@@ -92,16 +92,9 @@ types.Dict.prototype = {
   }
 }
 
-types.LongString = function(writeMethod) {
-  let self = this instanceof types.LongString ?
-    this : Object.create(types.LongString.prototype);
-  self.writeMethod = writeMethod;
-  return self;
-}
-
-types.LongString.prototype = {
+types.LongString = {
   write: function(value, context) {
-    return context[this.writeMethod].call(context, value);
+    return value.form();
   },
   read: function(value, context) {
     return new Remotable.LongStringClient(context.client, value);
@@ -184,7 +177,7 @@ params.Options.prototype = {
 
 params.LongStringReturn = function(path, writeMethod)
 {
-  return Remotable.Param(path, types.LongString(writeMethod));
+  return Remotable.Param(path, types.LongString);
 }
 
 /**
@@ -330,18 +323,21 @@ Remotable.initActor = function(actorProto, implProto)
         throw new Error(spec.name + "_request exists but is not marked custom.\n");
       }
     } else {
-      handler = function(aPacket) {
+      handler = function(packet, conn) {
         let args = [];
         for (let param of spec.params) {
-          args.push(param.read(aPacket, this));
+          args.push(param.read(packet, this));
         }
 
-        this.impl[spec.name].apply(this.impl, args).then(function(ret) {
+        // Support wrapper actors that have an 'impl' property.
+        let impl = this.impl || this;
+
+        impl[spec.name].apply(impl, args).then(function(ret) {
           let response = {
             from: this.actorID
           };
           spec.ret.write(response, ret, this);
-          this.conn.send(response);
+          conn.send(response);
         }.bind(this)).then(null, this.writeError.bind(this));
       }
     };
@@ -350,16 +346,32 @@ Remotable.initActor = function(actorProto, implProto)
   });
 }
 
-Remotable.LongString = function(str)
+Remotable.LongString = function(str, pool, actorID)
 {
-  Remotable.initImplementation(Remotable.LongString.prototype);
   this.str = str;
+  this.pool = pool;
+  this.pool.add(this);
+  this.actorID = this.pool.actorID(this);
 }
 
 Remotable.LongString.INITIAL_SIZE = 1000;
 Remotable.LongString.READ_SIZE = 1000;
 
 Remotable.LongString.prototype = {
+  actorPrefix: "string",
+  form: function() {
+    if (this.length < Remotable.LongString.INITIAL_SIZE) {
+      return this.str;
+    }
+
+    return {
+      type: "longString",
+      actor: this.actorID,
+      initial: this.initial,
+      length: this.length,
+    }
+  },
+
   get initial() {
     return this.str.substring(0, Remotable.LongString.INITIAL_SIZE);
   },
@@ -384,11 +396,16 @@ Remotable.LongString.prototype = {
 
   release: Remotable.remotable(function() {
     delete this.str;
+    this.pool.removeActor(this);
+    return promise.resolve(undefined);
   }, {
     params: [],
-    ret: params.Void
+    ret: params.Void()
   })
 }
+
+Remotable.initImplementation(Remotable.LongString.prototype);
+Remotable.initActor(Remotable.LongString.prototype);
 
 Remotable.LongStringClient = function(client, form)
 {
@@ -415,7 +432,6 @@ Remotable.LongStringClient.prototype = {
           return;
         }
         start = end;
-        dump("length is " + this.length + "\n");
         readChunk();
       }.bind(this), function(error) {
         deferred.reject(error);
@@ -428,57 +444,39 @@ Remotable.LongStringClient.prototype = {
   },
 };
 
-Remotable.LongStringActor = function(pool, actorID, impl)
-{
-  let self = this instanceof Remotable.LongStringActor ?
-    this : Object.create(Remotable.LongStringActor.prototype);
-  Remotable.initActor(Remotable.LongStringActor.prototype,
-                      Remotable.LongString.prototype);
-  self.conn = pool.conn;
-  self.pool = pool;
-  self.actorID = actorID;
-  self.impl = impl;
-  return self;
-}
 
-Remotable.LongStringActor.prototype = {
-  form: function() {
-    if (this.impl.length < Remotable.LongString.INITIAL_SIZE) {
-      return this.impl.str;
-    }
-
-    return {
-      type: "longString",
-      actor: this.actorID,
-      initial: this.impl.initial,
-      length: this.impl.length,
-    }
-  },
-
-  release_request: Remotable.custom(function(aPacket) {
-    this.impl.release();
-    this.pool.remove(this.actorID);
-    return {from: this.actorID};
-  }),
-};
-
+var wrapperPoolActorID = 0;
 /**
  * An actor pool that dynamically creates actor objects as needed
  * based on the underlying implementation.
  */
 Remotable.WrapperPool = function(conn, prefix, factory, context)
 {
-  this.conn = conn;
-  this.prefix = prefix;
-  this.factory = factory;
-  this.context = context;
-  this.map = new Map();
+  let self = this instanceof Remotable.WrapperPool ?
+    this : Object.create(Remotable.WrapperPool.prototype);
+
+  self.conn = conn;
+  if (conn && conn.allocID) {
+    self.allocID = conn.allocID.bind(conn);
+  } else {
+    // I'm not sure what to do here.  Actor IDs shouldn't matter much
+    // in the local/no connection case, so we could just ignore actorID.
+    // But someone might be comparing actor ids, so for now we'll try
+    // to give it a unique id.
+    self.allocID = function() wrapperPoolActorID++;
+  }
+  self.prefix = prefix;
+  self.factory = factory;
+  self.context = context;
+  self.map = new Map();
+
+  return self;
 }
 
 Remotable.WrapperPool.prototype = {
   add: function(obj) {
     if (!obj.__actorID) {
-      obj.__actorID = this.conn.allocID(this.prefix || undefined);
+      obj.__actorID = this.allocID(obj.actorPrefix || this.prefix || undefined);
     }
     this.map.set(obj.__actorID, obj);
     return this.factory(this, obj.__actorID, obj, this.context);
@@ -492,6 +490,9 @@ Remotable.WrapperPool.prototype = {
   remove: function(actorID) {
     this.map.delete(actorID);
   },
+  removeActor: function(obj) {
+    this.map.delete(obj.__actorID);
+  },
   obj: function(actorID) this.map.get(actorID),
   has: function(actorID) this.map.has(actorID),
   get: function(actorID) {
@@ -500,6 +501,11 @@ Remotable.WrapperPool.prototype = {
   },
   isEmpty: function() this.map.size == 0,
   cleanup: function() {
+    delete this.allocID;
     this.map.clear();
   }
+}
+
+Remotable.ActorPool = function(conn, prefix, context) {
+  return Remotable.WrapperPool(conn, prefix, function(pool, actorID, obj) obj);
 }
