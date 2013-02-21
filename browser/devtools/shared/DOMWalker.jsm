@@ -2,23 +2,15 @@ const Cc = Components.classes;
 const Ci = Components.interfaces;
 const Cu = Components.utils;
 
+Cu.import("resource://gre/modules/devtools/Loader.jsm");
+let require = devtoolsRequire;
+
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
 var { types, params, remotable } = Remotable;
-
-let obj = {};
-Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
-let {Loader, Require, unload} = obj.Loader;
-let loader = new Loader({
-  paths: {
-    "sdk/": "resource://gre/modules/commonjs/sdk/",
-    '': 'resource:///modules/',
-  }
-});
-let require = Require(loader, {id: "markupview"});
 
 let promise = require("sdk/core/promise");
 

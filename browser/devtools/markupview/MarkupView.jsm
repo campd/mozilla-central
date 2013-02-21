@@ -16,6 +16,9 @@ const DEFAULT_MAX_NODES = 100;
 
 this.EXPORTED_SYMBOLS = ["MarkupView"];
 
+Cu.import("resource://gre/modules/devtools/Loader.jsm");
+let require = devtoolsRequire;
+
 Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
 Cu.import("resource:///modules/devtools/CssRuleView.jsm");
 Cu.import("resource:///modules/devtools/Templater.jsm");
@@ -23,16 +26,6 @@ Cu.import("resource:///modules/devtools/Undo.jsm");
 Cu.import("resource://gre/modules/Services.jsm");
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 
-let obj = {};
-Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
-let {Loader, Require, unload} = obj.Loader;
-let loader = new Loader({
-  paths: {
-    "sdk/": "resource://gre/modules/commonjs/sdk/",
-    '': 'resource:///modules/',
-  }
-});
-let require = Require(loader, {id: "domwalker"});
 let promise = require("sdk/core/promise");
 
 /**

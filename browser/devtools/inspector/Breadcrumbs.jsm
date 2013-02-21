@@ -12,20 +12,12 @@ const PSEUDO_CLASSES = [":hover", ":active", ":focus"];
 
 this.EXPORTED_SYMBOLS = ["HTMLBreadcrumbs"];
 
+Cu.import("resource://gre/modules/devtools/Loader.jsm");
+let require = devtoolsRequire;
+
 Cu.import("resource://gre/modules/XPCOMUtils.jsm");
 Cu.import("resource:///modules/devtools/DOMHelpers.jsm");
 Cu.import("resource:///modules/devtools/LayoutHelpers.jsm");
-
-let obj = {};
-Cu.import('resource://gre/modules/commonjs/toolkit/loader.js', obj);
-let {Loader, Require, unload} = obj.Loader;
-let loader = new Loader({
-  paths: {
-    'sdk/': 'resource://gre/modules/commonjs/sdk/',
-    '': 'resource:///modules/',
-  }
-});
-let require = Require(loader, {id: "breadcrumbs"});
 
 let promise = require("sdk/core/promise");
 

@@ -1,7 +1,8 @@
 const Cu = Components.utils;
 
-Cu.import("resource://gre/modules/commonjs/sdk/core/promise.js");
-const promise = Promise;
+Cu.import("resource://gre/modules/devtools/Loader.jsm");
+let require = devtoolsRequire;
+let promise = require("sdk/core/promise");
 
 this.EXPORTED_SYMBOLS = ["Remotable"];
 
