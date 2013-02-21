@@ -214,14 +214,14 @@ Remotable.manageActors = function(factory)
 {
   let impl = function(key) {
     if (!key) return key;
-    if (!this._managedActorMap) {
+    if (!("_managedActorMap" in this)) {
       this._managedActorMap = new Map();
     }
     if (this._managedActorMap.has(key)) {
       return this._managedActorMap.get(key);
     }
     let actor = factory.call(this, key);
-    this._managedActorMap.set(actor);
+    this._managedActorMap.set(key, actor);
     return actor;
   };
   impl._managedActors = constructor;
@@ -254,14 +254,14 @@ Remotable.initActor = function(actorProto)
 
   if (!actorProto.writeError) {
     actorProto.writeError = function(err) {
+      if (err.stack) {
+        dump(err.stack);
+      }
       this.conn.send({
         from: this.actorID,
         error: "unknownError",
         message: err.toString()
       });
-      if (err.stack) {
-        dump(err.stack);
-      }
     };
   }
 

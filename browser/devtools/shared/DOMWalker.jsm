@@ -1000,7 +1000,6 @@ DOMWalker.prototype = {
         return;
       }
       seen.add(sheet);
-      dump(sheet);
       sheets.push(this._sheetRef(sheet));
 
       Array.prototype.forEach.call(sheet.cssRules, function(domRule) {
@@ -1498,9 +1497,7 @@ RemoteWalker.prototype = {
       return ref;
     }
 
-    dump("form: " + JSON.stringify(form) + "\n");
     let ref = new RemoteStyleSheetRef(this, form);
-    dump("SETTING A REF FOR " + form.actor + "\n");
     this._refMap.set(form.actor, ref);
     return ref;
   },

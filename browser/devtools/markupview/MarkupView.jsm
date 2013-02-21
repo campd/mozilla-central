@@ -351,7 +351,6 @@ MarkupView.prototype = {
       this._rootNode = aNode;
     }
 
-    aNode.__expando = true;
     this._containers.set(aNode, container);
 
     container.hasChildren = aNode.hasChildren;
