@@ -209,95 +209,47 @@ Remotable.custom = function(fn)
   return fn;
 }
 
+Remotable.manageActors = function(factory)
+{
+  let impl = function(key) {
+    if (!key) return key;
+    if (!this._managedActorMap) {
+      this._managedActorMap = new Map();
+    }
+    if (this._managedActorMap.has(key)) {
+      return this._managedActorMap.get(key);
+    }
+    let actor = factory.call(this, key);
+    this._managedActorMap.set(actor);
+    return actor;
+  };
+  impl._managedActors = constructor;
+  return impl;
+};
+
 /**
- * Initialize an implementation prototype.  Call this
+ * Initialize an actor prototype.  Call this
  * method after you've added remotable methods to your prototype.
  */
-Remotable.initImplementation = function(proto)
+Remotable.initActor = function(actorProto)
 {
   let remoteSpecs = [];
-  for (let name of Object.getOwnPropertyNames(proto)) {
-    let desc = Object.getOwnPropertyDescriptor(proto, name);
-    if (!desc.value || !desc.value._remoteSpec) {
+  for (let name of Object.getOwnPropertyNames(actorProto)) {
+    let desc = Object.getOwnPropertyDescriptor(actorProto, name);
+    if (!desc.value) {
       continue;
     }
-    let spec = desc.value._remoteSpec;
-    spec.name = name;
-    if (!spec.requestType) {
-      spec.requestType = name;
-    }
-    remoteSpecs.push(spec);
-  }
 
-  proto.__remoteSpecs = remoteSpecs;
-};
-
-function promisedRequest(packet)
-{
-  let deferred = promise.defer();
-  this.client.request(packet, function(response) {
-    if (response.error) {
-      deferred.reject(response.error);
-    } else {
-      deferred.resolve(response);
-    }
-  });
-  return deferred.promise;
-}
-
-/**
- * Prepare a client object's prototype.
- * Adds 'rawRequest' and 'request' methods to the
- * prototype.
- */
-Remotable.initClient = function(clientProto, implProto)
-{
-  if (clientProto.__remoteInitialized) {
-    return;
-  }
-  clientProto.__remoteInitialized = true;
-
-  if (!clientProto.rawRequest) {
-    clientProto.rawRequest = promisedRequest;
-  }
-  if (!clientProto.request) {
-    // If the client has a requestReady() function,
-    // it should return a promise that will resolve
-    // when requests are ready to be served.
-    clientProto.request = function(packet) {
-      return this.actor().then(function(actorID) {
-        packet.to = actorID;
-        return this.rawRequest(packet);
-      }.bind(this));
-    }
-  }
-
-  let remoteSpecs = implProto.__remoteSpecs;
-  remoteSpecs.forEach(function(spec) {
-    clientProto[spec.name] = function() {
-      let request = {
-        type: spec.requestType || spec.name
-      };
-      for (let i = 0; i < arguments.length; i++) {
-        let param = spec.params[i];
-        param.write(request, arguments[i], this);
+    if (desc.value._remoteSpec) {
+      let spec = desc.value._remoteSpec;
+      spec.name = name;
+      if (!spec.requestType) {
+        spec.requestType = name;
       }
-      return this.request(request).then(function(response) {
-        return spec.ret.read(response, this);
-      }.bind(this));
+      remoteSpecs.push(spec);
     }
-  });
-};
-
-Remotable.initActor = function(actorProto, implProto)
-{
-  if (actorProto.__remoteInitialized) {
-    return;
   }
-  actorProto.__remoteInitialized = true;
-  if (!actorProto.requestTypes) {
-    actorProto.requestTypes = {};
-  }
+  actorProto.__remoteSpecs = remoteSpecs;
 
   if (!actorProto.writeError) {
     actorProto.writeError = function(err) {
@@ -312,9 +264,10 @@ Remotable.initActor = function(actorProto, implProto)
     };
   }
 
-  implProto = implProto || actorProto;
+  if (!actorProto.requestTypes) {
+    actorProto.requestTypes = {};
+  }
 
-  let remoteSpecs = implProto.__remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     let handler = null;
     let custom = spec.name + "_request";
@@ -345,7 +298,65 @@ Remotable.initActor = function(actorProto, implProto)
 
     actorProto.requestTypes[spec.requestType || spec.name] = handler;
   });
+};
+
+function promisedRequest(packet)
+{
+  let deferred = promise.defer();
+  this.client.request(packet, function(response) {
+    if (response.error) {
+      deferred.reject(response.error);
+    } else {
+      deferred.resolve(response);
+    }
+  });
+  return deferred.promise;
 }
+
+/**
+ * Prepare a client object's prototype.
+ * Adds 'rawRequest' and 'request' methods to the
+ * prototype.
+ */
+Remotable.initClient = function(clientProto, actorProto)
+{
+  Remotable.initActor(actorProto);
+  if (clientProto.__remoteInitialized) {
+    return;
+  }
+  clientProto.__remoteInitialized = true;
+
+  if (!clientProto.rawRequest) {
+    clientProto.rawRequest = promisedRequest;
+  }
+  if (!clientProto.request) {
+    // If the client has a requestReady() function,
+    // it should return a promise that will resolve
+    // when requests are ready to be served.
+    clientProto.request = function(packet) {
+      return this.actor().then(function(actorID) {
+        packet.to = actorID;
+        return this.rawRequest(packet);
+      }.bind(this));
+    }
+  }
+
+  let remoteSpecs = actorProto.__remoteSpecs;
+  remoteSpecs.forEach(function(spec) {
+    clientProto[spec.name] = function() {
+      let request = {
+        type: spec.requestType || spec.name
+      };
+      for (let i = 0; i < arguments.length; i++) {
+        let param = spec.params[i];
+        param.write(request, arguments[i], this);
+      }
+      return this.request(request).then(function(response) {
+        return spec.ret.read(response, this);
+      }.bind(this));
+    }
+  });
+};
 
 Remotable.LongString = function(str, pool)
 {
@@ -403,7 +414,6 @@ Remotable.LongString.prototype = {
   })
 }
 
-Remotable.initImplementation(Remotable.LongString.prototype);
 Remotable.initActor(Remotable.LongString.prototype);
 
 Remotable.LongStringClient = function(client, form)

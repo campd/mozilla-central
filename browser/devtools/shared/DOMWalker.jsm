@@ -287,7 +287,6 @@ DOMRef.prototype = {
   },
 };
 
-Remotable.initImplementation(DOMRef.prototype);
 Remotable.initActor(DOMRef.prototype);
 
 function AttributeModificationList(node) {
@@ -363,7 +362,6 @@ StyleSheetRef.prototype = {
   }
 };
 
-Remotable.initImplementation(StyleSheetRef.prototype);
 Remotable.initActor(StyleSheetRef.prototype);
 
 function StyleRuleRef(owner, item) {
@@ -526,7 +524,6 @@ StyleRuleRef.prototype = {
   get media() this.rawRule.media,
 };
 
-Remotable.initImplementation(StyleRuleRef.prototype)
 Remotable.initActor(StyleRuleRef.prototype)
 
 function StyleModificationList(rule) {
@@ -635,6 +632,26 @@ DOMWalker.prototype = {
   destroy: function() {
     this.disconnect();
   },
+
+  _ref: Remotable.manageActors(function(node) {
+    let ref = new DOMRef(this, node);
+    if (this._observer) {
+      this._observer.observe(node, {
+        attributes: true,
+        childList: true,
+        characterData: true
+      })
+    }
+    return ref;
+  }),
+
+  _declRef: Remotable.manageActors(function(rule) {
+    return new StyleRuleRef(this, rule);
+  }),
+
+  _sheetRef: Remotable.manageActors(function(sheet) {
+    return new StyleSheetRef(this, sheet);
+  }),
 
   // Conversions for protocol types.
   writeNode: function DWA_writeNode(node) {
@@ -991,6 +1008,7 @@ DOMWalker.prototype = {
         return;
       }
       seen.add(sheet);
+      dump(sheet);
       sheets.push(this._sheetRef(sheet));
 
       Array.prototype.forEach.call(sheet.cssRules, function(domRule) {
@@ -1105,50 +1123,6 @@ DOMWalker.prototype = {
     return nodeRef;
   },
 
-  _ref: function(node) {
-    if (!node) return node;
-    if (this._refMap.has(node)) {
-      return this._refMap.get(node);
-    }
-    let ref = new DOMRef(this, node);
-
-    if (this._observer) {
-      this._observer.observe(node, {
-        attributes: true,
-        childList: true,
-        characterData: true,
-      });
-    }
-
-    // FIXME: set an expando to prevent the the wrapper from disappearing
-    node.__preserveHack = true;
-
-    this._refMap.set(node, ref);
-    return ref;
-  },
-
-  _sheetRef: function(sheet) {
-    if (!sheet) return sheet;
-    if (this._sheetMap.has(sheet)) {
-      return this._sheetMap.get(sheet);
-    }
-
-    let ref = new StyleSheetRef(this, sheet);
-    this._sheetMap.set(sheet, ref);
-    return ref;
-  },
-
-  _declRef: function(item) {
-    if (!item) return item;
-    if (this._declMap.has(item)) {
-      return this._declMap.get(item);
-    }
-
-    let ref = new StyleRuleRef(this, item);
-    this._declMap.set(item, ref);
-    return ref;
-  },
-
   _mutationObserver: function(mutations)
   {
     let refMutations = [];
@@ -1206,7 +1180,6 @@ DOMWalker.prototype = {
     });
   },
 
-
   sendError: function(error) {
     this.conn.send({
       from: this.actorID,
@@ -1216,7 +1189,6 @@ DOMWalker.prototype = {
   },
 };
 
-Remotable.initImplementation(DOMWalker.prototype);
 Remotable.initActor(DOMWalker.prototype);
 
 function RemoteRef(walker, form)
