@@ -10,7 +10,7 @@ Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
-var { types, params, remotable, Actor, OwnerActor, Front } = Remotable;
+var { types, params, remotable, Actor, OwnerActor, Front, Param } = Remotable;
 
 let promise = require("sdk/core/promise");
 let { Class } = require("sdk/core/heritage");
@@ -37,8 +37,11 @@ var domTypes = {};
 // Set up some actor types.  The constructor names correspond to
 // managed actor/front tags.
 domTypes.Node = types.Actor("node");
-domTypes.NodeAttributes = types.Actor("node", "attributes")
+domTypes.NodeAttributes = types.Actor("node", "attributes");
+domTypes.NodePseudoModification = types.Actor("node", "pseudo");
+
 domTypes.Nodes = types.Array(domTypes.Node);
+domTypes.NodePseudoModifications = types.Array(domTypes.NodePseudoModification);
 
 domTypes.StyleSheet = types.Actor("sheet");
 domTypes.StyleSheets = types.Array(domTypes.StyleSheet);
@@ -58,46 +61,22 @@ domTypes.NodeStyle = types.Dict({
   computed: domTypes.StyleRule,
   entries: domTypes.NodeStyleEntries
 });
-domTypes.PseudoModification = types.Context(
-  "writePseudoModification",
-  "readPseudoModification"
-);
-domTypes.PseudoModifications = types.Array(domTypes.PseudoModification);
 
 domTypes.RuleCssProperties = types.Actor("rule", "properties");
 
 var domParams = {};
-domParams.Node = function(path) {
-  return Remotable.Param(path, domTypes.Node);
-};
-domParams.Nodes = function(path) {
-  return Remotable.Param(path, domTypes.Nodes);
-};
 
-domParams.StyleSheet = function(path) {
-  return Remotable.Param(path, domTypes.StyleSheet);
-};
+domParams.Node = function(path) Param(path, domTypes.Node);
+domParams.Nodes = function(path) Param(path, domTypes.Nodes);
+domParams.NodeAttributes = function(path) Param(path, domTypes.NodeAttributes);
+domParams.NodePseudoModifications = function(path) Param(path, domTypes.NodePseudoModifications);
 
-domParams.StyleSheets = function(path) {
-  return Remotable.Param(path, domTypes.StyleSheets);
-};
+domParams.StyleSheet = function(path) Param(path, domTypes.StyleSheet);
+domParams.StyleSheets = function(path) Param(path, domTypes.StyleSheets);
+domParams.StyleRule = function(path) Param(path, domTypes.StyleRule);
+domParams.NodeStyle = function(path) Param(path, domTypes.NodeStyle);
 
-domParams.StyleRule = function(path) {
-  return Remotable.Param(path, domTypes.StyleRule);
-}
-domParams.NodeStyle = function(path) {
-  return Remotable.Param(path, domTypes.NodeStyle);
-};
-
-domParams.PseudoModifications = function(path) {
-  return Remotable.Param(path, domTypes.PseudoModifications);
-};
-domParams.NodeAttributes = function(path) {
-  return Remotable.Param(path, domTypes.NodeAttributes);
-};
-domParams.RuleCssProperties = function(path) {
-  return Remotable.Param(path, domTypes.RuleCssProperties);
-};
+domParams.RuleCssProperties = function(path) Param(path, domTypes.RuleCssProperties);
 
 domParams.LongNodeListOptions = params.Options([
   params.Simple("maxNodes"),
@@ -134,11 +113,13 @@ let DOMRef = Class(Remotable.initActor({
       actor: this.actorID
     };
 
-    if (this.attributes) {
-      form.attrs = this.writeAttrs();
-    }
-
     if (hint === "attributes") {
+      if (this.attributes) {
+        form.attrs = this.writeAttrs();
+      }
+      return form;
+    } else if (hint === "pseudo") {
+      form.pseudoClassLocks = this.pseudoClassLocks;
       return form;
     }
 
@@ -150,6 +131,10 @@ let DOMRef = Class(Remotable.initActor({
       "nodeType", "namespaceURI", "tagName", "nodeName", "nodeValue",
       "name", "publicId", "systemId", "pseudoClassLocks"]) {
       form[attr] = this[attr];
+    }
+
+    if (this.attributes) {
+      form.attrs = this.writeAttrs();
     }
 
     for (let attr of [
@@ -628,14 +613,6 @@ this.DOMWalker = Class(Remotable.initActor({
   _sheetRef: Remotable.manageActors("sheet", StyleSheetRef),
   _declRef: Remotable.manageActors("rule", StyleRuleRef),
 
-  // Conversions for protocol types.
-  writePseudoModification: function(node) {
-    return {
-      actor: node.actorID,
-      pseudoClassLocks: node.pseudoClassLocks
-    }
-  },
-
   /**
    * Return the document node that contains the given node,
    * or the root node if no node is specified.
@@ -875,7 +852,7 @@ this.DOMWalker = Class(Remotable.initActor({
         params.Simple("parents")
       ])
     ],
-    ret: domParams.PseudoModifications("modified")
+    ret: domParams.NodePseudoModifications("modified")
   }),
 
   _removePseudoClassLock: function(node, pseudo) {
@@ -915,7 +892,7 @@ this.DOMWalker = Class(Remotable.initActor({
         params.Simple("parents")
       ])
     ],
-    ret: domParams.PseudoModifications("modified")
+    ret: domParams.NodePseudoModifications("modified")
   }),
 
   clearPseudoClassLocks: remotable(function(node, options={}) {
@@ -943,7 +920,7 @@ this.DOMWalker = Class(Remotable.initActor({
         params.Simple("all")
       ])
     ],
-    ret: domParams.PseudoModifications("modified")
+    ret: domParams.NodePseudoModifications("modified")
   }),
 
   removeNode: remotable(function(node) {
@@ -1370,7 +1347,6 @@ let DOMWalkerFront = Class(Remotable.initFront({
     Front.prototype.initialize.call(this);
     EventEmitter.decorate(this);
 
-    this._refMap = new Map();
     this._boundOnMutations = this._onMutations.bind(this);
     this.client.addListener("mutations", this._boundOnMutations);
 
@@ -1400,14 +1376,6 @@ let DOMWalkerFront = Class(Remotable.initFront({
   getNode: Remotable.manageFronts("node", DOMFront),
   getSheet: Remotable.manageFronts("sheet", StyleSheetFront),
   getRule: Remotable.manageFronts("rule", StyleRuleFront),
-
-  readPseudoModification: function(modified) {
-    let ref = this._refMap.get(modified.actor);
-    if (ref) {
-      ref._updateLocks(modified);
-    }
-    return ref;
-  },
 
   _onMutations: function(aType, aPacket) {
     if (aPacket.from != this._actor) {
