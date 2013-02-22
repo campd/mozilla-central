@@ -10,9 +10,10 @@ Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
-var { types, params, remotable } = Remotable;
+var { types, params, remotable, Actor, OwnerActor } = Remotable;
 
 let promise = require("sdk/core/promise");
+let { Class } = require("sdk/core/heritage");
 
 this.EXPORTED_SYMBOLS = ["DOMWalker", "DOMWalkerActor", "createWalker"];
 
@@ -118,18 +119,21 @@ domParams.TraversalOptions = params.Options([
   params.Simple("whatToShow")
 ]);
 
-function DOMRef(owner, node) {
-  this.actorID = owner.pool.add(this);
-  this._rawNode = node;
-}
+let DOMRef = Class(Remotable.initActor({
+  extends: Actor,
 
-DOMRef.prototype = {
-  actorPref: "node",
+  initialize: function(owner, node) {
+    Actor.prototype.initialize.call(this, owner);
+    this._rawNode = node;
+  },
+
+  actorPrefix: "node",
+
   toString: function() {
     return "[DOMRef for " + this._rawNode.toString() + "]";
   },
 
-  form: function DNA_form() {
+  form: function() {
     let form = {
       actor: this.actorID
     };
@@ -277,9 +281,7 @@ DOMRef.prototype = {
   get pseudoClassLocks() {
     return this._pseudoClasses ? Object.getOwnPropertyNames(this._pseudoClasses) : null;
   },
-};
-
-Remotable.initActor(DOMRef.prototype);
+}));
 
 function AttributeModificationList(node) {
   this.node = node;
@@ -307,14 +309,13 @@ AttributeModificationList.prototype = {
   }
 };
 
-function StyleSheetRef(owner, sheet, parent) {
-  this.actorID = owner.pool.add(this);
-  this.owner = owner;
-  this.rawSheet = sheet;
-  this.parentStyleSheet = parent;
-}
+let StyleSheetRef = Class(Remotable.initActor({
+  extends: Actor,
+  initialize: function(owner, sheet) {
+    Actor.prototype.initialize.call(this, owner);
+    this.rawSheet = sheet;
+  },
 
-StyleSheetRef.prototype = {
   actorPrefix: "sheet",
   toString: function() "[StyleSheetRef for " + this.rawSheet.toString() + "]",
 
@@ -352,35 +353,35 @@ StyleSheetRef.prototype = {
     return !mediaText || this._doc.defaultView.
                          matchMedia(mediaText).matches;
   }
-};
+}));
 
-Remotable.initActor(StyleSheetRef.prototype);
+let StyleRuleRef = Class(Remotable.initActor({
+  extends: Actor,
+  initialize: function(owner, item) {
+    Actor.prototype.initialize.call(this, owner);
+    this.owner = owner;
+    this.actorID = owner.pool.add(this);
+    if (item instanceof Ci.nsIDOMCSSRule) {
+      this.type = item.type;
+      this.rawRule = item;
 
-function StyleRuleRef(owner, item) {
-  this.owner = owner;
-  this.actorID = owner.pool.add(this);
-  if (item instanceof Ci.nsIDOMCSSRule) {
-    this.type = item.type;
-    this.rawRule = item;
-
-    this.shortSource = CssLogic.shortSource(this.rawRule.parentStyleSheet);
-    if (this.rawRule instanceof Ci.nsIDOMCSSStyleRule && this.rawRule.parentStyleSheet) {
-      this.ruleLine = DOMUtils.getRuleLine(this.rawRule);
+      this.shortSource = CssLogic.shortSource(this.rawRule.parentStyleSheet);
+      if (this.rawRule instanceof Ci.nsIDOMCSSStyleRule && this.rawRule.parentStyleSheet) {
+        this.ruleLine = DOMUtils.getRuleLine(this.rawRule);
+      }
+    } else {
+      // Element style not attached to a rule.
+      this.type = ELEMENT_STYLE;
+      this.shortSource = CssLogic.shortSource(null);
+      // XXX: this isn't quite right for computed styles...
+      this.rawRule = {
+        selectorText: "element style",
+        style: item,
+        toString: function() "[element rule " + this.style + "]"
+      };
     }
-  } else {
-    // Element style not attached to a rule.
-    this.type = ELEMENT_STYLE;
-    this.shortSource = CssLogic.shortSource(null);
-    // XXX: this isn't quite right for computed styles...
-    this.rawRule = {
-      selectorText: "element style",
-      style: item,
-      toString: function() "[element rule " + this.style + "]"
-    };
-  }
-}
+  },
 
-StyleRuleRef.prototype = {
   actorPrefix: "rule",
   toString: function() "[StyleRuleRef for " + this.rawRule.toString() + "]",
 
@@ -514,9 +515,7 @@ StyleRuleRef.prototype = {
 
   // CSSImportRule and CSSMediaRule
   get media() this.rawRule.media,
-};
-
-Remotable.initActor(StyleRuleRef.prototype)
+}));
 
 function StyleModificationList(rule) {
   this.rule = rule;
@@ -553,39 +552,33 @@ ClassListRef.prototype = {
 /**
  * An async DOM walker.
  */
-this.DOMWalker = function DOMWalker(owner, document, options)
-{
-  EventEmitter.decorate(this);
-  this._doc = document;
-  this._refMap = new WeakMap();
-  this._declMap = new Map();
-  this._sheetMap = new Map();
+this.DOMWalker = Class(Remotable.initActor({
+  extends: OwnerActor,
+  initialize: function(owner, document, options) {
+    dump("Calling initialize with " + owner + "\n");
+    OwnerActor.prototype.initialize.call(this, owner);
+    EventEmitter.decorate(this);
 
+    this._doc = document;
+    this._refMap = new WeakMap();
+    this._declMap = new Map();
+    this._sheetMap = new Map();
 
-  let conn = owner ? owner.conn : null;
-  this.pool = Remotable.ActorPool(conn, "dom");
-  if (owner) {
-    this.owner = owner;
-    this.conn = owner.conn;
-    this.conn.addActorPool(this.pool);
-  }
+    if (!!options.watchVisited) {
+      this._observer = new document.defaultView.MutationObserver(this._mutationObserver.bind(this));
+      this._contentLoadedListener = function DW_contentLoaded(aEvent) {
+        // Fake a childList mutation here.
+        this._mutationObserver([{target: aEvent.target, type: "childList"}]);
+      }.bind(this);
+      document.addEventListener("load", this._contentLoadedListener, true);
+    }
 
-  if (!!options.watchVisited) {
-    this._observer = new document.defaultView.MutationObserver(this._mutationObserver.bind(this));
-    this._contentLoadedListener = function DW_contentLoaded(aEvent) {
-      // Fake a childList mutation here.
-      this._mutationObserver([{target: aEvent.target, type: "childList"}]);
-    }.bind(this);
-    document.addEventListener("load", this._contentLoadedListener, true);
-  }
+    // pseudo-class lock implementation details.
+    this._pclList = [];
+  },
 
-  // pseudo-class lock implementation details.
-  this._pclList = [];
-}
-
-DOMWalker.prototype = {
   actorPrefix: "dom",
-  grip: function DWA_grip() {
+  form: function() {
     return { actor: this.actorID };
   },
 
@@ -863,14 +856,14 @@ DOMWalker.prototype = {
   },
 
   innerHTML: remotable(function(node) {
-    return promise.resolve(new Remotable.LongString(node._rawNode.innerHTML, this.pool));
+    return promise.resolve(new Remotable.LongString(this, node._rawNode.innerHTML));
   }, {
     params: [domParams.Node("node")],
     ret: params.LongStringReturn("innerHTML")
   }),
 
   outerHTML: remotable(function(node) {
-    return promise.resolve(new Remotable.LongString(node._rawNode.outerHTML, this.pool));
+    return promise.resolve(new Remotable.LongString(this, node._rawNode.outerHTML));
   }, {
     params: [domParams.Node("node")],
     ret: params.LongStringReturn("outerHTML")
@@ -1169,18 +1162,9 @@ DOMWalker.prototype = {
       type: "mutations",
       mutations: toSend
     });
-  },
+  }
+}));
 
-  sendError: function(error) {
-    this.conn.send({
-      from: this.actorID,
-      error: "inspectorError",
-      message: "DOM walker error:" + error.toString()
-    })
-  },
-};
-
-Remotable.initActor(DOMWalker.prototype);
 
 function RemoteRef(walker, form)
 {

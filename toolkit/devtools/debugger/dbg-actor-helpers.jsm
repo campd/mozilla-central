@@ -2,7 +2,10 @@ const Cu = Components.utils;
 
 Cu.import("resource://gre/modules/devtools/Loader.jsm");
 let require = devtoolsRequire;
+
 let promise = require("sdk/core/promise");
+let { Class } = require('sdk/core/heritage');
+
 
 this.EXPORTED_SYMBOLS = ["Remotable"];
 
@@ -182,6 +185,87 @@ params.LongStringReturn = function(path, writeMethod)
   return Remotable.Param(path, types.LongString);
 }
 
+Remotable.Actor = Class({
+  /**
+   * Initialize the actor.
+   * @param Actor owner
+   *   The parent/owner actor.
+   */
+  initialize: function(owner) {
+    this.owner = owner;
+    this.actorID = owner.pool.addActor(this);
+  },
+
+  destroy: function() {
+    delete this.owner;
+    delete this.actorID;
+  },
+
+  get conn() this.owner ? this.owner.conn : null,
+
+  /**
+   * Override this prefix in subclasses to customize actor strings.
+   */
+  actorPrefix: "actor",
+
+  /**
+   * Override this method in subclasses to serialize the actor.
+   * @param string
+   *    Optional string to customize the form.
+   * @returns A jsonable object.
+   */
+  form: function(hint) {
+    return { actor: this.actorID };
+  },
+
+  writeError: function(err) {
+    if (err.stack) {
+      dump(err.stack);
+    }
+    this.conn.send({
+      from: this.actorID,
+      error: "unknownError",
+      message: err.toString()
+    });
+  }
+});
+
+/**
+ * Base class for actors that manage the lifetime of other actors.
+ */
+Remotable.OwnerActor = Class({
+  extends: Remotable.Actor,
+  /**
+   * Initialize the actor.
+   * @param Actor owner
+   *   The parent/owner actor.
+   */
+  initialize: function(owner) {
+    let conn = owner ? owner.conn : null;
+
+    this.pool = Remotable.ActorPool(conn, "obj");
+    if (conn) {
+      conn.addActorPool(this.pool);
+    }
+
+    // If no owner was passed in, fake one for now.
+    if (!owner) {
+      owner = { conn: null, pool: this.pool };
+    }
+
+    Remotable.Actor.prototype.initialize.call(this, owner);
+  },
+
+  destroy: function() {
+    Remotable.Actor.prototype.destroy.call(this);
+    if (this.conn) {
+      this.conn.removeActorPool(this.pool);
+    }
+
+    delete this.pool;
+  }
+});
+
 /**
  * The remotable function tags a method has a remote implementation.
  * @param function fn
@@ -234,7 +318,9 @@ Remotable.manageActors = function(factory)
  */
 Remotable.initActor = function(actorProto)
 {
-  let remoteSpecs = [];
+  actorProto.requestTypes = {};
+  actorProto.__remoteSpecs = [];
+
   for (let name of Object.getOwnPropertyNames(actorProto)) {
     let desc = Object.getOwnPropertyDescriptor(actorProto, name);
     if (!desc.value) {
@@ -247,29 +333,11 @@ Remotable.initActor = function(actorProto)
       if (!spec.requestType) {
         spec.requestType = name;
       }
-      remoteSpecs.push(spec);
+      actorProto.__remoteSpecs.push(spec);
     }
   }
-  actorProto.__remoteSpecs = remoteSpecs;
 
-  if (!actorProto.writeError) {
-    actorProto.writeError = function(err) {
-      if (err.stack) {
-        dump(err.stack);
-      }
-      this.conn.send({
-        from: this.actorID,
-        error: "unknownError",
-        message: err.toString()
-      });
-    };
-  }
-
-  if (!actorProto.requestTypes) {
-    actorProto.requestTypes = {};
-  }
-
-  remoteSpecs.forEach(function(spec) {
+  actorProto.__remoteSpecs.forEach(function(spec) {
     let handler = null;
     let custom = spec.name + "_request";
     if (custom in actorProto) {
@@ -284,10 +352,7 @@ Remotable.initActor = function(actorProto)
           args.push(param.read(packet, this));
         }
 
-        // Support wrapper actors that have an 'impl' property.
-        let impl = this.impl || this;
-
-        impl[spec.name].apply(impl, args).then(function(ret) {
+        this[spec.name].apply(impl, args).then(function(ret) {
           let response = {
             from: this.actorID
           };
@@ -299,6 +364,7 @@ Remotable.initActor = function(actorProto)
 
     actorProto.requestTypes[spec.requestType || spec.name] = handler;
   });
+  return actorProto;
 };
 
 function promisedRequest(packet)
@@ -321,7 +387,6 @@ function promisedRequest(packet)
  */
 Remotable.initClient = function(clientProto, actorProto)
 {
-  Remotable.initActor(actorProto);
   if (clientProto.__remoteInitialized) {
     return;
   }
@@ -359,17 +424,16 @@ Remotable.initClient = function(clientProto, actorProto)
   });
 };
 
-Remotable.LongString = function(str, pool)
-{
-  this.str = str;
-  this.pool = pool;
-}
+Remotable.LongString = Class(Remotable.initActor({
+  extends: Remotable.Actor,
 
-Remotable.LongString.INITIAL_SIZE = 1000;
-Remotable.LongString.READ_SIZE = 1000;
+  initialize: function(owner, str) {
+    Remotable.Actor.prototype.initialize.call(this, owner);
+    this.str = str;
+  },
 
-Remotable.LongString.prototype = {
   actorPrefix: "string",
+
   form: function() {
     if (this.length < Remotable.LongString.INITIAL_SIZE) {
       return this.str;
@@ -407,13 +471,16 @@ Remotable.LongString.prototype = {
 
   release: Remotable.remotable(function() {
     delete this.str;
-    this.pool.removeActor(this);
+    this.owner.releaseActor(this);
     return promise.resolve(undefined);
   }, {
     params: [],
     ret: params.Void()
   })
-}
+}));
+
+Remotable.LongString.INITIAL_SIZE = 1000;
+Remotable.LongString.READ_SIZE = 1000;
 
 Remotable.initActor(Remotable.LongString.prototype);
 
@@ -454,7 +521,6 @@ Remotable.LongStringClient.prototype = {
   },
 };
 
-
 var wrapperPoolActorID = 0;
 /**
  * An actor pool that dynamically creates actor objects as needed
@@ -484,6 +550,9 @@ Remotable.WrapperPool = function(conn, prefix, factory, context)
 }
 
 Remotable.WrapperPool.prototype = {
+  // Quick compat layer with ActorPool until I can move those to the same
+  // place/implementation.
+  addActor: function(obj) this.add(obj),
   add: function(obj) {
     if (!obj.__actorID) {
       obj.__actorID = this.allocID(obj.actorPrefix || this.prefix || undefined);

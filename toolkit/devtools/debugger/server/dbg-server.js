@@ -463,6 +463,7 @@ ActorPool.prototype = {
     if (aActor.disconnect) {
       this._cleanups[aActor.actorID] = aActor;
     }
+    return aActor.actorID;
   },
 
   get: function AP_get(aActorID) {

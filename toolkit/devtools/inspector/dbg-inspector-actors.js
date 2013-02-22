@@ -33,19 +33,22 @@ function InspectorActor(aConnection, aParentActor)
     // XXX: deal with this.
   }
 
-  this._actorPool = new ActorPool(this.conn);
-  this.conn.addActorPool(this._actorPool);
+  this.pool = new ActorPool(this.conn);
+  this.conn.addActorPool(this.pool);
 }
 
 InspectorActor.prototype =
 {
+  toString: function() {
+    return "[Inspector Actor " + this.actorID + "]";
+  },
   /**
    * Actor pool for all of the actors we send to the client.
    * @private
    * @type object
    * @see ActorPool
    */
-  _actorPool: null,
+  pool: null,
 
   /**
    * The debugger server connection instance.
@@ -73,15 +76,15 @@ InspectorActor.prototype =
    */
   disconnect: function IA_disconnect()
   {
-    this.conn.removeActorPool(this.actorPool);
-    this._actorPool = null;
+    this.conn.removeActorPool(this.pool);
+    this.pool = null;
     this.conn = this._window = null;
   },
 
   releaseActor: function IA_releaseActor(aActor)
   {
-    if (this._actorPool) {
-      this._actorPool.removeActor(aActor.actorID);
+    if (this.pool) {
+      this.pool.removeActor(aActor.actorID);
     }
   },
 
@@ -90,8 +93,7 @@ InspectorActor.prototype =
     let walker = new DOMWalker(this, this._window.document, {
       watchVisited: true
     });
-    this._actorPool.addActor(walker);
-    return walker.grip();
+    return walker.form();
   },
 };
 
