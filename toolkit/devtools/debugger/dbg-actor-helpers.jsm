@@ -102,7 +102,7 @@ types.LongString = {
     return value.form();
   },
   read: function(value, context) {
-    return new Remotable.LongStringClient(context, value);
+    return new Remotable.LongStringFront(context, value);
   }
 };
 
@@ -282,7 +282,7 @@ Remotable.remotable = function(fn, spec)
 };
 
 /**
- * For actors and clients, implements a custom handler for the
+ * For actors, implements a custom handler for the
  * remotable method.  The generated implementation will not be
  * created.
  *
@@ -420,20 +420,18 @@ Remotable.Front = Class({
 })
 
 /**
- * Prepare a client object's prototype.
+ * Prepare a front object's prototype.
  * Adds 'rawRequest' and 'request' methods to the
  * prototype.
  */
-Remotable.initFront = function(clientProto, actorProto)
+Remotable.initFront = function(frontProto)
 {
-  if (!actorProto) {
-    let actorType = clientProto.actorType;
-    actorProto = typeof(actorType) === 'function' ? actorType.prototype : actorType;
-  }
+  let actorType = frontProto.actorType;
+  actorProto = typeof(actorType) === 'function' ? actorType.prototype : actorType;
 
   let remoteSpecs = actorProto.remoteSpecs;
   remoteSpecs.forEach(function(spec) {
-    clientProto[spec.name] = function() {
+    frontProto[spec.name] = function() {
       let request = {
         type: spec.requestType || spec.name
       };
@@ -446,7 +444,7 @@ Remotable.initFront = function(clientProto, actorProto)
       }.bind(this));
     }
   });
-  return clientProto;
+  return frontProto;
 };
 
 Remotable.LONG_STRING_INITIAL_SIZE = 1000;
@@ -507,7 +505,7 @@ Remotable.LongString = Class(Remotable.initActor({
   })
 }));
 
-Remotable.LongStringClient = Class(Remotable.initFront({
+Remotable.LongStringFront = Class(Remotable.initFront({
   extends: Remotable.Front,
   actorType: Remotable.LongString,
 

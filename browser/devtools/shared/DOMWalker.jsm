@@ -15,14 +15,14 @@ var { types, params, remotable, Actor, OwnerActor, Front } = Remotable;
 let promise = require("sdk/core/promise");
 let { Class } = require("sdk/core/heritage");
 
-this.EXPORTED_SYMBOLS = ["DOMWalker", "DOMWalkerActor", "createWalker"];
+this.EXPORTED_SYMBOLS = ["DOMWalker", "createWalker"];
 
 this.createWalker = function(target, options) {
   if (target.window) {
     return new DOMWalker(null, target.window.document, options);
   }
   if (target.client) {
-    return new RemoteWalker(target, options);
+    return new DOMWalkerFront(target, options);
   }
 };
 
@@ -1159,7 +1159,7 @@ this.DOMWalker = Class(Remotable.initActor({
   }
 }));
 
-let RemoteRef = Class(Remotable.initFront({
+let DOMFront = Class(Remotable.initFront({
   extends: Front,
   actorType: DOMRef,
 
@@ -1280,7 +1280,7 @@ let RemoteRef = Class(Remotable.initFront({
   }
 }));
 
-let RemoteStyleSheetRef = Class(Remotable.initFront({
+let StyleSheetFront = Class(Remotable.initFront({
   extends: Front,
   actorType: StyleSheetRef,
   initialize: function(owner, form) {
@@ -1311,7 +1311,7 @@ let RemoteStyleSheetRef = Class(Remotable.initFront({
 }));
 
 
-let RemoteStyleRuleRef = Class(Remotable.initFront({
+let StyleRuleFront = Class(Remotable.initFront({
   extends: Front,
   actorType: StyleRuleRef,
 
@@ -1393,7 +1393,7 @@ let RemoteStyleRuleRef = Class(Remotable.initFront({
 
 }));
 
-let RemoteWalker = Class(Remotable.initFront({
+let DOMWalkerFront = Class(Remotable.initFront({
   extends: Front,
   actorType: DOMWalker,
 
@@ -1442,7 +1442,7 @@ let RemoteWalker = Class(Remotable.initFront({
       return ref;
     }
 
-    let ref = new RemoteRef(this, form);
+    let ref = new DOMFront(this, form);
     this._refMap.set(form.actor, ref);
     return ref;
   },
@@ -1459,7 +1459,7 @@ let RemoteWalker = Class(Remotable.initFront({
       return ref;
     }
 
-    let ref = new RemoteStyleSheetRef(this, form);
+    let ref = new StyleSheetFront(this, form);
     this._refMap.set(form.actor, ref);
     return ref;
   },
@@ -1476,7 +1476,7 @@ let RemoteWalker = Class(Remotable.initFront({
       return ref;
     }
 
-    let ref = new RemoteStyleRuleRef(this, form);
+    let ref = new StyleRuleFront(this, form);
     this._refMap.set(form.actor, ref);
     return ref;
   },
