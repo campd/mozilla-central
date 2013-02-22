@@ -10,7 +10,7 @@ Cu.import("resource:///modules/devtools/EventEmitter.jsm");
 Cu.import("resource://gre/modules/devtools/dbg-actor-helpers.jsm");
 Cu.import("resource:///modules/devtools/CssLogic.jsm");
 
-var { types, params, remotable, Actor, OwnerActor } = Remotable;
+var { types, params, remotable, Actor, OwnerActor, Front } = Remotable;
 
 let promise = require("sdk/core/promise");
 let { Class } = require("sdk/core/heritage");
@@ -182,11 +182,6 @@ let DOMRef = Class(Remotable.initActor({
    * use this node, you won't be remote-protocol safe.
    */
   get rawNode() this._rawNode,
-
-  /**
-   * XXX: don't use this.
-   */
-  get parentKey() documentWalker(this._rawNode).parentNode(),
 
   get id() this._rawNode.id,
   get className() this._rawNode.className,
@@ -555,7 +550,6 @@ ClassListRef.prototype = {
 this.DOMWalker = Class(Remotable.initActor({
   extends: OwnerActor,
   initialize: function(owner, document, options) {
-    dump("Calling initialize with " + owner + "\n");
     OwnerActor.prototype.initialize.call(this, owner);
     EventEmitter.decorate(this);
 
@@ -1165,21 +1159,13 @@ this.DOMWalker = Class(Remotable.initActor({
   }
 }));
 
+let RemoteRef = Class(Remotable.initFront({
+  extends: Front,
+  actorType: DOMRef,
 
-function RemoteRef(walker, form)
-{
-  Remotable.initClient(RemoteRef.prototype, DOMRef.prototype);
-  this.walker = walker;
-  this.actorID = form.actor;
-
-  this._updateForm(form);
-}
-
-RemoteRef.prototype = {
-  toString: function() "[RemoteRef to " + this.actorID + "]",
-
-  get client() this.walker.client,
-  actor: function() promise.resolve(this.actorID),
+  initialize: function(owner, form) {
+    Front.prototype.initialize.call(this, owner, form);
+  },
 
   get id() this.form_id,
   get className() this.form_className,
@@ -1202,7 +1188,7 @@ RemoteRef.prototype = {
   isConnected: function() this.form_isConnected,
 
   readNodeAttributes: function(modified) {
-    this._updateForm(modified);
+    this.form(modified);
     return this;
   },
 
@@ -1250,7 +1236,7 @@ RemoteRef.prototype = {
     return this._lockMap.has(pseudo);
   },
 
-  _updateForm: function(form) {
+  form: function(form) {
     for (let name of Object.getOwnPropertyNames(form)) {
       this["form_" + name] = form[name];
       if (name == 'attrs') {
@@ -1292,22 +1278,14 @@ RemoteRef.prototype = {
       this.form_numChildren = mutation.newNumChildren;
     }
   }
-};
+}));
 
-function RemoteStyleSheetRef(walker, form)
-{
-  Remotable.initClient(RemoteStyleSheetRef.prototype, StyleSheetRef.prototype);
-  this.walker = walker;
-  this.actorID = form.actor;
-
-  this._updateForm(form);
-}
-
-RemoteStyleSheetRef.prototype = {
-  toString: function() "[RemoteStyleSheetRef to " + this.actorID + "]",
-
-  get client() this.walker.client,
-  actor: function() promise.resolve(this.actorID),
+let RemoteStyleSheetRef = Class(Remotable.initFront({
+  extends: Front,
+  actorType: StyleSheetRef,
+  initialize: function(owner, form) {
+    Front.prototype.initialize.call(this, owner, form);
+  },
 
   get disabled() this.form_disabled,
   get href() this.form_href,
@@ -1325,39 +1303,32 @@ RemoteStyleSheetRef.prototype = {
   get type() this.form_type,
   get mediaMatches() this.form_mediaMatches,
 
-  _updateForm: function(form) {
+  form: function(form) {
     for (let name of Object.getOwnPropertyNames(form)) {
       this["form_" + name] = form[name];
     }
   },
-};
+}));
 
 
-function RemoteStyleRuleRef(walker, form)
-{
-  Remotable.initClient(RemoteStyleRuleRef.prototype, StyleRuleRef.prototype);
-  this.walker = walker;
-  this.actorID = form.actor;
+let RemoteStyleRuleRef = Class(Remotable.initFront({
+  extends: Front,
+  actorType: StyleRuleRef,
 
-  this._updateForm(form);
-}
-
-RemoteStyleRuleRef.prototype = {
-  toString: function() "[RemoteStyleRuleRef to " + this.actorID + "]",
-
-  get client() this.walker.client,
-  actor: function() promise.resolve(this.actorID),
+  initialize: function(owner, form) {
+    Front.prototype.initialize.call(this, owner, form);
+  },
 
   get shortSource() this.form_shortSource,
   get ruleLine() this.form_ruleLine,
 
   get type() this.form_type,
   get parentRule() {
-    return this.form_parentRule ? this.walker.readStyleRule(this.form_parentRule) : null;
+    return this.form_parentRule ? this.owner.readStyleRule(this.form_parentRule) : null;
   },
 
   get parentStyleSheet() {
-    return this.walker._refMap.get(this.form_parentStyleSheet);
+    return this.owner._refMap.get(this.form_parentStyleSheet);
   },
 
   get selectorText() this.form_selectorText,
@@ -1404,7 +1375,7 @@ RemoteStyleRuleRef.prototype = {
     }
   },
 
-  _updateForm: function(form) {
+  form: function(form) {
     for (let name of Object.getOwnPropertyNames(form)) {
       this["form_" + name] = form[name];
       if (name == "cssText") {
@@ -1420,32 +1391,39 @@ RemoteStyleRuleRef.prototype = {
     return this;
   },
 
-};
+}));
 
-function RemoteWalker(target, options)
-{
-  EventEmitter.decorate(this);
-  Remotable.initClient(RemoteWalker.prototype, DOMWalker.prototype);
+let RemoteWalker = Class(Remotable.initFront({
+  extends: Front,
+  actorType: DOMWalker,
 
-  this.client = target.client;
+  initialize: function(target, options) {
+    this._client = target.client;
 
-  this._refMap = new Map();
-  this._boundOnMutations = this._onMutations.bind(this);
-  this.client.addListener("mutations", this._boundOnMutations);
+    Front.prototype.initialize.call(this);
+    EventEmitter.decorate(this);
 
-  // Start fetching an actor to back the options.
-  this.actorPromise = this.rawRequest({
-    to: target.form.inspectorActor,
-    type: "getWalker"
-  }).then(function(response) {
-    this._actor = response.actor;
-    return this._actor;
-  }.bind(this)).then(promisePass, promiseError);
+    this._refMap = new Map();
+    this._boundOnMutations = this._onMutations.bind(this);
+    this.client.addListener("mutations", this._boundOnMutations);
 
-  this.options = options;
-}
+    this.options = options;
 
-RemoteWalker.prototype = {
+    // Start fetching an actor to back the options.
+    this.actorPromise = this.rawRequest({
+      to: target.form.inspectorActor,
+      type: "getWalker"
+    }).then(function(response) {
+      this.actorID = response.actor;
+      return this.actorID;
+    }.bind(this)).then(promisePass, promiseError);
+  },
+
+  actor: function() {
+    return this.actorPromise;
+  },
+  get client() this._client,
+
   destroy: function() {
     // XXX: disconnect the actor.
     this.client.removeListener("mutations", this._boundOnMutations);
@@ -1460,7 +1438,7 @@ RemoteWalker.prototype = {
 
     if (this._refMap.has(form.actor)) {
       let ref = this._refMap.get(form.actor);
-      ref._updateForm(form);
+      ref.form(form);
       return ref;
     }
 
@@ -1477,7 +1455,7 @@ RemoteWalker.prototype = {
 
     if (this._refMap.has(form.actor)) {
       let ref = this._refMap.get(form.actor);
-      ref._updateForm(form);
+      ref.form(form);
       return ref;
     }
 
@@ -1494,7 +1472,7 @@ RemoteWalker.prototype = {
 
     if (this._refMap.has(form.actor)) {
       let ref = this._refMap.get(form.actor);
-      ref._updateForm(form);
+      ref.form(form);
       return ref;
     }
 
@@ -1532,11 +1510,7 @@ RemoteWalker.prototype = {
     }
     this.emit("mutations", toEmit);
   },
-
-  actor: function() {
-    return this.actorPromise;
-  },
-};
+}));
 
 function promisePass(r) {
   return r;

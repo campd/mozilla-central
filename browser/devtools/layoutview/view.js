@@ -178,6 +178,9 @@ LayoutView.prototype = {
     }
 
     let node = this.inspector.selection.rawNode;
+    if (!node) {
+      return;
+    }
 
     // First, we update the first part of the layout view, with
     // the size of the element.

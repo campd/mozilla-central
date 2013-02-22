@@ -102,7 +102,7 @@ types.LongString = {
     return value.form();
   },
   read: function(value, context) {
-    return new Remotable.LongStringClient(context.client, value);
+    return new Remotable.LongStringClient(context, value);
   }
 };
 
@@ -219,8 +219,9 @@ Remotable.Actor = Class({
   },
 
   writeError: function(err) {
+    dump(err + "\n");
     if (err.stack) {
-      dump(err.stack);
+      dump(err.stack + "\n");
     }
     this.conn.send({
       from: this.actorID,
@@ -318,8 +319,7 @@ Remotable.manageActors = function(factory)
  */
 Remotable.initActor = function(actorProto)
 {
-  actorProto.requestTypes = {};
-  actorProto.__remoteSpecs = [];
+  actorProto.remoteSpecs = [];
 
   for (let name of Object.getOwnPropertyNames(actorProto)) {
     let desc = Object.getOwnPropertyDescriptor(actorProto, name);
@@ -333,11 +333,13 @@ Remotable.initActor = function(actorProto)
       if (!spec.requestType) {
         spec.requestType = name;
       }
-      actorProto.__remoteSpecs.push(spec);
+      actorProto.remoteSpecs.push(spec);
     }
   }
 
-  actorProto.__remoteSpecs.forEach(function(spec) {
+  actorProto.requestTypes = {};
+
+  actorProto.remoteSpecs.forEach(function(spec) {
     let handler = null;
     let custom = spec.name + "_request";
     if (custom in actorProto) {
@@ -352,7 +354,7 @@ Remotable.initActor = function(actorProto)
           args.push(param.read(packet, this));
         }
 
-        this[spec.name].apply(impl, args).then(function(ret) {
+        this[spec.name].apply(this, args).then(function(ret) {
           let response = {
             from: this.actorID
           };
@@ -364,50 +366,72 @@ Remotable.initActor = function(actorProto)
 
     actorProto.requestTypes[spec.requestType || spec.name] = handler;
   });
+
   return actorProto;
 };
 
-function promisedRequest(packet)
-{
-  let deferred = promise.defer();
-  this.client.request(packet, function(response) {
-    if (response.error) {
-      deferred.reject(response.error);
-    } else {
-      deferred.resolve(response);
+/**
+ * A client-side object representing an actor.
+ */
+Remotable.Front = Class({
+  initialize: function(owner, form) {
+    this.owner = owner;
+    if (form) {
+      this.actorID = form.actor;
+      this.form(form);
     }
-  });
-  return deferred.promise;
-}
+  },
+
+  /**
+   * Returns a promise that will resolve to the actorID
+   * this front represents.
+   */
+  actor: function() promise.resolve(this.actorID),
+
+  get client() this.owner.client,
+
+  toString: function() "[Remotable.Front for " + this.actorID + "]",
+
+  /**
+   * Update the actor from its representation.
+   */
+  form: function(form) {
+    this.actorID = form.actorID;
+  },
+
+  rawRequest: function(packet) {
+    let deferred = promise.defer();
+    this.client.request(packet, function(response) {
+      if (response.error) {
+        deferred.reject(response.error);
+      } else {
+        deferred.resolve(response);
+      }
+    });
+    return deferred.promise;
+  },
+
+  request: function(packet) {
+    return this.actor().then(function(actorID) {
+      packet.to = actorID;
+      return this.rawRequest(packet);
+    }.bind(this));
+  }
+})
 
 /**
  * Prepare a client object's prototype.
  * Adds 'rawRequest' and 'request' methods to the
  * prototype.
  */
-Remotable.initClient = function(clientProto, actorProto)
+Remotable.initFront = function(clientProto, actorProto)
 {
-  if (clientProto.__remoteInitialized) {
-    return;
-  }
-  clientProto.__remoteInitialized = true;
-
-  if (!clientProto.rawRequest) {
-    clientProto.rawRequest = promisedRequest;
-  }
-  if (!clientProto.request) {
-    // If the client has a requestReady() function,
-    // it should return a promise that will resolve
-    // when requests are ready to be served.
-    clientProto.request = function(packet) {
-      return this.actor().then(function(actorID) {
-        packet.to = actorID;
-        return this.rawRequest(packet);
-      }.bind(this));
-    }
+  if (!actorProto) {
+    let actorType = clientProto.actorType;
+    actorProto = typeof(actorType) === 'function' ? actorType.prototype : actorType;
   }
 
-  let remoteSpecs = actorProto.__remoteSpecs;
+  let remoteSpecs = actorProto.remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     clientProto[spec.name] = function() {
       let request = {
@@ -422,7 +446,11 @@ Remotable.initClient = function(clientProto, actorProto)
       }.bind(this));
     }
   });
+  return clientProto;
 };
+
+Remotable.LONG_STRING_INITIAL_SIZE = 1000;
+Remotable.LONG_STRING_READ_SIZE = 1000;
 
 Remotable.LongString = Class(Remotable.initActor({
   extends: Remotable.Actor,
@@ -435,7 +463,7 @@ Remotable.LongString = Class(Remotable.initActor({
   actorPrefix: "string",
 
   form: function() {
-    if (this.length < Remotable.LongString.INITIAL_SIZE) {
+    if (this.length < Remotable.LONG_STRING_INITIAL_SIZE) {
       return this.str;
     }
 
@@ -448,7 +476,7 @@ Remotable.LongString = Class(Remotable.initActor({
   },
 
   get initial() {
-    return this.str.substring(0, Remotable.LongString.INITIAL_SIZE);
+    return this.str.substring(0, Remotable.LONG_STRING_INITIAL_SIZE);
   },
 
   get length() {
@@ -471,7 +499,7 @@ Remotable.LongString = Class(Remotable.initActor({
 
   release: Remotable.remotable(function() {
     delete this.str;
-    this.owner.releaseActor(this);
+    this.owner.pool.removeActor(this);
     return promise.resolve(undefined);
   }, {
     params: [],
@@ -479,29 +507,27 @@ Remotable.LongString = Class(Remotable.initActor({
   })
 }));
 
-Remotable.LongString.INITIAL_SIZE = 1000;
-Remotable.LongString.READ_SIZE = 1000;
+Remotable.LongStringClient = Class(Remotable.initFront({
+  extends: Remotable.Front,
+  actorType: Remotable.LongString,
 
-Remotable.initActor(Remotable.LongString.prototype);
+  initialize: function(owner, form) {
+    Remotable.Front.prototype.initialize.call(this, owner, form);
+  },
 
-Remotable.LongStringClient = function(client, form)
-{
-  Remotable.initClient(Remotable.LongStringClient.prototype, Remotable.LongString.prototype);
-  this.client = client;
-  this.initial = form.initial;
-  this.length = form.length;
-  this.actorID = form.actor;
-}
+  form: function(form) {
+    this.initial = form.initial;
+    this.length = form.length;
+    this.actorID = form.actor;
+  },
 
-Remotable.LongStringClient.prototype = {
-  actor: function() promise.resolve(this.actorID),
   string: function() {
     let deferred = promise.defer();
     let start = this.initial.length;
     let chunks = [this.initial];
 
     let readChunk = function() {
-      let end = start + (Math.min(Remotable.LongString.READ_SIZE, this.length - start));
+      let end = start + (Math.min(Remotable.LONG_STRING_READ_SIZE, this.length - start));
       this.substring(start, end).then(function(chunk) {
         chunks.push(chunk);
         if (end === this.length) {
@@ -519,7 +545,7 @@ Remotable.LongStringClient.prototype = {
 
     return deferred.promise;
   },
-};
+}));
 
 var wrapperPoolActorID = 0;
 /**

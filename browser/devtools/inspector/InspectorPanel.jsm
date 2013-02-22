@@ -624,7 +624,7 @@ InspectorPanel.prototype = {
    * Clear any pseudo-class locks applied to the current hierarchy.
    */
   clearPseudoClasses: function InspectorPanel_clearPseudoClasses() {
-    this.walker.clearPseudoClassLocks(null, { all: true});
+    return this.walker.clearPseudoClassLocks(null, { all: true});
   },
 
   /**
