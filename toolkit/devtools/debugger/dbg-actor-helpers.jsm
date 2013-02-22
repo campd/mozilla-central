@@ -20,6 +20,12 @@ types.Simple = {
 };
 
 /**
+ * Some synonyms for Simple types for self-documentation purposes.
+ * WE could make these do type checking later if we want.
+ */
+types.Bool = types.Int = types.String = types.Simple;
+
+/**
  * The context type constructor builds a type whose interpretation
  * depends on the object asking for the conversion.  Use this to allow
  * actor or client objects to provide translation methods.
@@ -105,6 +111,33 @@ types.LongString = {
     return new Remotable.LongStringFront(context, value);
   }
 };
+
+types.Actor = function(tag, detail) {
+  let self = this instanceof types.Actor ? this : Object.create(types.Actor.prototype);
+  self.detail = detail;
+  self.tag = tag;
+  return self;
+}
+
+types.Actor.prototype = {
+  write: function(value, context) {
+    if (!value) return value;
+    if (context instanceof Remotable.Actor) {
+      return value.form(this.detail);
+    } else {
+      return value.actorID;
+    }
+  },
+  read: function(value, context) {
+    if (!value) return value;
+
+    if (context instanceof Remotable.Actor) {
+      return context.pool.obj(value);
+    }
+
+    return context.managedFronts[this.tag].call(context, value);
+  },
+}
 
 /**
  * A Param is used to describe the layout of a request/response packet,
@@ -295,7 +328,7 @@ Remotable.custom = function(fn)
   return fn;
 }
 
-Remotable.manageActors = function(type, factory)
+Remotable.manageActors = function(tag, type, factory)
 {
   let impl = function(key) {
     if (!key) return key;
@@ -309,11 +342,11 @@ Remotable.manageActors = function(type, factory)
     this._managedActors.set(key, actor);
     return actor;
   };
-  impl._managedActors = factory;
+  impl._managedActors = tag;
   return impl;
 };
 
-Remotable.manageFronts = function(type, factory)
+Remotable.manageFronts = function(tag, type, factory)
 {
   let impl = function(form) {
     if (!form) {
@@ -333,7 +366,7 @@ Remotable.manageFronts = function(type, factory)
     this._managedFronts[form.actor] = front;
     return front;
   };
-  impl._managedFronts = factory;
+  impl._managedFronts = tag;
   return impl;
 }
 
@@ -344,6 +377,7 @@ Remotable.manageFronts = function(type, factory)
 Remotable.initActor = function(actorProto)
 {
   actorProto.remoteSpecs = [];
+  actorProto.managedActors = [];
 
   for (let name of Object.getOwnPropertyNames(actorProto)) {
     let desc = Object.getOwnPropertyDescriptor(actorProto, name);
@@ -358,6 +392,8 @@ Remotable.initActor = function(actorProto)
         spec.requestType = name;
       }
       actorProto.remoteSpecs.push(spec);
+    } else if (desc.value._managedActors) {
+      actorProto.managedActors.push(desc.value._managedActors);
     }
   }
 
@@ -419,8 +455,8 @@ Remotable.Front = Class({
   /**
    * Update the actor from its representation.
    */
-  form: function(form) {
-    this.actorID = form.actorID;
+  fromForm: function(form) {
+    this.actorID = form.actor;
   },
 
   rawRequest: function(packet) {
@@ -443,6 +479,10 @@ Remotable.Front = Class({
   }
 })
 
+function prototypeOf(obj) {
+  return typeof(obj) === 'function' ? obj.prototype : obj;
+}
+
 /**
  * Prepare a front object's prototype.
  * Adds 'rawRequest' and 'request' methods to the
@@ -450,10 +490,9 @@ Remotable.Front = Class({
  */
 Remotable.initFront = function(frontProto)
 {
-  let actorType = frontProto.actorType;
-  actorProto = typeof(actorType) === 'function' ? actorType.prototype : actorType;
+  let actorType = prototypeOf(frontProto.actorType);
 
-  let remoteSpecs = actorProto.remoteSpecs;
+  let remoteSpecs = actorType.remoteSpecs;
   remoteSpecs.forEach(function(spec) {
     frontProto[spec.name] = function() {
       let request = {
@@ -468,6 +507,19 @@ Remotable.initFront = function(frontProto)
       }.bind(this));
     }
   });
+
+  frontProto.managedFronts = {};
+  for (let name of Object.getOwnPropertyNames(frontProto)) {
+    let desc = Object.getOwnPropertyDescriptor(frontProto, name);
+    if (!desc.value) {
+      continue;
+    }
+
+    if (desc.value._managedFronts) {
+      frontProto.managedFronts[desc.value._managedFronts] = desc.value;
+    }
+  }
+
   return frontProto;
 };
 

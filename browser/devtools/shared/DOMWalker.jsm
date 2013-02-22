@@ -33,13 +33,17 @@ const ELEMENT_STYLE = 100;
  */
 
 var domTypes = {};
-domTypes.Node = types.Context("writeNode", "readNode");
+
+// Set up some actor types.  The constructor names correspond to
+// managed actor/front tags.
+domTypes.Node = types.Actor("node");
+domTypes.NodeAttributes = types.Actor("node", "attributes")
 domTypes.Nodes = types.Array(domTypes.Node);
 
-domTypes.StyleSheet = types.Context("writeStyleSheet", "readStyleSheet");
+domTypes.StyleSheet = types.Actor("sheet");
 domTypes.StyleSheets = types.Array(domTypes.StyleSheet);
 
-domTypes.StyleRule = types.Context("writeStyleRule", "readStyleRule");
+domTypes.StyleRule = types.Actor("rule");
 
 domTypes.NodeStyleEntry = types.Dict({
   inherited: domTypes.Node,
@@ -60,15 +64,7 @@ domTypes.PseudoModification = types.Context(
 );
 domTypes.PseudoModifications = types.Array(domTypes.PseudoModification);
 
-domTypes.NodeAttributes = types.Context(
-  "writeNodeAttributes",
-  "readNodeAttributes"
-);
-
-domTypes.RuleCssProperties = types.Context(
-  "writeCssProperties",
-  "readCssProperties"
-);
+domTypes.RuleCssProperties = types.Actor("rule", "properties");
 
 var domParams = {};
 domParams.Node = function(path) {
@@ -133,10 +129,18 @@ let DOMRef = Class(Remotable.initActor({
     return "[DOMRef for " + this._rawNode.toString() + "]";
   },
 
-  form: function() {
+  form: function(hint) {
     let form = {
       actor: this.actorID
     };
+
+    if (this.attributes) {
+      form.attrs = this.writeAttrs();
+    }
+
+    if (hint === "attributes") {
+      return form;
+    }
 
     // XXX: some of these are redundant and should be worked out independently
     // on the client.
@@ -153,19 +157,12 @@ let DOMRef = Class(Remotable.initActor({
       form[attr] = this[attr]();
     }
 
-    if (this.attributes) {
-      form.attrs = this.writeAttrs();
-    }
 
     if (this.isWalkerRoot()) {
       form.isWalkerRoot = true;
     }
 
     return form;
-  },
-
-  writeNodeAttributes: function(node) {
-    return this.writeAttrs();
   },
 
   writeAttrs: function() {
@@ -380,7 +377,11 @@ let StyleRuleRef = Class(Remotable.initActor({
   actorPrefix: "rule",
   toString: function() "[StyleRuleRef for " + this.rawRule.toString() + "]",
 
-  form: function() {
+  form: function(hint) {
+    if (hint === "properties") {
+      return { actor: this.actorID, cssText: this.cssText, properties: this.cssProperties() };
+    }
+
     let form = {
       actor: this.actorID,
       type: this.type,
@@ -612,7 +613,7 @@ this.DOMWalker = Class(Remotable.initActor({
     this.disconnect();
   },
 
-  _ref: Remotable.manageActors(DOMRef, function(node) {
+  _ref: Remotable.manageActors("node", DOMRef, function(node) {
     let ref = new DOMRef(this, node);
     if (this._observer) {
       this._observer.observe(node, {
@@ -624,36 +625,10 @@ this.DOMWalker = Class(Remotable.initActor({
     return ref;
   }),
 
-  _declRef: Remotable.manageActors(StyleRuleRef, function(rule) {
-    return new StyleRuleRef(this, rule);
-  }),
-
-  _sheetRef: Remotable.manageActors(StyleSheetRef, function(sheet) {
-    return new StyleSheetRef(this, sheet);
-  }),
+  _sheetRef: Remotable.manageActors("sheet", StyleSheetRef),
+  _declRef: Remotable.manageActors("rule", StyleRuleRef),
 
   // Conversions for protocol types.
-  writeNode: function DWA_writeNode(node) {
-    return node ? node.form() : null;
-  },
-  readNode: function DWA_readNode(node) {
-    return node ? this.pool.obj(node) : null;
-  },
-
-  writeStyleSheet: function(sheet) {
-    return sheet ? sheet.form() : null;
-  },
-  readStyleSheet: function(sheet) {
-    return this.pool.obj(sheet);
-  },
-
-  writeStyleRule: function(rule) {
-    return rule ? rule.form() : null;
-  },
-  readStyleRule: function(rule) {
-    return this.pool.obj(rule);
-  },
-
   writePseudoModification: function(node) {
     return {
       actor: node.actorID,
@@ -1383,14 +1358,6 @@ let StyleRuleFront = Class(Remotable.initFront({
       }
     }
   },
-
-  readCssProperties: function(value) {
-    this.form_cssText = value.cssText;
-    this.form_properties = value.properties;
-    delete this.__parsedText;
-    return this;
-  },
-
 }));
 
 let DOMWalkerFront = Class(Remotable.initFront({
@@ -1430,14 +1397,9 @@ let DOMWalkerFront = Class(Remotable.initFront({
     delete this._boundOnMutations;
   },
 
-  writeNode: function(node) node ? node.actorID : node,
-  readNode: Remotable.manageFronts(DOMFront),
-
-  writeStyleSheet: function(sheet) sheet ? sheet.actorID : sheet,
-  readStyleSheet: Remotable.manageFronts(StyleSheetFront),
-
-  writeStyleRule: function(rule) rule ? rule.actorID : rule,
-  readStyleRule: Remotable.manageFronts(StyleRuleFront),
+  getNode: Remotable.manageFronts("node", DOMFront),
+  getSheet: Remotable.manageFronts("sheet", StyleSheetFront),
+  getRule: Remotable.manageFronts("rule", StyleRuleFront),
 
   readPseudoModification: function(modified) {
     let ref = this._refMap.get(modified.actor);
