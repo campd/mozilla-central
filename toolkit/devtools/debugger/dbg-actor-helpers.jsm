@@ -295,23 +295,47 @@ Remotable.custom = function(fn)
   return fn;
 }
 
-Remotable.manageActors = function(factory)
+Remotable.manageActors = function(type, factory)
 {
   let impl = function(key) {
     if (!key) return key;
-    if (!("_managedActorMap" in this)) {
-      this._managedActorMap = new Map();
+    if (!("_managedActors" in this)) {
+      this._managedActors = new Map();
     }
-    if (this._managedActorMap.has(key)) {
-      return this._managedActorMap.get(key);
+    if (this._managedActors.has(key)) {
+      return this._managedActors.get(key);
     }
-    let actor = factory.call(this, key);
-    this._managedActorMap.set(key, actor);
+    let actor = factory ? factory.call(this, key) : new type(this, key);
+    this._managedActors.set(key, actor);
     return actor;
   };
-  impl._managedActors = constructor;
+  impl._managedActors = factory;
   return impl;
 };
+
+Remotable.manageFronts = function(type, factory)
+{
+  let impl = function(form) {
+    if (!form) {
+      return form;
+    }
+    if (!("_managedFronts" in this)) {
+      this._managedFronts = {};
+    }
+
+    if (form.actor in this._managedFronts) {
+      let front = this._managedFronts[form.actor];
+      front.form(form);
+      return front;
+    }
+
+    let front = factory ? factory.call(this, form) : new type(this, form);
+    this._managedFronts[form.actor] = front;
+    return front;
+  };
+  impl._managedFronts = factory;
+  return impl;
+}
 
 /**
  * Initialize an actor prototype.  Call this

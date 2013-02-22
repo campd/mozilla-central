@@ -612,7 +612,7 @@ this.DOMWalker = Class(Remotable.initActor({
     this.disconnect();
   },
 
-  _ref: Remotable.manageActors(function(node) {
+  _ref: Remotable.manageActors(DOMRef, function(node) {
     let ref = new DOMRef(this, node);
     if (this._observer) {
       this._observer.observe(node, {
@@ -624,11 +624,11 @@ this.DOMWalker = Class(Remotable.initActor({
     return ref;
   }),
 
-  _declRef: Remotable.manageActors(function(rule) {
+  _declRef: Remotable.manageActors(StyleRuleRef, function(rule) {
     return new StyleRuleRef(this, rule);
   }),
 
-  _sheetRef: Remotable.manageActors(function(sheet) {
+  _sheetRef: Remotable.manageActors(StyleSheetRef, function(sheet) {
     return new StyleSheetRef(this, sheet);
   }),
 
@@ -1431,55 +1431,13 @@ let DOMWalkerFront = Class(Remotable.initFront({
   },
 
   writeNode: function(node) node ? node.actorID : node,
-  readNode: function(form) {
-    if (!form) {
-      return form;
-    }
-
-    if (this._refMap.has(form.actor)) {
-      let ref = this._refMap.get(form.actor);
-      ref.form(form);
-      return ref;
-    }
-
-    let ref = new DOMFront(this, form);
-    this._refMap.set(form.actor, ref);
-    return ref;
-  },
+  readNode: Remotable.manageFronts(DOMFront),
 
   writeStyleSheet: function(sheet) sheet ? sheet.actorID : sheet,
-  readStyleSheet: function(form) {
-    if (!form) {
-      return form;
-    }
-
-    if (this._refMap.has(form.actor)) {
-      let ref = this._refMap.get(form.actor);
-      ref.form(form);
-      return ref;
-    }
-
-    let ref = new StyleSheetFront(this, form);
-    this._refMap.set(form.actor, ref);
-    return ref;
-  },
+  readStyleSheet: Remotable.manageFronts(StyleSheetFront),
 
   writeStyleRule: function(rule) rule ? rule.actorID : rule,
-  readStyleRule: function(form) {
-    if (!form) {
-      return form;
-    }
-
-    if (this._refMap.has(form.actor)) {
-      let ref = this._refMap.get(form.actor);
-      ref.form(form);
-      return ref;
-    }
-
-    let ref = new StyleRuleFront(this, form);
-    this._refMap.set(form.actor, ref);
-    return ref;
-  },
+  readStyleRule: Remotable.manageFronts(StyleRuleFront),
 
   readPseudoModification: function(modified) {
     let ref = this._refMap.get(modified.actor);
